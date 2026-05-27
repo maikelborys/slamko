@@ -135,12 +135,17 @@ ros2 launch slamko_vio vio_euroc.launch.py seq:=<V1_01> feature_source:=xfeat \
 # auto-check both (exit 0 = the whole never-lost + cross-session pipeline works).
 bash scripts/bench_neverlost.sh V1_01_easy V1_02_medium
 
-# Validate any never-lost run (PASS/FAIL gate) + plot the corrected/merged map:
+# Validate any never-lost run (PASS/FAIL gate):
 python3 scripts/check_neverlost.py --log run.log --gt GT.tum --est est.tum \
   --submaps est_lm.csv.submaps --pose-epoch est.tum.epoch
-python3 scripts/plot_neverlost.py --gt GT.tum --est est.tum --landmarks est_lm.csv \
-  --submaps est_lm.csv.submaps --pose-epoch est.tum.epoch --prior-map-dir /tmp/site_map --out merge.png
+# Visualize — interactive 3D (default, rotatable/zoomable HTML): GT + estimate + map.
+python3 scripts/plot_slamko.py --gt GT.tum --est est.tum --landmarks est_lm.csv \
+  --submaps est_lm.csv.submaps --pose-epoch est.tum.epoch --prior-map-dir /tmp/site_map --out merge.html
+# (plot_neverlost.py renders the same data as a static PNG — used by the figures below.)
 ```
+
+TUM VI (equidistant fisheye) needs offline rectification first — `scripts/rectify_tumvi.py`
+writes a pinhole drop-in `mav0` (see `/mnt/data/datasets/tumvi_rect/README.md`).
 
 ## Docs
 

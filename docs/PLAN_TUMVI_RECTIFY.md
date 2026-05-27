@@ -1,6 +1,34 @@
 # PLAN — TUM VI fisheye→pinhole rectification + first mapping test (then multi-part merge)
 
-<!-- status: NOT STARTED · created 2026-05-27 · resume target after /clear -->
+<!-- status: STEP 1 DONE (room1 maps green) · magistrale rectified · 2026-05-27 -->
+
+## PROGRESS (2026-05-27)
+
+**Step 1 (room1 gate) — DONE, green.** Built `scripts/rectify_tumvi.py` (fisheye→pinhole,
+CLAHE, drop-in `mav0`) + `scripts/plot_slamko.py` (interactive Plotly 3D viz, the new
+default). Rectified `room1` → `/mnt/data/datasets/tumvi_rect/room1`; slamko_vio (XFeat)
+tracks all 2821 frames into a coherent room map (`active≈1400`, `stereo≈1300`), roughly
+metric (pathlen 157 vs GT 147 m). **Sim3-ATE 69 cm / SE3-ATE 92 cm, drift mostly vertical
+(z-RMSE 71 cm)** — pure odometry, no loop closure; maps correctly (the gate). Full
+process + the new-bag reference: `/mnt/data/datasets/tumvi_rect/README.md`.
+
+**Two lessons that cost time (now fixed in the rectifier + launch):**
+1. **XFeat ONNX is static-shape `[1,1,480,752]`** — a 512×512 input resized in-net to
+   752×480 (1.56:1 aspect distortion) → the keypoint head returns **0** keypoints. Fix:
+   rectify straight to **752×480** (XFeat-native, no in-net resize). Shi-Tomasi tolerates
+   any size + the dark frames; XFeat needs native size **and** CLAHE. (Shi-Tomasi was the
+   discriminator: it tracked room1 fine while XFeat gave `active=0` → isolated the bug to
+   XFeat, not the rectification/geometry/IMU.)
+2. **Launch hardcoded `image_width/height=752/480`** and didn't expose them — the node
+   silently drops every frame on a size mismatch. Added `image_width/image_height` +
+   `xfeat_keypoint_threshold` launch args (with `value_type` coercion).
+
+**Next:** magistrale1/2 rectified → run single-session, then the map-by-parts + cross-
+session weld (the user's real goal). Drift seen on room1 is exactly what the never-lost
+loop-closure/welding path is for.
+
+---
+
 
 **Read first:** [`SYSTEM.md`](SYSTEM.md) (status map) + [`../CLAUDE.md`](../CLAUDE.md)
 (rules: zombie guard, run benches SERIALLY) + `slamko_loop/docs/STATUS.md` (P4b
