@@ -2,6 +2,32 @@
 
 Living, dated progress + numbers log. Plan: [`PLAN_P2_loop.md`](PLAN_P2_loop.md).
 
+## 2026-05-27 — Loop closure on a clean long traversal: auto-seal + chain distribution; recall is the bottleneck
+
+**What:** to close loops on a long CLEAN-tracking traversal (no loss → previously 0 seals
+→ nothing to relocalize against), added (1) **periodic auto-sealing** (`auto_seal_distance_m`,
+OK-state voluntary checkpoint; branch inherits the anchor so map→odom is continuous),
+(2) **weld-once per (target, active-submap)** (clear the set on each branch, so a later
+revisit by a new active submap can re-close to an early submap — the first active welds the
+start submap trivially and would otherwise block the real return closure), (3) **chain
+distribution** in the pose-graph weld path: all sealed submaps as nodes + identity sequential
+edges + stored loop edges, rebuilt and `optimize()`d each weld so a closure spreads across the
+whole chain instead of re-anchoring only the active submap. Off-by-default (auto_seal=0 → the
+validated V1_01 incremental path is byte-identical). Tests: **+3** (2 auto-seal trigger, 1
+pose-graph chain-distribution-uniformity) → slamko_loop **41 gtests 0 fail**.
+
+**Validated on TUM VI magistrale1 (822 m, returns to the start room) vs OKVIS2-X benchmark:**
+- **OKVIS2-X** (sparse `okvis_app_synchronous`, DBoW2 loop closure): **SE3-ATE 8.6 cm**, scale
+  0.994, **63 loop closures** — loop CLOSED (end-room ATE ≈ start-room ATE).
+- **slamko full-fix**: auto-seal made 88 submaps, but the relocalizer fired only **6 welds, all
+  trivial near the start, ZERO on the return** → loop did NOT close, SE3-ATE ~8 m.
+- **Finding:** the auto-seal + chain machinery is correct and unit-validated, but the
+  **bottleneck is relocalization RECALL** — slamko's XFeat + hand-rolled BoW (trained on ONE
+  submap) + PnP (`weld_min_inliers=15`) does not recognize the start room on return, whereas
+  OKVIS's DBoW2 + RANSAC + distance-scaled drift gate recalls it 63×. Next: attack recall
+  (vocabulary trained over the whole map / persisted, matching+inlier thresholds, a
+  distance-scaled weld gate). The pose-graph distribution is ready for when welds fire.
+
 ## 2026-05-27 — P2a: never-lost supervisor v1 (decoupled, no-solver) ✅
 
 **What:** the Tier-3 never-lost spine — slamko's flagship. A decoupled policy

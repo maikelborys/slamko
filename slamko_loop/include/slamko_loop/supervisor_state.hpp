@@ -61,6 +61,18 @@ struct SupervisorConfig {
   bool continuous_reloc          = false;
   int  continuous_reloc_interval = 15;  // frames between OK-state weld attempts
 
+  // Periodic AUTO-SEALING (OK state, independent of tracking loss). On a long,
+  // clean-tracking traversal slamko otherwise stays in ONE active submap forever —
+  // and since the relocalizer DB only holds SEALED submaps, a revisit to the start
+  // (still inside that one active submap) can never close a loop. Sealing the active
+  // submap every `auto_seal_distance_m` of travel checkpoints it into the sealed set
+  // (→ the reloc DB), so when continuous_reloc later matches it the weld closes the
+  // loop. The branch inherits the sealed submap's anchor so map→odom stays continuous
+  // (no jump — this is a voluntary checkpoint, NOT a loss). 0 = off (default; existing
+  // loss-only behavior is byte-identical). Pairs with continuous_reloc=true + a
+  // relocalizer. Typical: 8–15 m.
+  double auto_seal_distance_m = 0.0;
+
   // P2.5 polish: weld at most once to each sealed TARGET per recovery episode. The
   // gate already fires whenever a fresh cluster of ≥weld_min_matches agreeing hits
   // forms, so without this it re-welds every few frames (the V1_01 "7× weld"

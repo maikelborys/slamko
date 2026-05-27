@@ -89,6 +89,15 @@ class NeverLostSupervisor {
   SE3              odom_T_WB_;           // latest live odom body pose (for the weld)
   int              cont_counter_ = 0;    // throttle for OK-state continuous reloc
 
+  // Auto-seal odometry-distance tracker (cfg_.auto_seal_distance_m).
+  double           dist_since_seal_ = 0.0;
+  Eigen::Vector3d  last_odom_t_ = Eigen::Vector3d::Zero();
+  bool             have_last_odom_t_ = false;
+  // Chain-mode (auto-seal): accumulated loop-closure edges, deduped by (from,to) so a
+  // revisit refreshes rather than appends. Re-applied on every rebuild of the submap
+  // chain so a single optimize() distributes ALL closures across the whole chain.
+  std::vector<PoseGraphEdge> loop_edges_;
+
   Features         query_;
   bool             have_query_ = false;
 };

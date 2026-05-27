@@ -176,6 +176,7 @@ class VioNode : public rclcpp::Node {
     nl_use_pose_graph_ = declare_parameter("neverlost_use_pose_graph", false);
     nl_weld_once_      = declare_parameter("neverlost_weld_once", true);
     nl_continuous_reloc_ = declare_parameter("neverlost_continuous_reloc", false);
+    nl_auto_seal_dist_m_ = declare_parameter("neverlost_auto_seal_distance_m", 0.0);
     // P4: cross-session map persistence. prior_map_dir → load a prior Atlas at startup
     // (seed archive + reloc DB) so the live session localizes into it; map_save_dir →
     // dump the sealed Atlas at shutdown for the next session.
@@ -349,6 +350,7 @@ class VioNode : public rclcpp::Node {
       sc.use_pose_graph       = nl_use_pose_graph_;
       sc.weld_once_per_target = nl_weld_once_;
       sc.continuous_reloc     = nl_continuous_reloc_;
+      sc.auto_seal_distance_m = nl_auto_seal_dist_m_;
       supervisor_ = std::make_unique<slamko::NeverLostSupervisor>(sc, reloc_.get());
       RCLCPP_INFO(get_logger(),
                   "[neverlost] supervisor + XFeat relocalizer up (pose_graph=%d weld_once=%d)",
@@ -506,6 +508,7 @@ class VioNode : public rclcpp::Node {
   bool nl_use_pose_graph_ = false;
   bool nl_weld_once_      = true;
   bool nl_continuous_reloc_ = false;
+  double nl_auto_seal_dist_m_ = 0.0;
   std::string nl_landmark_dump_path_, nl_pose_dump_path_;
   std::string nl_prior_map_dir_, nl_map_save_dir_;  // P4 cross-session map I/O
   std::uint64_t nl_first_live_id_ = 0;              // submap ids < this are prior-session

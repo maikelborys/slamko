@@ -161,3 +161,44 @@ TEST(PoseGraph, OutlierEdgeDroppedAndConsensusRecovered) {
   EXPECT_EQ(g.edgeCount(), 3u);                      // the outlier was removed
   expectSE3Near(g.node(1), F * Zgood, 1e-5);         // recovered the good consensus
 }
+
+// --- Chain distribution (the never-lost auto-seal loop closure) --------------
+// A long clean traversal is a CHAIN of submaps tied by identity sequential edges
+// (consecutive submaps coincide in the shared odom frame). A loop closure adds one
+// edge from the start submap to the end. optimize() must DISTRIBUTE the correction
+// smoothly along the chain — not jump only the end node. This is what bends the
+// drifted trajectory back instead of snapping a discontinuity at the junction.
+TEST(PoseGraph, ChainDistributesLoopClosureUniformly) {
+  PoseGraph g;
+  const int N = 8;
+  for (int i = 0; i <= N; ++i) g.setNode(i, SE3(), /*fixed=*/i == 0);  // gauge = node 0
+  for (int i = 0; i < N; ++i) {
+    PoseGraphEdge e;  // identity sequential edge i→i+1
+    e.from_id = i; e.to_id = i + 1;
+    g.addEdge(e);
+  }
+  // Loop closure: start (0) → end (N) should be displaced 8 m in +x (the measured
+  // drift the revisit revealed).
+  PoseGraphEdge lc;
+  lc.from_id = 0; lc.to_id = N;
+  lc.T_from_to = SE3(Eigen::Matrix3d::Identity(), Eigen::Vector3d(8.0, 0.0, 0.0));
+  g.addEdge(lc);
+
+  const PoseGraphResult r = g.optimize();
+  EXPECT_TRUE(r.converged);
+  EXPECT_LT(r.final_cost, r.initial_cost);  // the closure was absorbed
+
+  // Gauge pinned at the origin.
+  EXPECT_NEAR(g.node(0).translation().x(), 0.0, 1e-6);
+  // The correction reached the end (substantial, springs resist full 8 m).
+  EXPECT_GT(g.node(N).translation().x(), 5.0);
+  EXPECT_LT(g.node(N).translation().x(), 8.01);
+  // Monotonic, smooth distribution along the chain (no jump).
+  for (int i = 0; i < N; ++i)
+    EXPECT_LE(g.node(i).translation().x(), g.node(i + 1).translation().x() + 1e-6);
+  // Roughly UNIFORM: the midpoint carries ~half the end's correction (spring chain).
+  EXPECT_NEAR(g.node(N / 2).translation().x(),
+              0.5 * g.node(N).translation().x(), 0.6);
+  // No spurious off-axis / rotation drift from a pure-x closure.
+  EXPECT_NEAR(g.node(N).translation().y(), 0.0, 1e-6);
+}

@@ -47,11 +47,10 @@ bool NeverLostSupervisor::attemptWeld(RecoveryAction& act) {
   if (!cfg_.use_pose_graph) {
     // v1 closed form: map→odom = active.anchor = S.anchor * (active→sealed).
     archive_.setAnchor(archive_.activeId(), s->anchor * consensus);
-  } else {
-    // P2.5 — loop-closure-as-factor: record the weld as a graph edge and re-solve
-    // ALL submap anchors so the constraint is distributed (and a later bad weld can
-    // be dropped). Single fixed sealed node + one edge ⇒ this reduces algebraically
-    // to the composition above (asserted in tests), so opt-in is risk-free.
+  } else if (cfg_.auto_seal_distance_m <= 0.0) {
+    // P2.5 incremental (loss-seal merge, e.g. V1_01) — UNCHANGED. Record the weld as a
+    // graph edge and re-solve. Single fixed sealed node + one edge ⇒ reduces
+    // algebraically to the closed form above (asserted in tests).
     if (!graph_.hasNode(s->id))
       graph_.setNode(s->id, s->anchor, graph_.nodeCount() == 0);  // first node = gauge
     if (!graph_.hasNode(archive_.activeId()))
@@ -62,8 +61,49 @@ bool NeverLostSupervisor::attemptWeld(RecoveryAction& act) {
     e.T_from_to = consensus;  // measured anchor_sealed⁻¹ · anchor_active
     graph_.addEdge(e);
     graph_.optimize();
-    // Write the optimized anchors back (the sole legal post-seal mutation). The
-    // fixed gauge is unchanged; the rest absorb the loop-closure correction.
+    for (const auto& sm : archive_.sealed())
+      if (graph_.hasNode(sm.id)) archive_.setAnchor(sm.id, graph_.node(sm.id));
+    archive_.setAnchor(archive_.activeId(), graph_.node(archive_.activeId()));
+  } else {
+    // CHAIN DISTRIBUTION (auto-seal long traversal). A loop closure on a clean
+    // traversal must distribute its correction across the WHOLE submap chain, not just
+    // re-anchor the active submap. We model the chain explicitly: every sealed submap
+    // is a node; consecutive submaps are tied by an IDENTITY sequential edge (they
+    // coincide in the shared continuous odom frame absent a loop); the first sealed
+    // submap is the fixed gauge (the start IS the reference). Each loop closure is a
+    // stored edge (deduped by from/to). Rebuilding from identity + all edges and
+    // running ONE optimize() spreads every closure smoothly along the chain (GN on the
+    // SE3 manifold), bending the drifted trajectory back. Disposable graph (Rule #4):
+    // a bad edge is dropped by the optimizer's outlier guard, never crashes the tracker.
+    PoseGraphEdge le;
+    le.from_id = s->id;
+    le.to_id = archive_.activeId();
+    le.T_from_to = consensus;
+    bool replaced = false;
+    for (auto& e : loop_edges_)
+      if (e.from_id == le.from_id && e.to_id == le.to_id) { e = le; replaced = true; break; }
+    if (!replaced) loop_edges_.push_back(le);
+
+    graph_.clear();
+    std::uint64_t prev = 0;
+    bool have_prev = false;
+    for (const auto& sm : archive_.sealed()) {
+      graph_.setNode(sm.id, SE3(), /*fixed=*/!have_prev);  // identity init; first = gauge
+      if (have_prev) {
+        PoseGraphEdge se;                       // sequential: consecutive ≡ identity
+        se.from_id = prev; se.to_id = sm.id;
+        graph_.addEdge(se);
+      }
+      prev = sm.id; have_prev = true;
+    }
+    graph_.setNode(archive_.activeId(), SE3(), false);
+    if (have_prev) {
+      PoseGraphEdge se; se.from_id = prev; se.to_id = archive_.activeId();
+      graph_.addEdge(se);
+    }
+    for (const auto& e : loop_edges_)
+      if (graph_.hasNode(e.from_id) && graph_.hasNode(e.to_id)) graph_.addEdge(e);
+    graph_.optimize({});
     for (const auto& sm : archive_.sealed())
       if (graph_.hasNode(sm.id)) archive_.setAnchor(sm.id, graph_.node(sm.id));
     archive_.setAnchor(archive_.activeId(), graph_.node(archive_.activeId()));
@@ -82,6 +122,12 @@ RecoveryAction NeverLostSupervisor::step(const HealthSignal& h,
   odom_T_WB_ = odom.T_WB;  // latest live body pose — used to compose the weld
   RecoveryAction act;
   const double gap = h.odom_stale_gap_s;
+
+  // Track odometry distance travelled since the last seal (for auto-sealing).
+  if (have_last_odom_t_)
+    dist_since_seal_ += (odom.T_WB.translation() - last_odom_t_).norm();
+  last_odom_t_ = odom.T_WB.translation();
+  have_last_odom_t_ = true;
 
   if (state_ == SupervisorState::OK || state_ == SupervisorState::RecentlyLost) {
     if (gap > cfg_.lost_gap_s) {
@@ -109,6 +155,28 @@ RecoveryAction NeverLostSupervisor::step(const HealthSignal& h,
       state_ = SupervisorState::OK;
       lost_count_ = 0;
     }
+    // Periodic AUTO-SEAL (OK only). Voluntarily checkpoint the active submap into the
+    // sealed set every auto_seal_distance_m of travel so loop closure has a target to
+    // match on revisit (the relocalizer DB only holds sealed submaps). Unlike a loss
+    // seal we stay OK and the branch INHERITS the sealed anchor, so map→odom is
+    // continuous (no jump — nothing actually went wrong). The node registers the
+    // sealed submap with the relocalizer + begins a fresh VIO epoch on act.sealed/branched.
+    if (cfg_.auto_seal_distance_m > 0.0 && state_ == SupervisorState::OK &&
+        dist_since_seal_ >= cfg_.auto_seal_distance_m) {
+      const SE3 prev_anchor = archive_.active().anchor;
+      act.sealed   = true;  act.sealed_id   = archive_.seal();
+      act.branched = true;  act.branched_id = archive_.branch();
+      archive_.setAnchor(archive_.activeId(), prev_anchor);  // seamless continuation
+      dist_since_seal_ = 0.0;
+      // Fresh weld-once scope per ACTIVE submap. weld_once_per_target is keyed on the
+      // sealed target; in continuous OK mode the FIRST active welds to the start submap
+      // trivially (near-zero correction, no drift yet) and would then block the REAL
+      // loop closure when a LATER active revisits that same start submap. Clearing on
+      // each branch makes weld-once per (target, active) — bounded edges, but every
+      // genuine revisit by a new submap can still close the loop.
+      episode_welded_ids_.clear();
+    }
+
     // P4b-2: continuous relocalization. While healthy (OK), periodically try to weld
     // the live submap to a prior/sealed one — localize into a prior map or close a
     // loop without getting lost. Gate-guarded; updates map→odom only, stays OK.

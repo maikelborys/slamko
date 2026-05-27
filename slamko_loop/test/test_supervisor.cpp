@@ -448,3 +448,40 @@ TEST(SubMapArchive, SealBranchFindAnchor) {
   expectSE3Near(a.find(0)->anchor, A, 1e-12);
   EXPECT_EQ(a.find(42), nullptr);
 }
+
+// --- Auto-seal (periodic checkpoint on a clean traversal) --------------------
+
+TEST(Supervisor, AutoSealOnDistanceStaysOK) {
+  SupervisorConfig c = cfg();
+  c.auto_seal_distance_m = 1.0;  // checkpoint every 1 m of travel
+  NeverLostSupervisor s(c, nullptr);
+  double t = 0;
+  int seals = 0;
+  // Healthy (gap=0) traverse along +x, 0.3 m/step → an auto-seal must fire, and the
+  // supervisor must STAY OK (a voluntary checkpoint is not a loss → not Relocalizing).
+  for (int i = 1; i <= 8; ++i) {
+    const SE3 T_WB = makeSE3(0.3 * i, 0, 0, 0, Eigen::Vector3d::UnitZ());
+    const RecoveryAction a = stepGapOdom(s, 0.0, T_WB, t);
+    if (a.sealed) {
+      ++seals;
+      EXPECT_TRUE(a.branched);
+      EXPECT_EQ(s.state(), SupervisorState::OK);
+    }
+  }
+  EXPECT_GE(seals, 1);
+  EXPECT_GE(s.archive().sealedCount(), 1u);
+  EXPECT_EQ(s.state(), SupervisorState::OK);
+}
+
+TEST(Supervisor, NoAutoSealWhenDisabled) {
+  // Default (auto_seal_distance_m = 0): a long healthy traverse seals nothing.
+  NeverLostSupervisor s(cfg(), nullptr);
+  double t = 0;
+  int seals = 0;
+  for (int i = 1; i <= 20; ++i) {
+    const SE3 T_WB = makeSE3(1.0 * i, 0, 0, 0, Eigen::Vector3d::UnitZ());
+    if (stepGapOdom(s, 0.0, T_WB, t).sealed) ++seals;
+  }
+  EXPECT_EQ(seals, 0);
+  EXPECT_EQ(s.archive().sealedCount(), 0u);
+}
