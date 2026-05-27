@@ -77,6 +77,46 @@ Re-run TUM VI magistrale1. Target: welds fire on the **return** to the start roo
 **8.6 cm** (vs the current ~8–24 m no-close). Then the magistrale1↔magistrale2 cross-session
 fuse (the original goal).
 
+## NEXT (verification fix) — LighterGlue matcher (the start-room return needs this)
+
+VPR retrieval works (ATE 24m→1.9m) but the start-room return doesn't re-close: the
+geometric VERIFICATION (brute-force XFeat-NN + Lowe ratio) can't match the same place
+across a large viewpoint/time gap. Fix = a learned matcher: **LighterGlue** (LightGlue
+arch + verlab XFeat-64 weights), the user's matcher in `orbslam3_xfeat`/`AirSLAM_XFEAT`.
+
+**Facts (from the orbslam3_xfeat investigation):**
+- Model: `lighterglue.pt` (TorchScript, 4.6 MB, Apache-2.0) — in-repo at
+  `~/coding/AirSLAM_XFEAT/output/lighterglue.pt` and `~/coding/orbslam3_xfeat/orbslam3_xfeat_core/weights/lighterglue.pt`.
+  Source weights `~/.cache/.../xfeat-lighterglue.pt`. Re-export: `AirSLAM_XFEAT/scripts/export_lighterglue_torchscript.py`.
+- **Runtime = LibTorch TorchScript, NOT ONNX/TRT** (kornia LightGlue uses negative-index
+  ops + FlashAttention → ONNX export abandoned in both repos). Clone target =
+  `~/coding/AirSLAM_XFEAT/src/lighter_glue.cc` (+ `include/lighter_glue.h`), Apache-2.0.
+- I/O: in `kpts0(1,N,2) f32`, `desc0(1,N,64) f32` (L2-normed), `kpts1`, `desc1`; out
+  TorchScript tuple `matches0(1,N) int64` (index into img1 or −1), `mscores0(1,N) f32`.
+  **N=512 baked into the trace; image_size (752,480) baked** (matches rectified TUM VI).
+- slamko `Features.descriptors` is N×64 row-major = `(N,64)` byte layout → `from_blob`
+  directly, NO transpose. keypoints = cols 0-1 of the N×3 block.
+- Precedent gate (`orbslam3_xfeat .../LighterGlueRefiner.cc:203-242`): LG match (score≥0.2)
+  → reproject via the pose hypothesis → inlier if residual <5px → accept if ≥15 inliers.
+  Same as slamko's pnpRansac inlier logic.
+
+**Steps:**
+1. `slamko_loop/CMakeLists.txt`: optional `SLAMKO_LOOP_WITH_TORCH` target (`find_package(Torch)`,
+   `-DSLAMKO_HAVE_TORCH`); guard the matcher with `#ifdef` so the default build stays torch-free.
+2. `LightGlueMatcher` (`slamko_loop/src/lightglue_matcher.cpp` + hpp) implementing
+   `slamko::Matcher` — near-verbatim port of `lighter_glue.cc`: ctor `torch::jit::load`,
+   `match(query,train)` → pad to N=512 → `from_blob` 4 tensors → `forward` → decode →
+   `DescMatch{query_idx,train_idx,score}`.
+3. Wire into `xfeat_relocalizer.cpp::relocalize`: when enabled, replace `matchDescriptors()`
+   with `LightGlueMatcher::match(query, entry.train)` → build `uv`/`X` from the matches →
+   feed the UNCHANGED `pnpRansac()` + inlier gates. Cache a `Features train` in `Entry` at
+   `addSubMap()` (LightGlue needs the train side's keypoint geometry, not just descriptors).
+4. Config gate `use_lightglue` (default off → brute-force fallback). A/B on the known-failing
+   start-room return: inlier count must clear `min_inliers=15`.
+
+**Gotchas:** trace N=512 but slamko XFeat `max_corners=1500` → **top-K to 512 by score**
+before matching (or re-export at higher N, ~4× slower). Run off the hot path (reloc stage only).
+
 ## Risks
 - **Domain gap** (main): outdoor-trained weights on indoor TUM VI — de-risk said GO
   (ranking is decisive even with compressed cosines), but if live recall is weak, fine-tune
