@@ -10,6 +10,25 @@ root). Each package has only a short `README.md` (orientation) + `docs/`
 (validated detail). Details: [`MASTER_PLAN.md`](MASTER_PLAN.md),
 [`docs/DECOUPLING.md`](docs/DECOUPLING.md), [`docs/DOC_PROCESS.md`](docs/DOC_PROCESS.md).
 
+## Orientation (cold start — human or LLM)
+
+**Reading order:** this file → [`MASTER_PLAN.md`](MASTER_PLAN.md) →
+[`docs/SYSTEM.md`](docs/SYSTEM.md) (how the modules interact) →
+[`docs/DECOUPLING.md`](docs/DECOUPLING.md) (the contracts) → the package's
+`README.md` → its `docs/STATUS.md` (what's validated + the numbers) → its
+`docs/PLAN_<phase>.md` (the active plan).
+
+**Where each kind of knowledge lives:** contracts → `slamko_core` headers +
+`DECOUPLING.md` · how-it-works + the math → the **inline header "why" blocks** +
+`SYSTEM.md` · what's validated / the numbers / what was tried-and-reverted → each
+package's `docs/STATUS.md` · the rules → this file.
+
+**Doc discipline (lean — don't contaminate):** the **inline header block** (why this
+exists + how it fits + the load-bearing decision) and the **per-tuning rationale**
+(reason + what was tried) are the *primary* doc surface — they can't drift from the
+code. Standalone prose is reserved for the **one** system map (`SYSTEM.md`) + the
+per-package `STATUS.md` logs. No parallel/overlapping prose docs.
+
 ## This is ONE git repo, worked from the root
 
 `slamko/` is a single git monorepo; you edit all packages from here and build
