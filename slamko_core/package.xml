@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>slamko_core</name>
+  <version>0.0.1</version>
+  <description>slamko contracts + common types (the spine): Factor / SensorFrontend /
+    FactorGraphBackend / FeatureSource / Matcher / Relocalizer interfaces, SE3 manifold,
+    NodeKey, SubMap / EstimationFrame, RobustKernel, health signals. Header-only,
+    Eigen-only. Apache-2.0.</description>
+
+  <maintainer email="maikelborys@gmail.com">Maikel Borys</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <build_depend>eigen3_cmake_module</build_depend>
+  <buildtool_export_depend>eigen3_cmake_module</buildtool_export_depend>
+  <depend>eigen</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

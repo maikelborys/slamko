@@ -1,6 +1,11 @@
 # slamko — Decoupling & Contracts
 
-<!-- validated: (scaffold) 2026-05-27 · tests: n/a -->
+<!-- validated: 3995b5c 2026-05-27 · tests: slamko_core 25/25 gtest -->
+
+> **Status (2026-05-27):** the contracts below are implemented header-only in
+> `slamko_core` and exercised by 25 passing gtests. The feature seam
+> (`FeatureSource` / `FeatureTracker` / `Matcher`, + `ImageView` / `Features`)
+> was added to core alongside the original sketch — see `slamko_core/docs/ARCHITECTURE.md`.
 
 How the modules stay independent and pluggable. **The one rule: a module depends
 only on `slamko_core`; it never includes another module's headers.** Modules meet
