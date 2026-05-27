@@ -20,6 +20,7 @@ void matchDescriptors(const Features& q,
                       const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic,
                                           Eigen::RowMajor>& sdesc,
                       const std::vector<Eigen::Vector3d>& spos, float ratio,
+                      bool mutual,
                       std::vector<Eigen::Vector2d>& uv_out,
                       std::vector<Eigen::Vector3d>& X_out) {
   uv_out.clear();
@@ -27,6 +28,23 @@ void matchDescriptors(const Features& q,
   if (!q.hasDescriptors() || sdesc.rows() < 2 ||
       q.descriptorDim() != static_cast<int>(sdesc.cols()))
     return;
+  // Optional cross-check: precompute each submap descriptor's nearest QUERY index, so
+  // a match (i→best_j) is kept only if best_j's nearest query is also i (symmetric).
+  // Removes the ambiguity penalty that self-similar descriptors impose on the one-sided
+  // ratio test, without flooding RANSAC. O(M·Q) extra — fine at the subsampled DB size.
+  std::vector<int> sj_best_qi;
+  if (mutual) {
+    sj_best_qi.assign(sdesc.rows(), -1);
+    for (int j = 0; j < sdesc.rows(); ++j) {
+      const auto sd = sdesc.row(j);
+      float best = 1e30f; int bi = -1;
+      for (int i = 0; i < q.size(); ++i) {
+        const float d2 = (q.descriptors.row(i) - sd).squaredNorm();
+        if (d2 < best) { best = d2; bi = i; }
+      }
+      sj_best_qi[j] = bi;
+    }
+  }
   for (int i = 0; i < q.size(); ++i) {
     const auto qd = q.descriptors.row(i);
     float best = 1e30f, second = 1e30f;
@@ -37,6 +55,7 @@ void matchDescriptors(const Features& q,
       else if (d2 < second) { second = d2; }
     }
     if (best_j >= 0 && best < ratio * ratio * second) {  // ratio on squared dist
+      if (mutual && sj_best_qi[best_j] != i) continue;   // not reciprocal
       uv_out.emplace_back(q.keypoints(i, 0), q.keypoints(i, 1));
       X_out.push_back(spos[best_j]);
     }
@@ -169,12 +188,16 @@ RelocResult XFeatRelocalizer::relocalize(const Features& query) const {
       continue;  // not a BoW candidate this query
     std::vector<Eigen::Vector2d> uv;
     std::vector<Eigen::Vector3d> X;
-    matchDescriptors(query, e.desc, e.pos, cfg_.match_ratio, uv, X);
+    matchDescriptors(query, e.desc, e.pos, cfg_.match_ratio, cfg_.mutual_check, uv, X);
     if (static_cast<int>(X.size()) < cfg_.min_inliers) continue;
 
     SE3 T_sl_cam;
     int inliers = 0;
     if (!pnpRansac(X, uv, cfg_, T_sl_cam, inliers)) continue;
+    // Precision gate (OKVIS-style): the inlier RATIO, not just the count, separates a
+    // true place from a coincidental descriptor match once the Lowe ratio is permissive.
+    if (cfg_.min_inlier_ratio > 0.0 &&
+        inliers < cfg_.min_inlier_ratio * static_cast<double>(X.size())) continue;
     if (inliers <= best_inliers) continue;
 
     best_inliers = inliers;

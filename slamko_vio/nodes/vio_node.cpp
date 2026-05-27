@@ -177,6 +177,13 @@ class VioNode : public rclcpp::Node {
     nl_weld_once_      = declare_parameter("neverlost_weld_once", true);
     nl_continuous_reloc_ = declare_parameter("neverlost_continuous_reloc", false);
     nl_auto_seal_dist_m_ = declare_parameter("neverlost_auto_seal_distance_m", 0.0);
+    // Relocalizer recall knobs (sweepable; defaults match XFeatRelocConfig).
+    reloc_match_ratio_      = declare_parameter("reloc_match_ratio", 0.9);
+    reloc_use_bow_          = declare_parameter("reloc_use_bow", true);
+    reloc_bow_top_k_        = declare_parameter("reloc_bow_top_k", 25);
+    reloc_mutual_check_     = declare_parameter("reloc_mutual_check", false);
+    reloc_min_inlier_ratio_ = declare_parameter("reloc_min_inlier_ratio", 0.0);
+    reloc_min_inliers_      = declare_parameter("reloc_min_inliers", 15);
     // P4: cross-session map persistence. prior_map_dir → load a prior Atlas at startup
     // (seed archive + reloc DB) so the live session localizes into it; map_save_dir →
     // dump the sealed Atlas at shutdown for the next session.
@@ -345,6 +352,13 @@ class VioNode : public rclcpp::Node {
       slamko::XFeatRelocConfig rc;
       rc.fx = K_.fx; rc.fy = K_.fy; rc.cx = K_.cx; rc.cy = K_.cy;
       rc.body_T_cam = slamko::SE3(node_T_BS_);   // T_BS (cam→body)
+      // Relocalization-recall tuning knobs (exposed as params for sweeping).
+      rc.match_ratio      = (float)reloc_match_ratio_;
+      rc.use_bow          = reloc_use_bow_;
+      rc.bow_top_k        = reloc_bow_top_k_;
+      rc.mutual_check     = reloc_mutual_check_;
+      rc.min_inlier_ratio = reloc_min_inlier_ratio_;
+      rc.min_inliers      = reloc_min_inliers_;
       reloc_ = std::make_unique<slamko::XFeatRelocalizer>(rc);
       slamko::SupervisorConfig sc;
       sc.use_pose_graph       = nl_use_pose_graph_;
@@ -509,6 +523,9 @@ class VioNode : public rclcpp::Node {
   bool nl_weld_once_      = true;
   bool nl_continuous_reloc_ = false;
   double nl_auto_seal_dist_m_ = 0.0;
+  double reloc_match_ratio_ = 0.9, reloc_min_inlier_ratio_ = 0.0;
+  bool reloc_use_bow_ = true, reloc_mutual_check_ = false;
+  int reloc_bow_top_k_ = 25, reloc_min_inliers_ = 15;
   std::string nl_landmark_dump_path_, nl_pose_dump_path_;
   std::string nl_prior_map_dir_, nl_map_save_dir_;  // P4 cross-session map I/O
   std::uint64_t nl_first_live_id_ = 0;              // submap ids < this are prior-session

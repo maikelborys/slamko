@@ -35,7 +35,15 @@ namespace slamko {
 struct XFeatRelocConfig {
   double fx = 0, fy = 0, cx = 0, cy = 0;  // rectified pinhole intrinsics
   SE3    body_T_cam;                      // T_BS (cam→body); identity = cam ≡ body
-  float  match_ratio = 0.8f;              // Lowe second-nearest ratio
+  // Lowe second-nearest ratio. XFeat-64 descriptors are weakly discriminative on
+  // self-similar indoor scenes (measured mean NN cosine ≈0.89 on TUM VI), so a strict
+  // 0.8 ratio passes only ~5 matches on a loop return — below min_inliers, PnP never
+  // runs, the loop never closes. 0.9 lifts that to ~100 putative matches; PnP-RANSAC +
+  // the supervisor's AnchorGate cluster are the precision defense (OKVIS's recipe:
+  // permissive appearance match, strict geometric gate). See the 2026-05-27 recall study.
+  float  match_ratio = 0.9f;
+  bool   mutual_check = false;            // symmetric (cross-check) NN — extra precision
+  double min_inlier_ratio = 0.0;          // reject PnP if inliers/matches < this (0 = off)
   int    ransac_iters = 200;
   double ransac_thresh_px = 3.0;          // reprojection inlier threshold
   int    min_inliers = 15;                // accept a relocalization above this
@@ -53,7 +61,11 @@ struct XFeatRelocConfig {
   // returns no candidate — so it never lowers recall, only skips hopeless submaps.
   bool   use_bow          = true;
   int    bow_vocab_size   = 256;   // K visual words
-  int    bow_top_k        = 5;     // candidate submaps PnP-verified per query
+  // Candidate submaps PnP-verified per query. A whole-submap BoW vector aggregates
+  // over a 30–80 m path stretch, so on a loop return the start submap ranks ~8–9 (not
+  // top-5): a small top-k silently drops the true loop. 25 recovers it; the all-submap
+  // PnP fallback stays cheap at this map scale. (Per-keyframe BoW is the deeper fix.)
+  int    bow_top_k        = 25;
   int    bow_train_sample = 6000;  // max descriptors used to train the vocabulary
 };
 

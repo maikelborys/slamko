@@ -2,6 +2,27 @@
 
 Living, dated progress + numbers log. Plan: [`PLAN_P2_loop.md`](PLAN_P2_loop.md).
 
+## 2026-05-28 — Loop-closure recall: XFeat carries NO place signal (config exhausted → need global VPR)
+
+**Finding (definitive, proven offline + 3 live magistrale1 runs):** the loop-closure bottleneck is
+NOT matcher config. Exposed the relocalizer knobs as node params (`reloc_match_ratio`,
+`reloc_use_bow`, `reloc_bow_top_k`, `reloc_mutual_check`, `reloc_min_inlier_ratio`,
+`reloc_min_inliers`) + added a mutual/cross-check matcher option + an inlier-ratio precision gate,
+then swept them. Every config (Lowe 0.9, top_k 25, mutual-NN, use_bow=false/all-submap PnP) still
+produced **0 real loop closures on the start-room return**.
+
+Offline proof on the saved Atlas (submap 0 = start vs submaps 76-80 = genuine return): geometric
+inliers <1%, **indistinguishable from places 80 m away**; positive control (sm0 vs sm0 under a known
+SE3) = **100%** → the XFeat-NN + PnP-RANSAC geometric back-end is perfect, only RETRIEVAL fails.
+Root cause: XFeat-64 is so self-similar (intra-set NN cosine 0.92) it has no place-level
+discriminability (genuine-return matched cosine 0.79 ≈ far-place 0.77). **Config-fixable = NO.**
+
+**Next (the real fix):** a global VPR front-end (learned NetVLAD/CosPlace/SALAD head, or a
+binary-descriptor + DBoW2 path with a NON-GPL vocab — ORB-SLAM's is GPL, slamko is Apache/BSD) for
+per-keyframe retrieval → feed the existing XFeat+PnP verifier. The auto-seal + chain-distribution
+machinery (2026-05-27) is the substrate, ready for when retrieval fires. Benchmark target:
+OKVIS2-X 8.6 cm / 63 closures (BRISK-binary + pretrained DBoW2 + distance-scaled drift gate).
+
 ## 2026-05-27 — Loop closure on a clean long traversal: auto-seal + chain distribution; recall is the bottleneck
 
 **What:** to close loops on a long CLEAN-tracking traversal (no loss → previously 0 seals
