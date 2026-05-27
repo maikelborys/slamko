@@ -227,7 +227,37 @@ VioPipeline::~VioPipeline() {
     cudaEventDestroy(ev_stop_);
     if (csv_out_.is_open()) csv_out_.close();
     if (!landmark_dump_path_.empty()) dump_landmarks();
+    // Report the reloc-map descriptor index built this session (B3).
+    const slamko::SubMap sm = buildSubMap();
+    int with_desc = 0;
+    for (const auto& l : sm.landmarks) if (l.descriptor_row >= 0) ++with_desc;
+    VIO_LOG("submap @ shutdown: %zu landmarks, %d with descriptors (index %dx%d)",
+            sm.landmarks.size(), with_desc,
+            (int)sm.descriptors.rows(), (int)sm.descriptors.cols());
   }
+
+slamko::SubMap VioPipeline::buildSubMap() const {
+  slamko::SubMap sm;
+  sm.id = 0;  // single submap in the VIO world frame; anchor identity (P2 splits)
+  int n_desc = 0;
+  for (const auto& kv : landmark_world_)
+    if (landmark_descriptors_.count(kv.first)) ++n_desc;
+  sm.descriptors.resize(n_desc, 64);
+  sm.landmarks.reserve(landmark_world_.size());
+  int row = 0;
+  for (const auto& [lid, p] : landmark_world_) {
+    slamko::MapLandmark lm;
+    lm.id = lid;
+    lm.position = p;
+    auto dit = landmark_descriptors_.find(lid);
+    if (dit != landmark_descriptors_.end()) {
+      for (int d = 0; d < 64; ++d) sm.descriptors(row, d) = dit->second[d];
+      lm.descriptor_row = row++;
+    }
+    sm.landmarks.push_back(lm);
+  }
+  return sm;
+}
 
   // Write the final BA world map to a CSV (id,x,y,z,obs) for offline viz.
 void VioPipeline::dump_landmarks() const {
@@ -400,6 +430,12 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
         nt.has_3d_prev    = false;
         nt.has_3d_curr    = false;
         nt.age = 0;
+        // Capture the learned descriptor at birth (XFeat: 64-d). Travels with
+        // the track through KLT culling; copied to the landmark at KF rate.
+        if (det.hasDescriptors() && det.descriptorDim() == 64) {
+          for (int d = 0; d < 64; ++d) nt.desc[d] = det.descriptors(ki, d);
+          nt.has_desc = true;
+        }
         tracks_.push_back(nt);
         ++n_new;
         if ((int)tracks_.size() >= max_corners_) break;
@@ -848,6 +884,8 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
           const Eigen::Vector3d p_cam = t.point_3d_curr.cast<double>();
           const Eigen::Vector4d p_w = T_c_w * p_cam.homogeneous();
           landmark_world_[t.landmark_id] = p_w.head<3>();
+          // B3: stamp the landmark with the track's birth descriptor → reloc map.
+          if (t.has_desc) landmark_descriptors_[t.landmark_id] = t.desc;
           // LMP v4: cache the appearance patch so re-acquisition can verify
           // snap-to-corner matches via NCC. Done only at first landmark
           // observation — the appearance is most reliable from the moment

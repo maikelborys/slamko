@@ -87,6 +87,25 @@ now cached (deserialize ~1 s), so this won't recur. The **fair equal-coverage A/
 B4's job** (pre-built engine + a sustainable replay rate / per-frame mode). Build:
 only benign TensorRT-10 deprecation warnings from NVIDIA's `common.h`.
 
-**Next — B3:** attach XFeat 64-d descriptors to mature landmarks at KF rate →
-populate `SubMap.descriptors` (reloc map for free). **B4:** feature compare-all
-(Shi-Tomasi vs XFeat) at equal coverage — Sim3-ATE + un-aligned divergence + FPS.
+## 2026-05-27 — B3: descriptor attachment @ KF rate (reloc map for free) ✅
+
+**What:** each track captures its 64-d XFeat descriptor at birth (from the
+`FeatureSource` detect output; descriptor-less Shi-Tomasi simply skips it). It
+travels with the track through KLT culling, and at KF rate — when a track is
+promoted to a landmark — the descriptor is stamped onto the landmark. New
+`VioPipeline::buildSubMap()` assembles the global map as a `slamko_core::SubMap`
+(landmarks + an N×64 descriptor index, `MapLandmark::descriptor_row`).
+
+**GATE — short XFeat clip (MH_01, end_s=25):** `submap @ shutdown: 112341 landmarks,
+112341 with descriptors (index 112341×64)` — the descriptor index is fully
+populated; the reloc map is built with zero hot-path cost. slamko_loop (P2) will
+consume this via `Relocalizer::addSubMap`.
+
+**Caveat (inherited, to fix in P2):** `landmark_world_` + the descriptor store grow
+unbounded (klt_vo's cumulative map never prunes) — fine for a session, but the reloc
+index should be restricted to submap-keyframe landmarks once submap management lands
+in slamko_loop.
+
+**Next — B4 (reduced, per user):** skip the exhaustive compare-all; one full-coverage
+XFeat run (cached engine) to confirm the 0.021 m ATE holds beyond partial coverage,
+keeping Shi-Tomasi as the fallback baseline.

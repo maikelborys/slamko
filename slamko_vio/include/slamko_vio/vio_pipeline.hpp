@@ -30,6 +30,7 @@
 #include "slamko_core/feature_source.hpp"
 #include "slamko_core/health.hpp"
 #include "slamko_core/image_view.hpp"
+#include "slamko_core/submap.hpp"
 
 #include "slamko_vio/imu_types.hpp"
 #include "slamko_vio/imu_preintegration.hpp"
@@ -61,6 +62,10 @@ struct StereoTrack {
   float left_at_last_kf_y = 0.f;
   bool  has_at_last_kf    = false;
   bool  from_lmp          = false;
+  // 64-d XFeat descriptor captured at the track's birth (when the FeatureSource
+  // provides one); copied to the landmark at KF rate → the reloc map for free.
+  std::array<float, 64> desc{};
+  bool  has_desc          = false;
 };
 
 // Per-frame telemetry (mirrors the klt_vo timing CSV columns).
@@ -92,6 +97,10 @@ class VioPipeline {
   const std::vector<StereoTrack>& tracks() const { return tracks_; }
   slamko::HealthSignal health() const { return health_; }
   std::uint32_t frameIdx() const { return frame_idx_; }
+
+  // Assemble the current global map as a slamko_core::SubMap (landmarks +
+  // their XFeat descriptor index). One submap for now; submap splitting is P2.
+  slamko::SubMap buildSubMap() const;
 
  private:
   // LMP appearance-patch helpers (now ImageView-based, ROS-free).
@@ -187,6 +196,7 @@ class VioPipeline {
   std::unordered_map<std::uint32_t, Eigen::Vector3d> landmark_world_;
   std::unordered_map<std::uint32_t, int> landmark_obs_count_;
   std::unordered_map<std::uint32_t, std::array<std::uint8_t, kLmpPatchPx>> landmark_patch_;
+  std::unordered_map<std::uint32_t, std::array<float, 64>> landmark_descriptors_;  // reloc map
   int            mature_obs_thr_ = 1000;
   std::uint32_t  next_lid_ = 1;
   bool   lmp_enabled_           = true;
