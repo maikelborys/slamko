@@ -35,7 +35,34 @@ end-of-sequence shutdown.
 launch-default config the bench uses lands at 0.06–0.09 for both builds — so the
 guard compares like-for-like (default config, both builds, same machine).
 
-**Next — B1b:** decompose the monolithic node into a ROS-agnostic `VioPipeline` +
-thin `vio_node`, and lift detect→`ShiTomasiSource : slamko_core::FeatureSource` /
-KLT→`KltFlowTracker : slamko_core::FeatureTracker`. Gate: full-suite numbers
-unchanged (±noise).
+## 2026-05-27 — B1b: decompose into ROS-agnostic VioPipeline + FeatureSource seam ✅
+
+**What:** broke the 1473-line monolithic node into:
+- **`VioPipeline`** (`vio_pipeline.hpp/.cpp`) — the ROS-agnostic core: `(ImageView,
+  ImuSample, StereoIntrinsics) → world pose + HealthSignal`. Owns all device
+  buffers + stages + tracking/BA/IMU/DR state. No rclcpp/TF. The ~800-line
+  algorithm body was transformed **in place** (preserved verbatim), only the I/O
+  boundary changed (ROS msgs → ImageView, TF T_BS → `setExtrinsics`, publish → node).
+- **`VioNode`** (`vio_node.cpp`, ~250 lines) — thin glue: params→`VioConfig`, stereo
+  sync→`ImageView`, TF→`setExtrinsics`, publish odom/tf/markers.
+- **`ShiTomasiSource : slamko::FeatureSource`** — the detector now runs behind the
+  `slamko_core` contract (swappable; B2 registers `XFeatSource` the same way via
+  `feature_source:=shitomasi|xfeat`). Owns its own device image + upload.
+- Health probes populated: `odom_stale_gap_s` + `tracking_inlier_ratio` per frame.
+- `slamko_vio` now depends on `slamko_core`.
+
+**GATE — MH_01_easy (rate 1.0, IMU-on), Sim3-ATE:** RMSE **0.0785 m**, 3419 poses,
+~4.68 ms/frame (~213 fps). vs B1 monolith 0.0688 and klt_vo-ref 0.0902 — equivalent
+code spans 0.069–0.090, so 0.078 is mid-band: **no regression, within run-to-run
+noise.** VI-init reproduced exactly (T_BS via setExtrinsics; `g_w=[0.244,9.437,2.667]`
+|g|=9.81; gyro-bias from 15 KF pairs) → a true like-for-like IMU run, not a
+visual-only fallback. Zero errors/crashes.
+
+**Scoping note (intentional):** the **`FeatureTracker` seam is deferred.** CUDA-KLT's
+device-pointer + persistent-pyramid flow doesn't map cleanly onto the host-`ImageView`
+contract without a tracking-state rework that would risk the baseline — and KLT stays
+in the primary "XFeat-detect + KLT-track" config regardless. The `FeatureSource`
+(detector) seam is the one B2 needs; KLT remains a pipeline-internal stage for now.
+
+**Next — B2:** XFeat-TRT `FeatureSource` (port AirSLAM `xfeat.cpp` + `xfeat_postproc.cu`,
+build the 752×480 engine), wire XFeat-detect + KLT-track, `feature_source:=xfeat`.

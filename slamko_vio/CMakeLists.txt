@@ -25,6 +25,7 @@ endif()
 add_compile_options(-Wall -Wextra)
 
 find_package(ament_cmake REQUIRED)
+find_package(slamko_core REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
@@ -51,13 +52,15 @@ add_library(slamko_vio_core
   src/local_ba.cpp
   src/imu_preintegration.cpp
   src/pnp_cuda.cu
+  src/vio_pipeline.cpp
 )
 target_include_directories(slamko_vio_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(slamko_vio_core PUBLIC
+target_link_libraries(slamko_vio_core
   Eigen3::Eigen ${OpenCV_LIBS} CUDA::cudart Ceres::ceres)
+ament_target_dependencies(slamko_vio_core slamko_core)
 target_compile_features(slamko_vio_core PUBLIC cxx_std_17)
 set_target_properties(slamko_vio_core PROPERTIES
   CUDA_SEPARABLE_COMPILATION ON
@@ -70,7 +73,7 @@ if(SLAMKO_VIO_BUILD_NODE)
   add_executable(slamko_vio_node nodes/vio_node.cpp)
   target_link_libraries(slamko_vio_node slamko_vio_core)
   ament_target_dependencies(slamko_vio_node
-    rclcpp sensor_msgs nav_msgs geometry_msgs visualization_msgs std_msgs
+    slamko_core rclcpp sensor_msgs nav_msgs geometry_msgs visualization_msgs std_msgs
     tf2 tf2_ros cv_bridge image_transport message_filters)
   install(TARGETS slamko_vio_node DESTINATION lib/${PROJECT_NAME})
   install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
@@ -92,7 +95,7 @@ if(BUILD_TESTING AND SLAMKO_VIO_BUILD_TESTS)
   endforeach()
 endif()
 
-ament_export_dependencies(rclcpp sensor_msgs nav_msgs visualization_msgs cv_bridge Eigen3 OpenCV)
+ament_export_dependencies(slamko_core rclcpp sensor_msgs nav_msgs visualization_msgs cv_bridge Eigen3 OpenCV)
 ament_export_include_directories(include)
 ament_export_libraries(slamko_vio_core)
 ament_package()
