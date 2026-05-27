@@ -128,6 +128,10 @@ ros2 launch slamko_vio vio_euroc.launch.py seq:=<V1_01> feature_source:=xfeat \
   enable_neverlost:=true neverlost_use_pose_graph:=true neverlost_continuous_reloc:=true \
   prior_map_dir:=/tmp/site_map                               # relocalize into prior map
 
+# One-command regression: build a map, relocalize a DIFFERENT trajectory into it,
+# auto-check both (exit 0 = the whole never-lost + cross-session pipeline works).
+bash scripts/bench_neverlost.sh V1_01_easy V1_02_medium
+
 # Validate any never-lost run (PASS/FAIL gate) + plot the corrected/merged map:
 python3 scripts/check_neverlost.py --log run.log --gt GT.tum --est est.tum \
   --submaps est_lm.csv.submaps --pose-epoch est.tum.epoch

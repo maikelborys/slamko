@@ -385,3 +385,13 @@ V1_02 recognized V1_01's room from a new viewpoint and anchored into its frame �
 **7/7 PASS** (seals 0, weld 1, anchor 0.41 m, ATE 25 cm). Merge plot: V1_02's live map
 overlaps V1_01's prior map in the room. So prior-map relocalization works from a genuinely
 new path — the deploy-relevant case. (No code change — validation only; reuses P4b.)
+
+## 2026-05-27 — never-lost regression harness (one command) ✅
+
+`scripts/bench_neverlost.sh [PRIOR_SEQ] [LIVE_SEQ]` runs the whole spine end-to-end:
+session 1 maps + saves the Atlas, session 2 replays a DIFFERENT sequence, loads that map,
+and localizes into it via continuous reloc — then `check_neverlost.py` gates it. Reuses
+bench_ate.sh's zombie-guard (SIGINT-first reap so the map save + landmark dump flush).
+Exit 0 = the full never-lost + cross-session pipeline works on real data. First green run
+(V1_01→V1_02): 1 submap saved, cross-session weld YES, auto-check 7/7 PASS (anchor 0.37 m,
+ATE 32.1 cm). This is the reproducible guard before P3 refactors the relocalizer.
