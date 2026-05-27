@@ -26,6 +26,7 @@ add_library(slamko_loop SHARED
   src/anchor_gate.cpp
   src/never_lost_supervisor.cpp
   src/pose_graph.cpp
+  src/bow.cpp
   src/xfeat_relocalizer.cpp)
 target_include_directories(slamko_loop PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -41,7 +42,7 @@ install(DIRECTORY include/ DESTINATION include)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-  foreach(t test_supervisor test_relocalizer test_pose_graph test_stress)
+  foreach(t test_supervisor test_relocalizer test_pose_graph test_stress test_bow)
     ament_add_gtest(${t} test/${t}.cpp)
     target_link_libraries(${t} slamko_loop Eigen3::Eigen)
     ament_target_dependencies(${t} slamko_core)

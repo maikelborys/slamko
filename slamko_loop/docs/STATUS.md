@@ -395,3 +395,24 @@ bench_ate.sh's zombie-guard (SIGINT-first reap so the map save + landmark dump f
 Exit 0 = the full never-lost + cross-session pipeline works on real data. First green run
 (V1_01→V1_02): 1 submap saved, cross-session weld YES, auto-check 7/7 PASS (anchor 0.37 m,
 ATE 32.1 cm). This is the reproducible guard before P3 refactors the relocalizer.
+
+## 2026-05-27 — P3a: BoW vocabulary + inverted-index database (scalable place-rec) ✅
+
+The relocalizer's brute-force NN is O(maps × descriptors) — fine for a room, not for a
+large map. `bow.{hpp,cpp}` adds the classic vocabulary + **inverted index**, hand-rolled
+over XFeat's 64-d float descriptors (no DBoW2 dep; Eigen + std, depends on slamko_core only):
+- **`BowVocabulary`** — K visual words via **deterministic** k-means++ (seeded init + Lloyd);
+  `quantize` (nearest word), `transform` (L2-normalized TF bag-of-words).
+- **`BowDatabase`** — per-submap TF BoW behind an inverted index (word → submaps), scored by
+  **TF-IDF cosine**; `query()` returns the top-k candidate submaps in sublinear time (only
+  visits submaps that share a word). It is a CANDIDATE retriever — geometry (the XFeat PnP
+  gate) still verifies the weld.
+
+**GATE — 4 gtests** (`colcon test slamko_loop`, now 38 total 0 fail): vocabulary recovers 3
+separated clusters (distinct words); **deterministic** (same seed → bit-identical words);
+database retrieves the right submap for a query drawn from a known place; empty/edge cases.
+
+**Next — P3b:** wire `BowDatabase` into `XFeatRelocalizer` — train the vocab on the DB
+descriptors, BoW-index each `addSubMap`, and in `relocalize()` PnP-verify only the top-k BoW
+candidates instead of every submap. Validate it does NOT regress `bench_neverlost.sh` (the
+guard) — same welds, faster. Then lift the `max_db_landmarks` brute-force cap.
