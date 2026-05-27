@@ -369,8 +369,15 @@ class VioNode : public rclcpp::Node {
       // each landmark in the corrected frame via its submap's welded anchor.
       seal_idhi_.emplace_back(a.sealed_id, pipeline_->maxLandmarkId());
       RCLCPP_WARN(get_logger(),
-                  "[neverlost] SEAL submap %lu + BRANCH %lu (odom_stale_gap=%.2fs)",
-                  (unsigned long)a.sealed_id, (unsigned long)a.branched_id, h.odom_stale_gap_s);
+                  "[neverlost] SEAL submap %lu (%zu landmarks) + BRANCH %lu (odom_stale_gap=%.2fs)",
+                  (unsigned long)a.sealed_id,
+                  sealed.empty() ? 0 : sealed.back().landmarks.size(),
+                  (unsigned long)a.branched_id, h.odom_stale_gap_s);
+    }
+    if (a.branched) {
+      // Start a fresh VIO submap epoch so the new branch's buildSubMap() returns only
+      // its OWN landmarks — sealed submaps stay disjoint (no cumulative duplication).
+      pipeline_->beginSubmap();
     }
     if (a.welded) {
       const Eigen::Vector3d t = supervisor_->mapToOdom().translation();

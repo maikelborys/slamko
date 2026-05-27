@@ -254,14 +254,22 @@ VioPipeline::~VioPipeline() {
 
 slamko::SubMap VioPipeline::buildSubMap() const {
   slamko::SubMap sm;
-  sm.id = 0;  // single submap in the VIO world frame; anchor identity (P2 splits)
+  sm.id = 0;  // anchor/id are owned by the never-lost archive, not the VIO
+  // Only landmarks created in the CURRENT submap epoch (since the last beginSubmap)
+  // — so sealed submaps are disjoint, not cumulative supersets. epoch 0 with no
+  // branch ⇒ every landmark qualifies ⇒ identical to the pre-partition behavior.
+  auto in_epoch = [&](std::uint32_t lid) {
+    auto it = landmark_epoch_.find(lid);
+    return it != landmark_epoch_.end() && it->second == submap_epoch_;
+  };
   int n_desc = 0;
   for (const auto& kv : landmark_world_)
-    if (landmark_descriptors_.count(kv.first)) ++n_desc;
+    if (in_epoch(kv.first) && landmark_descriptors_.count(kv.first)) ++n_desc;
   sm.descriptors.resize(n_desc, 64);
   sm.landmarks.reserve(landmark_world_.size());
   int row = 0;
   for (const auto& [lid, p] : landmark_world_) {
+    if (!in_epoch(lid)) continue;
     slamko::MapLandmark lm;
     lm.id = lid;
     lm.position = p;
@@ -911,6 +919,7 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
           const Eigen::Vector3d p_cam = t.point_3d_curr.cast<double>();
           const Eigen::Vector4d p_w = T_c_w * p_cam.homogeneous();
           landmark_world_[t.landmark_id] = p_w.head<3>();
+          landmark_epoch_[t.landmark_id] = submap_epoch_;  // owns it for this submap
           // B3: stamp the landmark with the track's birth descriptor → reloc map.
           if (t.has_desc) landmark_descriptors_[t.landmark_id] = t.desc;
           // LMP v4: cache the appearance patch so re-acquisition can verify

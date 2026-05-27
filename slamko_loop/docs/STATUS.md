@@ -295,13 +295,22 @@ PASS** (seals 2, welds 2, ended OK, max|anchor t| 2.39 m < 5, ATE 31.1 < 56.9 cm
 the seal/weld is objectively correct — the earlier "shifted/turned" was purely the
 uncorrected-odom viz.
 
-**Known wart (the cumulative-submap "overexpose"):** the VIO's `landmark_world_` is never
-pruned, and `buildSubMap()` returns the WHOLE cumulative map each call — so each sealed
-submap is a SUPERSET of the earlier ones and the reloc DB registers overlapping copies
-(landmarks duplicated across submaps, NOT dissolved). The merge still works (the viz sidecar
-partitions by creation-id so nothing double-draws), but the proper fix is for `buildSubMap()`
-to return only the active submap's OWN (since-last-branch) landmarks → disjoint, self-
-contained submaps (the OKVIS2-X/GLIM submap model). Tracked for P4/the next correctness pass.
+## 2026-05-27 — submap partition: disjoint, self-contained sealed submaps ✅
+
+**The "overexpose" wart, fixed.** Before: the VIO's `landmark_world_` is never pruned and
+`buildSubMap()` returned the WHOLE cumulative map, so each sealed submap was a SUPERSET of
+the earlier ones (reloc DB registered overlapping copies — landmarks duplicated, not
+dissolved). Now the VIO tags each landmark with a **submap epoch** at creation; the node
+calls `pipeline_->beginSubmap()` on BRANCH (++epoch); `buildSubMap()` returns ONLY the
+active epoch's landmarks → **disjoint, self-contained submaps** (the OKVIS2-X/GLIM model).
+Epoch stays 0 with no branch ⇒ a normal/no-loss run is byte-identical to before.
+
+**GATE (V1_01, re-run, auto-check 7/7 PASS):** SEAL submap 0 = **40,615** landmarks, submap
+1 = **90,707** — its OWN epoch, NOT the cumulative ~132k it used to be. Both welds still
+fired (disjoint reloc DB doesn't starve the match), anchors sane (max |t| 2.18 m),
+anchor-corrected Sim3-ATE **16.9 cm < raw 56.1 cm**. So the seal/weld was always correct;
+now the sealed submaps are genuinely independent (no duplicate landmarks across the archive
+or the reloc DB) — the foundation cross-session persistence (P4) needs.
 
 **Integration note (R1):** `lost_gap_s` (1.0 s default) ≥ the VIO dead-reckoning horizon
 (`dr_max_s_`=1.0) so the supervisor doesn't double-handle the ms-gap net. `odom_stale_gap_s`

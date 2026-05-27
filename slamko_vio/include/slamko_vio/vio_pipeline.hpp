@@ -112,6 +112,12 @@ class VioPipeline {
     for (const auto& kv : landmark_world_) m = std::max<std::uint64_t>(m, kv.first);
     return m;
   }
+  // Never-lost submap partitioning: start a new submap epoch (called by the node on
+  // BRANCH). Landmarks created from now carry the new epoch, so buildSubMap() returns
+  // ONLY the active submap's own landmarks → disjoint, self-contained sealed submaps
+  // (no cumulative-superset duplication in the reloc DB). Epoch stays 0 with no
+  // branch, so a normal/no-loss run is byte-identical to before.
+  void beginSubmap() { ++submap_epoch_; }
 
   // Assemble the current global map as a slamko_core::SubMap (landmarks +
   // their XFeat descriptor index). One submap for now; submap splitting is P2.
@@ -211,6 +217,8 @@ class VioPipeline {
   Eigen::Matrix4d T_w_c_ = Eigen::Matrix4d::Identity();
   std::unordered_map<std::uint32_t, Eigen::Vector3d> landmark_world_;
   std::unordered_map<std::uint32_t, int> landmark_obs_count_;
+  std::unordered_map<std::uint32_t, int> landmark_epoch_;  // submap epoch at creation
+  int submap_epoch_ = 0;                                   // bumped by beginSubmap()
   std::unordered_map<std::uint32_t, std::array<std::uint8_t, kLmpPatchPx>> landmark_patch_;
   std::unordered_map<std::uint32_t, std::array<float, 64>> landmark_descriptors_;  // reloc map
   int            mature_obs_thr_ = 1000;

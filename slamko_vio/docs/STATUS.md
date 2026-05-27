@@ -252,3 +252,15 @@ the loop suite (32 gtests) + the live run are the gate.
   (`map = anchor·odom`) before the Sim3 fit. Detail: `slamko_loop/docs/STATUS.md`
   (2026-05-27 merge visualization fix). On V1_01: Sim3-ATE 56.9 → 31.1 cm with the
   correction; submap 2's anchor was a ~49° rotation + 2.43 m (the measured blackout-2 drift).
+
+## 2026-05-27 — submap epoch partition (disjoint never-lost submaps) ✅
+
+`buildSubMap()` returned the whole cumulative `landmark_world_` (never pruned), so
+never-lost sealed submaps were cumulative supersets (duplicated landmarks in the reloc
+DB). Now each landmark is tagged with a `submap_epoch_` at creation; `beginSubmap()`
+(called by the node on BRANCH) bumps the epoch; `buildSubMap()` returns only the active
+epoch's landmarks → disjoint, self-contained submaps. **Epoch 0 with no branch ⇒
+byte-identical to before** (normal/no-loss runs unaffected; the validated single-submap
+reloc path unchanged). V1_01 multi-loss re-run: SEAL 0 = 40,615 lm, SEAL 1 = 90,707 lm
+(own epochs, not cumulative); both welds fired; `scripts/check_neverlost.py` 7/7 PASS
+(corrected ATE 16.9 cm). Detail: `slamko_loop/docs/STATUS.md` (2026-05-27 submap partition).
