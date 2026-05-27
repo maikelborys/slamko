@@ -1,6 +1,6 @@
 # slamko — System map (how the modules interact, now & next)
 
-<!-- validated: 8498021 2026-05-27 · tests: core 25/25 gtest · vio MH_01 equal-cov ShiTomasi 0.078 / XFeat 0.049 -->
+<!-- validated: 2026-05-27 (P1b) · tests: core 25/25 · vio 23/23 gtest (4 LocalSmoother parity) · MH_01 ShiTomasi median ~0.074 / XFeat 0.049 -->
 
 The one-page projection of the whole system. A **map, not a textbook** — it states
 what's true now + where it's headed, and is corrected as code lands. Deep detail
@@ -20,8 +20,8 @@ One row per package; updated when a milestone lands (detail in each `docs/STATUS
 | Package | Tier | Phase | State | Headline | Validated |
 |---|---|---|---|---|---|
 | `slamko_core` | spine | P1 | ✅ shipped | contracts + SE3 + feature seam · 25/25 gtests | `b36ea43` |
-| `slamko_vio` | T1 | P0 | ✅ shipped | Shi-Tomasi 0.078 m @ ~214 fps / **XFeat-TRT 0.049 m @ ~93 fps** (equal-coverage MH_01) · descriptors attached | `8498021` |
-| `slamko_fusion` | T2 | P1 | 🟢 active | GtsamLocalSmoother (BatchFixedLagSmoother + Schur marg + CombinedImu + stereo) built, synthetic SfM ✅; P1b/c wire+validate | `8498021`+ |
+| `slamko_vio` | T1 | P0/P1b | ✅ shipped | Shi-Tomasi 0.078 m @ ~214 fps / **XFeat-TRT 0.049 m @ ~93 fps** (equal-coverage MH_01) · descriptors attached · **routed through `LocalSmoother` (ceres), `backend:=ceres\|gtsam`** | `8498021`+ |
+| `slamko_fusion` | T2 | P1 | 🟢 active | GtsamLocalSmoother built + synthetic SfM ✅; **P1b ✅** VioPipeline routed through `LocalSmoother` (ceres, unit-exact pass-through); P1c wires `backend:=gtsam` end-to-end | `8498021`+ |
 | `slamko_loop` | T3 | P2 | ⬜ planned | never-lost supervisor + relocalizer (LiftFeat-m1) | — |
 | `slamko_msgs` | — | P4 | ⬜ planned | map-server API / status / correspondences | — |
 | `slamko_ros` | root | — | ⬜ planned | composition root + map→odom→base bridge + viz | — |

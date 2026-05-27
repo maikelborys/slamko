@@ -22,6 +22,7 @@
 #include <unordered_set>
 #include <algorithm>
 
+#include "slamko_vio/ceres_local_smoother.hpp"
 #include "slamko_vio/feature/shitomasi_source.hpp"
 #include "slamko_vio/feature/xfeat_source.hpp"
 
@@ -29,7 +30,12 @@
 
 namespace slamko_vio {
 
-VioPipeline::VioPipeline(const VioConfig& cfg) {
+VioPipeline::VioPipeline(const VioConfig& cfg)
+    : VioPipeline(cfg, nullptr) {}
+
+VioPipeline::VioPipeline(const VioConfig& cfg,
+                         std::unique_ptr<slamko::LocalSmoother> smoother) {
+    smoother_ = std::move(smoother);  // null ⇒ default CeresLocalSmoother below
     image_width_  = cfg.image_width;
     image_height_ = cfg.image_height;
     max_corners_  = cfg.max_corners;
@@ -145,7 +151,16 @@ VioPipeline::VioPipeline(const VioConfig& cfg) {
     bcfg.T_BS = Eigen::Matrix4d::Identity();
     bcfg.gravity_w = Eigen::Vector3d(0.0, 0.0, -9.81);
     ba_cfg_ = bcfg;
-    local_ba_ = std::make_unique<slamko_vio::LocalBA>(bcfg);
+    // Tier-2 backend. Default = CeresLocalSmoother wrapping LocalBA (the P0
+    // baseline) built from this cfg; an injected backend (P1c gtsam) is used
+    // as-is — the pipeline drives it only through the slamko::LocalSmoother
+    // contract (setExtrinsics / setImuParams / setStereoCalib / insertKeyframe).
+    if (!smoother_) {
+      CeresLocalSmootherConfig scfg;
+      scfg.ba    = ba_cfg_;
+      scfg.noise = imu_noise_;
+      smoother_  = std::make_unique<CeresLocalSmoother>(scfg);
+    }
 
     kf_translation_thr_m_ = (float)cfg.kf_translation_m;
     kf_rotation_thr_rad_  = (float)cfg.kf_rotation_rad;  // ~5°
@@ -906,12 +921,13 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
       const auto ba_t0 = std::chrono::steady_clock::now();
 
       // ---- Sprint 4 IMU integration block ---------------------------------
-      // - The first KF is inserted visual-only (no preint).
-      // - From the second KF on, preintegrate IMU samples in (last_kf_ts, ts_now]
-      //   at the current bias linearisation, then call insert_keyframe_with_imu.
+      // - The first KF is inserted visual-only (no IMU).
+      // - From the second KF on, collect the RAW IMU samples in (last_kf_ts,
+      //   ts_now] and hand them to the Tier-2 backend, which owns preintegration
+      //   (slamko::LocalSmoother contract). Empty ⇒ visual-only insert.
       // - Bootstrap velocity from the visual pose delta between consecutive
       //   KFs. BA then refines velocity + bias.
-      bool used_imu_insert = false;
+      std::vector<slamko::ImuSample> imu_for_kf;
       if (enable_imu_ && have_last_kf_) {
         if (!T_BS_resolved_) {
           // The node resolves cam→imu from TF and hands it to us via
@@ -920,8 +936,9 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
             T_BS_           = provided_T_BS_;
             ba_cfg_.T_BS    = provided_T_BS_;
             T_BS_resolved_  = true;
-            // Reset the LocalBA so the new config takes effect cleanly.
-            local_ba_ = std::make_unique<slamko_vio::LocalBA>(ba_cfg_);
+            // Push the extrinsic into the Tier-2 backend; it rebuilds its window
+            // so the new T_BS takes effect cleanly (LocalBA-rebuild parity).
+            smoother_->setExtrinsics(slamko::SE3(provided_T_BS_));
             have_last_kf_ = false;     // restart KF chain to fresh-init VI
             VIO_LOG(
                 "resolved T_BS (cam→imu): R [%.3f %.3f %.3f] t [%.3f %.3f %.3f]",
@@ -975,9 +992,20 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
                 a_mean.norm(), kGravityMag,
                 bias_lin_.bg.x(), bias_lin_.bg.y(), bias_lin_.bg.z());
             gravity_calibrated_ = true;
-            // Reset BA with calibrated gravity so the very first IMU factor
-            // sees the right physics. Clears prior visual-only KFs.
-            local_ba_ = std::make_unique<slamko_vio::LocalBA>(ba_cfg_);
+            // Push calibrated gravity (+ the IMU noise/bias-RW the backend
+            // preintegrates with) into the Tier-2 backend so the first IMU
+            // factor sees the right physics. Rebuilds the window — clears prior
+            // visual-only KFs (LocalBA-rebuild parity). T_BS is preserved.
+            slamko::ImuParams params;
+            params.gravity             = ba_cfg_.gravity_w;
+            params.accel_noise_density = imu_noise_.accel_noise_density;
+            params.gyro_noise_density  = imu_noise_.gyro_noise_density;
+            // bias random-walk: the only consumer is LocalBA's between-KF bias
+            // factor (ba_cfg_.bias_rw_*); ImuPreintegration ignores it. Pass the
+            // LocalBA values so the IMU factor stays bit-for-bit baseline.
+            params.accel_bias_rw       = ba_cfg_.bias_rw_accel;
+            params.gyro_bias_rw        = ba_cfg_.bias_rw_gyro;
+            smoother_->setImuParams(params);
             have_last_kf_      = false;
             imu_initialised_   = false;
             // Re-insert current frame as the new oldest KF below, after the
@@ -1040,9 +1068,6 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
             samples.front().t = std::max(samples.front().t, last_kf_ts_);
             samples.back().t  = std::min(samples.back().t,  ts_now);
 
-            slamko_vio::ImuPreintegration pi(bias_lin_, imu_noise_);
-            pi.integrate_span(samples.data(), samples.size());
-
             // Bootstrap velocity from visual delta if not yet initialised.
             if (!imu_initialised_) {
               const Eigen::Vector3d p_prev_w = T_w_c_at_last_kf_.inverse()
@@ -1054,42 +1079,74 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
               imu_initialised_ = true;
             }
 
-            local_ba_->insert_keyframe_with_imu(
-                ts_now, T_w_c_, velocity_w_, bias_lin_, pi,
-                K_, lids, uvs_l, uvs_r, wps);
-            used_imu_insert = true;
+            // Hand the backend the RAW (clamped) samples — it owns
+            // preintegration. CeresLocalSmoother runs the identical klt_vo
+            // ImuPreintegration internally, so this is the baseline numerically.
+            imu_for_kf.reserve(samples.size());
+            for (const auto& s : samples) {
+              slamko::ImuSample x;
+              x.timestamp = s.t;
+              x.accel     = s.a;
+              x.gyro      = s.w;
+              imu_for_kf.push_back(x);
+            }
           }
         }
       }
-      if (!used_imu_insert) {
-        local_ba_->insert_keyframe(ts_now, T_w_c_, K_, lids, uvs_l, uvs_r, wps);
+
+      // Cross into the Tier-2 contract. Parallel arrays → StereoObservation IN
+      // ORDER (world_init seeds new landmarks positionally — a reorder would
+      // rebind seeds). Pose T_w_c_ (world→cam) → T_WB (body→world):
+      // T_WB = (E·T_w_c)⁻¹ with E = T_BS_ (cam→body). Empty imu_for_kf ⇒ the
+      // backend does a visual-only insert (exact used_imu_insert parity).
+      std::vector<slamko::StereoObservation> observations;
+      observations.reserve(lids.size());
+      for (std::size_t i = 0; i < lids.size(); ++i) {
+        slamko::StereoObservation o;
+        o.landmark_id = lids[i];
+        o.uv_left     = uvs_l[i];
+        o.uv_right    = uvs_r[i];     // NaN-x already marks "no stereo match"
+        o.world_init  = wps[i];
+        observations.push_back(o);
       }
+      const slamko::SE3 T_WB_init(Eigen::Matrix4d((T_BS_ * T_w_c_).inverse()));
+      slamko::ImuBias bias_core;
+      bias_core.gyro  = bias_lin_.bg;
+      bias_core.accel = bias_lin_.ba;
+      smoother_->insertKeyframe(ts_now, T_WB_init, velocity_w_, bias_core,
+                                imu_for_kf, observations);
       // R2 maturity counter: each KF observation matures the landmark.
       for (std::uint32_t lid : lids) ++landmark_obs_count_[lid];
-      if (local_ba_->solve()) {
+      int n_live_landmarks = 0;
+      if (smoother_->optimize()) {
         ba_solved = true;
-        Eigen::Matrix4d T_refined;
-        if (local_ba_->latest_pose(T_refined)) {
-          T_w_c_ = T_refined;
-          world_pose_ = T_w_c_.inverse().cast<float>();
-        }
+        // latestPose() is T_WB; back to T_w_c_: T_w_c = E⁻¹·T_WB⁻¹ (E = T_BS_).
+        // optimize()==true ⇒ a latest KF exists, so this is always valid (the
+        // baseline's latest_pose guard only failed on an empty window).
+        T_w_c_ = T_BS_.inverse() * smoother_->latestPose().matrix().inverse();
+        world_pose_ = T_w_c_.inverse().cast<float>();
         // Pull back refined landmark world positions for IDs still in window.
         for (std::uint32_t lid : lids) {
           Eigen::Vector3d p_refined;
-          if (local_ba_->landmark_world(lid, p_refined)) {
+          if (smoother_->landmark(lid, p_refined)) {
             landmark_world_[lid] = p_refined;
+            ++n_live_landmarks;
           }
         }
         // Pull back refined velocity + bias for next-interval preintegration.
+        // (LocalBA's getters never fail post-insert ⇒ unconditional, as baseline.)
         if (enable_imu_ && T_BS_resolved_) {
-          Eigen::Vector3d v_ref;
-          slamko_vio::ImuBias b_ref;
-          if (local_ba_->latest_velocity(v_ref)) velocity_w_ = v_ref;
-          if (local_ba_->latest_bias(b_ref))     bias_lin_   = b_ref;
+          velocity_w_ = smoother_->latestVelocity();
+          const slamko::ImuBias b = smoother_->latestBias();
+          bias_lin_.bg = b.gyro;
+          bias_lin_.ba = b.accel;
         }
       }
       last_kf_ts_ = ts_now;
-      n_ba_landmarks = local_ba_->landmark_count();
+      // n_ba_landmarks: live landmarks observed this KF (LocalBA's total-window
+      // landmark_count isn't in the LocalSmoother contract). Debug CSV only —
+      // not part of any gate.
+      n_ba_landmarks = n_live_landmarks;
       first_kf_inliers_     = std::max(first_kf_inliers_, n_pnp_in);
       T_w_c_at_last_kf_     = T_w_c_;
       have_last_kf_         = true;

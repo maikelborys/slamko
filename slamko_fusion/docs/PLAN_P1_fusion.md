@@ -1,6 +1,6 @@
 # slamko_fusion — P1 plan (GTSAM fixed-lag smoother + marginalization)
 
-<!-- validated: (P1a) 2026-05-27 · tests: 4 gtest 0 fail (1 disabled→P1c) -->
+<!-- validated: (P1b) 2026-05-27 · tests: slamko_vio 23 gtest 0 fail (4 adapter parity) -->
 
 Read [`../../docs/SYSTEM.md`](../../docs/SYSTEM.md) + [`../../docs/DECOUPLING.md`](../../docs/DECOUPLING.md)
 first. Progress + numbers: [`STATUS.md`](STATUS.md).
@@ -25,8 +25,12 @@ Both behind `slamko_core::LocalSmoother`, swappable via `backend:=ceres|gtsam`.
 - **P1a ✅** — `GtsamLocalSmoother` + core `LocalSmoother`/`ImuSample`/
   `StereoObservation` + synthetic gtests (stereo SfM recovery + bounded window).
   Marginalization-under-load + precise accuracy deferred to P1c (need real IMU; see STATUS).
-- **P1b** — `CeresLocalSmoother` (wrap LocalBA) + route `VioPipeline` through the
-  contract + `backend` param + T_WB boundary. Gate: `backend:=ceres` == P0 baseline.
+- **P1b ✅** — `CeresLocalSmoother` (wraps LocalBA) + `VioPipeline` routed through
+  the contract + `backend:=ceres|gtsam` param + injection ctor (gtsam wired at the
+  node in P1c, no vio→fusion dep). Gate met via **unit-exact pass-through** (≤1e-9,
+  visual + IMU paths) — the planned "==P0 ATE" gate was unmeasurable (VIO is
+  nondeterministic run-to-run; front-end CUDA, upstream of this seam). Pre/post ATE
+  bands overlap (MH_01 Shi-Tomasi median ~0.074). Detail: `slamko_vio/docs/STATUS.md`.
 - **P1c** — `backend:=gtsam` end-to-end on EuRoC (ShiTomasi + XFeat). Gate: GTSAM ≤
   baseline ATE; window bounded; real-time. Emit health probes (degeneracy eigenvalue,
   marginal cov). Validates marginalization + IMU + accuracy for real.

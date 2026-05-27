@@ -131,3 +131,43 @@ sweeps remain available via `scripts/bench_all_euroc.sh` when needed.
 short-gap dead-reckoning, descriptors attached for reloc. Next phase: **P1
 `slamko_fusion`** (GTSAM iSAM2 + marginalization) → refactor vio onto `T_WB` + the
 `Factor` contract, guarded by this baseline.
+
+## 2026-05-27 — P1b: VioPipeline routed through the LocalSmoother contract (ceres) ✅
+
+**What:** `VioPipeline` now talks to the abstract `slamko_core::LocalSmoother`
+(`smoother_`) instead of `LocalBA` directly. New **`CeresLocalSmoother`** adapter
+(`include/src/ceres_local_smoother.*`) wraps klt_vo's `LocalBA` behind the contract,
+bridging the two boundaries: pose frame **T_WB↔T_w_c** (`T_WB = (E·T_w_c)⁻¹`,
+E = T_BS cam→body) and **raw-IMU→preintegration** (the adapter owns the klt_vo
+`ImuPreintegration`, the exact call the pipeline used to make). The two mid-stream
+`LocalBA` rebuilds (T_BS resolve, gravity calib) became `setExtrinsics`/`setImuParams`.
+A `backend:=ceres|gtsam` param + an injection ctor (`VioPipeline(cfg, unique_ptr<LocalSmoother>)`)
+let the **node** swap in `slamko_fusion::GtsamLocalSmoother` in P1c **without a vio→fusion
+dependency** (Hard Rule #2). For now `backend:=gtsam` warns + falls back to ceres.
+
+**GATE — exactness (deterministic, the real proof):** 4 gtests in
+`test_ceres_local_smoother.cpp` prove the adapter is a **byte-exact pass-through to
+LocalBA (≤1e-9)** for BOTH the visual-only AND the IMU `insert_keyframe_with_imu`
+path (pose + refined velocity + bias), plus a non-identity-extrinsic round-trip.
+`colcon test`: **23 tests, 0 failures**.
+
+**GATE — end-to-end (MH_01, Sim3-ATE, 3419 poses each):** the plan's "≤1 mm
+reproduction" gate proved **unmeasurable — the VIO is nondeterministic run-to-run**
+(~3 cm ATE spread; source = CUDA front-end atomics → `solvePnPRansac`, entirely
+**upstream of and unaffected by** this Tier-2 seam). Characterised the band instead:
+
+| binary | Shi-Tomasi ATE samples (m) | XFeat |
+|---|---|---|
+| pre-refactor (5 runs) | 0.066, 0.067, 0.080, 0.087, 0.096 | 0.054 |
+| **post-refactor ceres (4 runs)** | **0.065, 0.073, 0.074, 0.080** | **0.049** |
+
+Distributions **overlap completely** (combined Shi-Tomasi median 0.074 ≈ documented
+0.078) → behavior-preserving, consistent with the exactness proof. FPS unchanged:
+~206–211 (Shi-Tomasi) / ~81 (XFeat) — the adapter is off the per-frame hot path.
+
+**Gate restated (honest):** literal bit-reproduction is impossible (the contract
+forces poses through `slamko::SE3`, which re-normalises the quaternion ~1e-15) AND
+moot (front-end nondeterminism dominates). The **unit-exactness proof** is the gate;
+the bench confirms no end-to-end regression. **Next — P1c:** wire `backend:=gtsam` at
+the node (node gains the `slamko_fusion` dep), validate the GTSAM smoother
+end-to-end on EuRoC (marginalization + IMU + accuracy + health probes).

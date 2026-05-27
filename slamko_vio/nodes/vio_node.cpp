@@ -102,6 +102,7 @@ class VioNode : public rclcpp::Node {
     cfg.lmp_max_added_per_frame = P("lmp_max_added_per_frame", cfg.lmp_max_added_per_frame);
     cfg.lmp_image_border_px= P("lmp_image_border_px", cfg.lmp_image_border_px);
     cfg.lmp_ncc_threshold  = P("lmp_ncc_threshold", cfg.lmp_ncc_threshold);
+    cfg.backend            = P("backend", cfg.backend);
     cfg.feature_source     = P("feature_source", cfg.feature_source);
     cfg.xfeat_onnx_path    = P("xfeat_onnx_path", cfg.xfeat_onnx_path);
     cfg.xfeat_engine_path  = P("xfeat_engine_path", cfg.xfeat_engine_path);
@@ -117,6 +118,18 @@ class VioNode : public rclcpp::Node {
     child_frame_  = cfg.child_frame_id;
     publish_tf_   = cfg.publish_tf;
 
+    // Composition root for the Tier-2 backend. "ceres" (default) lets the
+    // pipeline build its own CeresLocalSmoother. "gtsam" — the slamko_fusion
+    // backend — is wired here in P1c (the node gains the slamko_fusion dep so
+    // the pipeline core stays decoupled, Hard Rule #2); for now fall back to
+    // ceres with a clear warning.
+    if (cfg.backend == "gtsam") {
+      RCLCPP_WARN(get_logger(),
+                  "backend:=gtsam lands in P1c; running ceres for now");
+    } else if (cfg.backend != "ceres") {
+      RCLCPP_WARN(get_logger(), "unknown backend '%s'; using ceres",
+                  cfg.backend.c_str());
+    }
     pipeline_ = std::make_unique<slamko_vio::VioPipeline>(cfg);
 
     using ImgSub = message_filters::Subscriber<sensor_msgs::msg::Image>;

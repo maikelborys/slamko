@@ -66,6 +66,10 @@ struct VioConfig {
   double imu_accel_noise_density = 2.0e-3;
   double imu_rate_hz             = 200.0;
   int    imu_init_warmup_samples = 80;
+  // Tier-2 fusion backend (slamko_core::LocalSmoother): "ceres" (klt_vo LocalBA,
+  // default) | "gtsam" (slamko_fusion fixed-lag smoother, wired at the node in
+  // P1c). VioPipeline itself never names a backend — see its injection ctor.
+  std::string backend            = "ceres";
 
   // dead-reckoning (Workstream R)
   bool   dr_enabled            = false;

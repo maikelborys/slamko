@@ -30,6 +30,7 @@
 #include "slamko_core/feature_source.hpp"
 #include "slamko_core/health.hpp"
 #include "slamko_core/image_view.hpp"
+#include "slamko_core/local_smoother.hpp"
 #include "slamko_core/submap.hpp"
 
 #include "slamko_vio/imu_types.hpp"
@@ -79,6 +80,11 @@ struct FrameStats {
 class VioPipeline {
  public:
   explicit VioPipeline(const VioConfig& cfg);
+  // Composition-root seam (Tier-2 backend injection). The default ctor builds a
+  // CeresLocalSmoother (klt_vo LocalBA) from cfg; this overload takes a
+  // caller-constructed backend (e.g. slamko_fusion::GtsamLocalSmoother) so the
+  // pipeline never names a concrete backend. Pass nullptr ⇒ default ceres.
+  VioPipeline(const VioConfig& cfg, std::unique_ptr<slamko::LocalSmoother> smoother);
   ~VioPipeline();
 
   // Buffer an IMU sample (thread-safe wrt processStereo).
@@ -173,7 +179,7 @@ class VioPipeline {
   std::unique_ptr<KltTracker>            tracker_;
   std::unique_ptr<StereoMatcher>         matcher_;
   std::unique_ptr<PoseEstimator>         pose_estimator_;
-  std::unique_ptr<LocalBA>               local_ba_;
+  std::unique_ptr<slamko::LocalSmoother> smoother_;       // Tier-2 backend (ceres default)
 
   // ---- device buffers ----
   std::uint8_t*  d_left_  = nullptr;

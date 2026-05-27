@@ -56,6 +56,7 @@ add_library(slamko_vio_core
   src/stereo_matcher.cu
   src/pose_estimator.cpp
   src/local_ba.cpp
+  src/ceres_local_smoother.cpp
   src/imu_preintegration.cpp
   src/pnp_cuda.cu
   src/vio_pipeline.cpp
@@ -101,7 +102,8 @@ install(DIRECTORY include/ DESTINATION include)
 if(BUILD_TESTING AND SLAMKO_VIO_BUILD_TESTS)
   find_package(ament_cmake_gtest REQUIRED)
   foreach(t test_shitomasi test_klt_tracker test_stereo_matcher
-            test_imu_preintegration test_p3p test_motion_ba)
+            test_imu_preintegration test_p3p test_motion_ba
+            test_ceres_local_smoother)
     ament_add_gtest(${t} tests/${t}.cpp)
     target_link_libraries(${t} slamko_vio_core)
   endforeach()
