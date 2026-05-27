@@ -15,6 +15,8 @@
 # usage: plot_neverlost.py --gt GT.tum --est est.tum --landmarks lm.csv --out fig.png
 #          [--loss s1 e1 s2 e2 ...] [--submaps lm.csv.submaps] [--pose-epoch est.tum.epoch]
 import argparse
+import os
+import struct
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -51,6 +53,45 @@ def load_epoch(path):
     if d.ndim == 1:
         d = d[None, :]
     return d[:, 0], d[:, 1].astype(np.int64)
+
+
+def _quat_to_R(x, y, z, w):
+    n = (x * x + y * y + z * z + w * w) ** 0.5
+    x, y, z, w = x / n, y / n, z / n, w / n
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def load_smap(path):
+    """Read a .smap (submap_io.hpp "SMP1" binary): return the landmark positions
+    already moved to the MAP frame (anchor·local). Keyframes + descriptors skipped."""
+    with open(path, "rb") as fh:
+        d = fh.read()
+    if d[:4] != b"SMP1":
+        raise SystemExit(f"{path}: bad magic {d[:4]!r}")
+    off = 4 + 8                                   # magic + id(u64)
+    q = struct.unpack_from("<7d", d, off); off += 56   # anchor quat(xyzw)+t
+    R = _quat_to_R(q[0], q[1], q[2], q[3]); t = np.array(q[4:7])
+    (nk,) = struct.unpack_from("<Q", d, off); off += 8
+    off += nk * 72                                # skip keyframes (id+ts+pose)
+    (nl,) = struct.unpack_from("<Q", d, off); off += 8
+    lm = np.frombuffer(d, offset=off,             # id u64, xyz 3d, dr i32 = 36 B packed
+                       dtype=np.dtype([("id", "<u8"), ("x", "<f8"), ("y", "<f8"),
+                                       ("z", "<f8"), ("dr", "<i4")]), count=nl)
+    xyz = np.stack([lm["x"], lm["y"], lm["z"]], axis=1)
+    return (R @ xyz.T).T + t                       # → map frame
+
+
+def load_prior_map(dirpath, max_pts=80000):
+    """All prior-submap landmarks (map frame), read via the manifest. Subsampled."""
+    ids = [int(x) for x in open(os.path.join(dirpath, "submaps.manifest"))]
+    chunks = [load_smap(os.path.join(dirpath, f"submap_{i}.smap")) for i in ids]
+    pts = np.concatenate(chunks, axis=0) if chunks else np.zeros((0, 3))
+    if len(pts) > max_pts:
+        pts = pts[:: (len(pts) + max_pts - 1) // max_pts]
+    return pts
 
 
 def correct_landmarks(ids, xyz, submaps):
@@ -108,6 +149,8 @@ def main():
     ap.add_argument("--min-obs", type=int, default=2, help="drop landmarks seen < this")
     ap.add_argument("--submaps", default="", help="<lm>.submaps: per-submap id range + welded anchor")
     ap.add_argument("--pose-epoch", default="", help="<pose>.epoch: per-frame active submap id")
+    ap.add_argument("--prior-map-dir", default="",
+                    help="prior session's saved Atlas dir — overlay its map (cross-session merge)")
     ap.add_argument("--title", default="slamko never-lost")
     a = ap.parse_args()
 
@@ -138,12 +181,23 @@ def main():
     rmse = float(np.sqrt(((xe_a[m] - xg[idx[m]]) ** 2).sum(1).mean()))
     lm_a = (s * (R @ lm_xyz.T).T) + t if lm_xyz is not None else None
 
+    # Cross-session: the prior map (already in the shared frame via its anchors) under
+    # the SAME Sim3 → it overlays the live map iff the cross-session weld was correct.
+    prior_a = None
+    if a.prior_map_dir:
+        prior_xyz = load_prior_map(a.prior_map_dir)
+        prior_a = (s * (R @ prior_xyz.T).T) + t
+
     fig, ax = plt.subplots(1, 2, figsize=(15, 7))
     panels = [(0, 1, "X (m)", "Y (m)", "top-down"), (0, 2, "X (m)", "Z (m)", "side")]
     for k, (i, j, xl, yl, name) in enumerate(panels):
+        if prior_a is not None:
+            ax[k].scatter(prior_a[:, i], prior_a[:, j], s=1.0, c="tab:orange", alpha=0.30,
+                          label=f"prior map ({len(prior_a)})", rasterized=True)
         if lm_a is not None:
-            ax[k].scatter(lm_a[:, i], lm_a[:, j], s=1.0, c="0.7", alpha=0.35,
-                          label=f"landmarks ({lm_n})", rasterized=True)
+            ax[k].scatter(lm_a[:, i], lm_a[:, j], s=1.0, c="0.5", alpha=0.40,
+                          label=f"live map ({lm_n})" if prior_a is not None
+                          else f"landmarks ({lm_n})", rasterized=True)
         ax[k].plot(xg[:, i], xg[:, j], "-", c="k", lw=2.0, label="ground truth")
         ax[k].plot(xe_a[:, i], xe_a[:, j], "-", c="tab:blue", lw=1.3,
                    label="estimate (Sim3-aligned)")
@@ -156,7 +210,13 @@ def main():
                                label="forced-loss (dead-reckon)" if w == 0 else None)
         ax[k].plot(xg[0, i], xg[0, j], "o", c="g", ms=9, label="start")
         ax[k].set_xlabel(xl); ax[k].set_ylabel(yl); ax[k].set_title(name)
-        ax[k].axis("equal"); ax[k].grid(alpha=0.3)
+        ax[k].set_aspect("equal")
+        # Zoom to the trajectory extent (+margin) so noisy far landmarks don't blow up
+        # the scale and hide the map overlap.
+        mg = 2.0
+        ax[k].set_xlim(xg[:, i].min() - mg, xg[:, i].max() + mg)
+        ax[k].set_ylim(xg[:, j].min() - mg, xg[:, j].max() + mg)
+        ax[k].grid(alpha=0.3)
     ax[0].legend(loc="best", fontsize=9)
     tag = f"  |  {len(submaps)} submaps (anchor-corrected)" if submaps else ""
     fig.suptitle(f"{a.title}   |   Sim3-ATE {rmse*100:.1f} cm   |   {m.sum()} poses{tag}",
