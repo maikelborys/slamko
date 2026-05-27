@@ -3,6 +3,13 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.descriptions import ParameterValue
+
+
+def _bool(name):
+    # Force string→bool coercion: a bare LaunchConfiguration resolves to a string,
+    # which a bool-typed node param silently rejects (the param keeps its default).
+    return ParameterValue(LaunchConfiguration(name), value_type=bool)
 
 
 def generate_launch_description():
@@ -71,7 +78,10 @@ def generate_launch_description():
             'feature_source':        feature_source,
             'backend':               backend,
             'pose_dump_path':        pose_dump,
-            'enable_neverlost':      LaunchConfiguration('enable_neverlost'),
+            'enable_neverlost':      _bool('enable_neverlost'),
+            'dr_force_loss_windows':    LaunchConfiguration('dr_force_loss_windows'),
+            'neverlost_use_pose_graph': _bool('neverlost_use_pose_graph'),
+            'neverlost_weld_once':      _bool('neverlost_weld_once'),
         }],
         remappings=[
             ('left/image_rect_raw',  '/euroc/left/image_rect_raw'),
@@ -110,6 +120,12 @@ def generate_launch_description():
             description='If set, node writes per-frame world pose as TUM (offline ATE)'),
         DeclareLaunchArgument('enable_neverlost', default_value='false',
             description='P2c: run the Tier-3 never-lost supervisor + relocalizer in-process'),
+        DeclareLaunchArgument('dr_force_loss_windows', default_value='',
+            description='Extra forced-loss windows "s:e,s:e" (sec, rel) → multiple seals'),
+        DeclareLaunchArgument('neverlost_use_pose_graph', default_value='false',
+            description='P2.5: route the weld through the SE3 pose-graph backend (multi-submap merge)'),
+        DeclareLaunchArgument('neverlost_weld_once', default_value='true',
+            description='Weld at most once per sealed target per recovery episode'),
         DeclareLaunchArgument('start_s', default_value='0.0',
             description='Crop: skip first N seconds of the sequence'),
         DeclareLaunchArgument('end_s', default_value='1000000',

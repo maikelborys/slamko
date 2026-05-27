@@ -164,6 +164,7 @@ class VioPipeline {
   bool             have_seq_t0_        = false;
   double           dr_force_loss_start_ = -1.0;
   double           dr_force_loss_end_   = -1.0;
+  std::vector<std::pair<double, double>> dr_force_loss_windows_;  // extra [start,end)s
 
   // ---- visual-rotation gyro-bias init ----
   bool             bias_g_initialised_ = false;

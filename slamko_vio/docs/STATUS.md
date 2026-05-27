@@ -216,3 +216,25 @@ publishers, SIGKILL-9 early deaths). Fixes landed: an **in-process pose→TUM du
 
 **Unit gate:** `colcon test` slamko_fusion + slamko_vio = **28 tests, 0 failures**
 (the gtsam smoother test still passes with reset + landmark mgmt + the factor fix).
+
+## 2026-05-27 — multi-window forced-loss + never-lost pose-graph node params ✅
+
+**What:** supporting hooks for the slamko_loop P2 live close-out (multi-submap merge) —
+all node/pipeline glue, no algorithm change.
+- **Multi-window forced-loss:** `VioConfig.dr_force_loss_windows` (a list of `[start,end)`
+  s, rel to seq start) + the node string param `dr_force_loss_windows="s:e,s:e"`. The
+  pipeline ORs these with the existing single `dr_force_loss_start/end_s` window, so one
+  replay can induce SEVERAL tracking-loss episodes → several sealed submaps. Backward-
+  compatible (empty list = old behavior).
+- **Never-lost params:** `neverlost_use_pose_graph` (default off) + `neverlost_weld_once`
+  (default on) plumbed into the lazily-built `SupervisorConfig` in `driveSupervisor`.
+- **Launch:** `vio_euroc.launch.py` exposes the three args; bool args go through a
+  `_bool()` = `ParameterValue(LaunchConfiguration(name), value_type=bool)` helper — a bare
+  `LaunchConfiguration` resolves to a string and a bool node-param silently keeps its
+  default (the bool analog of the `30` vs `30.0` double lesson; saw `pose_graph=0` despite
+  `:=true`).
+
+**Validated via slamko_loop** (V1_01, xfeat, 2 forced-loss windows): 2 SEALs + 2 WELDs,
+pose-graph merge of 2 sealed submaps, weld-once held (1 weld/episode). See
+`slamko_loop/docs/STATUS.md` (2026-05-27 P2 CLOSED). No new unit tests here (glue);
+the loop suite (32 gtests) + the live run are the gate.

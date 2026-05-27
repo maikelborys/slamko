@@ -147,6 +147,7 @@ VioPipeline::VioPipeline(const VioConfig& cfg,
         cfg.dr_force_loss_start_s;
     dr_force_loss_end_ =
         cfg.dr_force_loss_end_s;
+    dr_force_loss_windows_ = cfg.dr_force_loss_windows;
     // T_BS (cam-in-body): set when the static tf imu→left_rect arrives.
     bcfg.T_BS = Eigen::Matrix4d::Identity();
     bcfg.gravity_w = Eigen::Vector3d(0.0, 0.0, -9.81);
@@ -680,9 +681,11 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
         timestamp;
     if (!have_seq_t0_) { seq_t0_ = frame_ts; have_seq_t0_ = true; }
     const double t_rel = frame_ts - seq_t0_;
-    const bool forced_loss =
+    bool forced_loss =
         (dr_force_loss_start_ >= 0.0 && t_rel >= dr_force_loss_start_ &&
          t_rel < dr_force_loss_end_);
+    for (const auto& w : dr_force_loss_windows_)
+      if (t_rel >= w.first && t_rel < w.second) { forced_loss = true; break; }
 
     // ------------------------- PnP RANSAC + both-cam Ceres refine (R1 + R2)
     // R2 (mature-landmark gating): each landmark accumulates a count of how

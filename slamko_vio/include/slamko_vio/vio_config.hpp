@@ -11,6 +11,8 @@
 #pragma once
 
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace slamko_vio {
 
@@ -80,6 +82,10 @@ struct VioConfig {
   double dr_max_s              = 1.0;
   double dr_force_loss_start_s = -1.0;
   double dr_force_loss_end_s   = -1.0;
+  // Additional forced-loss windows (seconds, relative to seq start), each [start,end).
+  // Lets one replay induce SEVERAL tracking-loss episodes → several sealed submaps,
+  // for validating the multi-submap merge. The single start/end above is honored too.
+  std::vector<std::pair<double, double>> dr_force_loss_windows;
 
   // keyframe triggers
   double kf_translation_m = 0.15;

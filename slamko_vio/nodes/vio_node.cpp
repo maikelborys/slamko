@@ -13,7 +13,10 @@
 #include <fstream>
 #include <iomanip>
 #include <memory>
+#include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <rclcpp/rclcpp.hpp>
 #include <message_filters/subscriber.h>
@@ -95,6 +98,10 @@ class VioNode : public rclcpp::Node {
     cfg.dr_max_s           = P("dr_max_s", cfg.dr_max_s);
     cfg.dr_force_loss_start_s = P("dr_force_loss_start_s", cfg.dr_force_loss_start_s);
     cfg.dr_force_loss_end_s   = P("dr_force_loss_end_s", cfg.dr_force_loss_end_s);
+    // Extra forced-loss windows as "start:end,start:end,..." (seconds, rel to seq
+    // start) — induces several seals for the multi-submap merge validation.
+    cfg.dr_force_loss_windows = parseLossWindows(
+        P("dr_force_loss_windows", std::string{}));
     cfg.kf_translation_m   = P("kf_translation_m", cfg.kf_translation_m);
     cfg.kf_rotation_rad    = P("kf_rotation_rad", cfg.kf_rotation_rad);
     cfg.kf_inlier_drop     = P("kf_inlier_drop", cfg.kf_inlier_drop);
@@ -159,6 +166,10 @@ class VioNode : public rclcpp::Node {
     // from the VIO outputs. Built lazily once K + T_BS resolve (need intrinsics +
     // extrinsic). Logs seal/branch/weld; the weld re-anchors map→odom on revisit.
     neverlost_enabled_ = declare_parameter("enable_neverlost", false);
+    // P2.5 (live): route the weld through the SE3 pose-graph backend (multi-submap
+    // merge); weld-once bounds the duplicate-edge growth per episode.
+    nl_use_pose_graph_ = declare_parameter("neverlost_use_pose_graph", false);
+    nl_weld_once_      = declare_parameter("neverlost_weld_once", true);
 
     using ImgSub = message_filters::Subscriber<sensor_msgs::msg::Image>;
     using CamSub = message_filters::Subscriber<sensor_msgs::msg::CameraInfo>;
@@ -250,6 +261,24 @@ class VioNode : public rclcpp::Node {
     if (neverlost_enabled_) driveSupervisor(ts);
   }
 
+  // Parse "s:e,s:e,..." (seconds, rel to seq start) into [start,end) windows; skips
+  // malformed tokens. Empty string → no extra windows.
+  static std::vector<std::pair<double, double>> parseLossWindows(const std::string& spec) {
+    std::vector<std::pair<double, double>> out;
+    std::stringstream ss(spec);
+    std::string tok;
+    while (std::getline(ss, tok, ',')) {
+      const auto c = tok.find(':');
+      if (c == std::string::npos) continue;
+      try {
+        const double s = std::stod(tok.substr(0, c));
+        const double e = std::stod(tok.substr(c + 1));
+        if (e > s) out.emplace_back(s, e);
+      } catch (...) { /* skip malformed token */ }
+    }
+    return out;
+  }
+
   // P2c: feed the live VIO outputs to the never-lost supervisor each frame and log
   // its recovery actions. Built lazily once K + T_BS are known.
   void driveSupervisor(double ts) {
@@ -259,9 +288,13 @@ class VioNode : public rclcpp::Node {
       rc.fx = K_.fx; rc.fy = K_.fy; rc.cx = K_.cx; rc.cy = K_.cy;
       rc.body_T_cam = slamko::SE3(node_T_BS_);   // T_BS (cam→body)
       reloc_ = std::make_unique<slamko::XFeatRelocalizer>(rc);
-      supervisor_ = std::make_unique<slamko::NeverLostSupervisor>(
-          slamko::SupervisorConfig{}, reloc_.get());
-      RCLCPP_INFO(get_logger(), "[neverlost] supervisor + XFeat relocalizer up");
+      slamko::SupervisorConfig sc;
+      sc.use_pose_graph       = nl_use_pose_graph_;
+      sc.weld_once_per_target = nl_weld_once_;
+      supervisor_ = std::make_unique<slamko::NeverLostSupervisor>(sc, reloc_.get());
+      RCLCPP_INFO(get_logger(),
+                  "[neverlost] supervisor + XFeat relocalizer up (pose_graph=%d weld_once=%d)",
+                  (int)nl_use_pose_graph_, (int)nl_weld_once_);
     }
 
     // odom body pose: T_WB = T_WC · T_BS⁻¹ (worldPose is camera-in-world).
@@ -374,6 +407,8 @@ class VioNode : public rclcpp::Node {
 
   // P2c never-lost supervisor (node = composition root).
   bool neverlost_enabled_ = false;
+  bool nl_use_pose_graph_ = false;
+  bool nl_weld_once_      = true;
   Eigen::Matrix4d node_T_BS_ = Eigen::Matrix4d::Identity();
   std::unique_ptr<slamko::XFeatRelocalizer> reloc_;
   std::unique_ptr<slamko::NeverLostSupervisor> supervisor_;

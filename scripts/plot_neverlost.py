@@ -54,7 +54,8 @@ def main():
     ap.add_argument("--est", required=True)
     ap.add_argument("--landmarks", default="")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--loss", nargs=2, type=float, default=None, help="forced-loss [start end] (s, rel)")
+    ap.add_argument("--loss", nargs="+", type=float, default=None,
+                    help="forced-loss windows as flat pairs: s1 e1 [s2 e2 ...] (s, rel)")
     ap.add_argument("--min-obs", type=int, default=2, help="drop landmarks seen < this")
     ap.add_argument("--title", default="slamko never-lost")
     a = ap.parse_args()
@@ -81,10 +82,11 @@ def main():
         ax[k].plot(xe_a[:, i], xe_a[:, j], "-", c="tab:blue", lw=1.3, label="estimate (Sim3-aligned)")
         if a.loss is not None:
             tr = te - te[0]  # --loss is relative-to-start (est stamps are absolute)
-            lm_mask = (tr >= a.loss[0]) & (tr <= a.loss[1])
-            if lm_mask.any():
-                ax[k].plot(xe_a[lm_mask, i], xe_a[lm_mask, j], "-", c="tab:red", lw=3.0,
-                           label="forced-loss (dead-reckon)")
+            for w, (s0, s1) in enumerate(zip(a.loss[0::2], a.loss[1::2])):
+                lm_mask = (tr >= s0) & (tr <= s1)
+                if lm_mask.any():
+                    ax[k].plot(xe_a[lm_mask, i], xe_a[lm_mask, j], "-", c="tab:red", lw=3.0,
+                               label="forced-loss (dead-reckon)" if w == 0 else None)
         ax[k].plot(xg[0, i], xg[0, j], "o", c="g", ms=9, label="start")
         ax[k].set_xlabel(xl); ax[k].set_ylabel(yl); ax[k].set_title(name)
         ax[k].axis("equal"); ax[k].grid(alpha=0.3)

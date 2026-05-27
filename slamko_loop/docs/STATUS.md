@@ -228,6 +228,40 @@ polish the P2c log flagged (the weld re-firing every gate cycle — the V1_01 "7
 **GATE — 32 gtests, 0 failures** (`colcon test slamko_loop`; was 22). No new deps, no
 RNG in the solver (the determinism test guarantees reproducibility the VIO harness lacks).
 
+## 2026-05-27 — P2 CLOSED: multi-submap pose-graph merge validated on a live bag ✅
+
+**What:** the pose-graph backend now ran end-to-end on the live `slamko_vio_node`,
+merging **TWO sealed submaps** on a real replay — the validation gap (the backend was
+only unit-tested at scale) is closed. Wired `neverlost_use_pose_graph` + `neverlost_weld_once`
+node params (default off / on) and a multi-window forced-loss hook
+(`dr_force_loss_windows="s:e,s:e"`) so one replay induces several seals.
+
+**GATE — V1_01_easy, `feature_source:=xfeat neverlost_use_pose_graph:=true
+neverlost_weld_once:=true dr_force_loss_windows:="20:23,45:48"` (rate 1.0, ~real-time):**
+```
+t=20  forced loss → SEAL submap 0 + BRANCH 1 (odom_stale_gap 1.15s)
+      WELD branch 1 → submap 0   map→odom t=[0.40 0.53 -0.38]   → recover (state 3→0)
+t=45  forced loss → SEAL submap 1 + BRANCH 2 (odom_stale_gap 1.15s)
+      WELD branch 2 → submap 0   map→odom t=[1.85 0.71 1.54]    → recover
+```
+So the archive held **2 sealed submaps {0,1}**, and the SE3 pose graph solved over
+nodes {0 (fixed gauge), 1, 2} with edges {0→1, 0→2} on **real XFeat→PnP** weld
+consensuses — the first live multi-submap merge. **weld-once held**: exactly ONE weld
+per episode (vs the 7× of the single-loss P2c run), so the graph grew by exactly one
+edge per recovery. 1363 poses + 194.6k landmarks dumped; plot (GT + Sim3-aligned est +
+48.4k-landmark map @ min-obs 3 + both red dead-reckon segments) via
+`scripts/plot_neverlost.py --loss 20 23 45 48`. Sim3-ATE **59.9 cm** — inflated by 6 s
+of IMU-only coasting across the TWO blackouts (scale 0.991); per
+[[slamko-robustness-over-accuracy]] the win is the never-lost recovery + merge, not ATE.
+
+**Harness note:** launch passes bool params as strings; a bare `LaunchConfiguration`
+silently leaves a bool node-param at its default (saw `pose_graph=0` despite `:=true`).
+Fix = `ParameterValue(LaunchConfiguration(name), value_type=bool)` (the `_bool()` helper
+in `vio_euroc.launch.py`) — the bool analog of the `30` vs `30.0` double lesson.
+
+**P2 status: CLOSED.** Never-lost spine validated end-to-end — single-submap weld
+(P2c) and now multi-submap pose-graph merge — on real V1_01 data. Next phase is P3/P4.
+
 **Integration note (R1):** `lost_gap_s` (1.0 s default) ≥ the VIO dead-reckoning horizon
 (`dr_max_s_`=1.0) so the supervisor doesn't double-handle the ms-gap net. `odom_stale_gap_s`
 is populated by the VIO only while `in_dead_reckoning_` (gated by `dr_enabled_`, default
