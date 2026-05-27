@@ -29,6 +29,11 @@ One row per package; updated when a milestone lands (detail in each `docs/STATUS
 | `slamko_sensors` | T1 | P5 | ⬜ deferred | wheel/ZUPT → LiDAR → GPS frontends | — |
 | `slamko_semantic` | T1/T3 | P6 | ⬜ deferred | object-level factors + semantic reloc | — |
 
+**Active next task:** test on **TUM VI** (multi-floor) — needs fisheye→pinhole rectification
+first (TUM VI is equidistant fisheye; slamko_vio is pinhole). Plan:
+[`PLAN_TUMVI_RECTIFY.md`](PLAN_TUMVI_RECTIFY.md) — rectify `room1`, validate mapping
+(visual + ATE), then magistrale multi-part merge.
+
 **Visual results** (anchor-corrected merges, rendered by `scripts/plot_neverlost.py`,
 gated by `scripts/check_neverlost.py`): [`figures/multi_submap_merge_V1_01.png`](figures/multi_submap_merge_V1_01.png)
 (never-lost recovery + multi-submap merge) · [`figures/cross_session_V1_02_into_V1_01.png`](figures/cross_session_V1_02_into_V1_01.png)
