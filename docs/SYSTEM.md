@@ -1,12 +1,43 @@
 # slamko — System map (how the modules interact, now & next)
 
-<!-- validated: ed50691 2026-05-27 · tests: slamko_core 25/25 gtest -->
+<!-- validated: 91a03bd 2026-05-27 · tests: core 25/25 gtest · vio MH_01 ShiTomasi 0.078 / XFeat 0.021 -->
 
 The one-page projection of the whole system. A **map, not a textbook** — it states
 what's true now + where it's headed, and is corrected as code lands. Deep detail
 lives next to the code (header "why" blocks) and in each package's `docs/STATUS.md`.
 Read [`../CLAUDE.md`](../CLAUDE.md) + [`../MASTER_PLAN.md`](../MASTER_PLAN.md) +
 [`DECOUPLING.md`](DECOUPLING.md) alongside this.
+
+**This file is the cold-start orientation map** — start here to locate any module,
+its state, and where its notes live. Skim the table below, then dive into the
+package's `README.md` → `docs/STATUS.md` → `docs/PLAN_<phase>.md`.
+
+## Status at a glance — "where are we"
+
+One row per package; updated when a milestone lands (detail in each `docs/STATUS.md`).
+✅ shipped · 🟢 active · ⬜ planned/deferred.
+
+| Package | Tier | Phase | State | Headline | Validated |
+|---|---|---|---|---|---|
+| `slamko_core` | spine | P1 | ✅ shipped | contracts + SE3 + feature seam · 25/25 gtests | `b36ea43` |
+| `slamko_vio` | T1 | P0 | 🟢 active | Shi-Tomasi 0.078 m / XFeat-TRT 0.021 m @ ~213 fps · B3/B4 left | `91a03bd` |
+| `slamko_fusion` | T2 | P1 | ⬜ planned | GtsamBackend (iSAM2) + marginalization (Schur+FEJ) | — |
+| `slamko_loop` | T3 | P2 | ⬜ planned | never-lost supervisor + relocalizer (LiftFeat-m1) | — |
+| `slamko_msgs` | — | P4 | ⬜ planned | map-server API / status / correspondences | — |
+| `slamko_ros` | root | — | ⬜ planned | composition root + map→odom→base bridge + viz | — |
+| `slamko_mapping` | T3 | P4 | ⬜ deferred | submap persistence behind the map-server contract | — |
+| `slamko_sensors` | T1 | P5 | ⬜ deferred | wheel/ZUPT → LiDAR → GPS frontends | — |
+| `slamko_semantic` | T1/T3 | P6 | ⬜ deferred | object-level factors + semantic reloc | — |
+
+**External integration** (robot stack, *not* slamko packages): D455 driver / sim
+(`cerebro_robot_sim`) / EuRoC bag → `slamko_ros` inputs; `slamko_ros` → Nav2 + TF
+downstream. The wider workspace is mapped in [`~/coding/CLAUDE.md`](../../CLAUDE.md).
+
+**Where the notes live** (find any decision fast): architecture + *why* → this map +
+the inline header "why" blocks · what's validated, the numbers, what was
+tried-and-reverted → each package's `docs/STATUS.md` · locked decisions + roadmap →
+`MASTER_PLAN.md` · contracts → `slamko_core` headers + `DECOUPLING.md` · rules →
+`CLAUDE.md`.
 
 ## 3 tiers · 2 graphs · 3 owners
 

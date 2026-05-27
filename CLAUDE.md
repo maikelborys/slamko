@@ -13,7 +13,8 @@ root). Each package has only a short `README.md` (orientation) + `docs/`
 ## Orientation (cold start — human or LLM)
 
 **Reading order:** this file → [`MASTER_PLAN.md`](MASTER_PLAN.md) →
-[`docs/SYSTEM.md`](docs/SYSTEM.md) (how the modules interact) →
+[`docs/SYSTEM.md`](docs/SYSTEM.md) (**the cold-start map**: status-at-a-glance table +
+how the modules interact + where every note lives) →
 [`docs/DECOUPLING.md`](docs/DECOUPLING.md) (the contracts) → the package's
 `README.md` → its `docs/STATUS.md` (what's validated + the numbers) → its
 `docs/PLAN_<phase>.md` (the active plan).
