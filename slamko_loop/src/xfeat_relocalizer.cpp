@@ -115,14 +115,21 @@ void XFeatRelocalizer::addSubMap(const SubMap& submap) {
   int m = 0;
   for (const auto& lm : submap.landmarks)
     if (lm.descriptor_row >= 0 && lm.descriptor_row < submap.descriptors.rows()) ++m;
-  e.desc.resize(m, submap.descriptors.cols());
-  e.pos.reserve(m);
-  int row = 0;
+  // Stride-subsample if the map is larger than the brute-force budget.
+  const int stride = (cfg_.max_db_landmarks > 0 && m > cfg_.max_db_landmarks)
+                         ? (m + cfg_.max_db_landmarks - 1) / cfg_.max_db_landmarks
+                         : 1;
+  e.desc.resize((m + stride - 1) / stride, submap.descriptors.cols());
+  e.pos.reserve(e.desc.rows());
+  int valid = 0, row = 0;
   for (const auto& lm : submap.landmarks) {
     if (lm.descriptor_row < 0 || lm.descriptor_row >= submap.descriptors.rows()) continue;
+    if ((valid++ % stride) != 0) continue;       // keep every stride-th
+    if (row >= e.desc.rows()) break;
     e.desc.row(row++) = submap.descriptors.row(lm.descriptor_row);
     e.pos.push_back(lm.position);
   }
+  e.desc.conservativeResize(row, submap.descriptors.cols());
   db_.push_back(std::move(e));
 }
 

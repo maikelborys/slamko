@@ -63,6 +63,8 @@ RecoveryAction NeverLostSupervisor::step(const HealthSignal& h,
         gate_.reset();
         state_ = SupervisorState::Relocalizing;
         lost_count_ = 0;
+        recover_count_ = 0;
+        episode_welded_ = false;  // fresh recovery episode
       } else {
         state_ = SupervisorState::RecentlyLost;  // climbing toward Lost
       }
@@ -76,18 +78,22 @@ RecoveryAction NeverLostSupervisor::step(const HealthSignal& h,
     return act;
   }
 
-  // state_ == Lost / Relocalizing: try to re-anchor, and recover locally on
-  // sustained healthy odom (the branch is tracking fine again).
-  attemptWeld(act);
+  // state_ == Lost / Relocalizing: keep attempting the weld. We do NOT exit to OK
+  // on healthy odom alone — the re-acquired vision after the blackout is exactly
+  // what lets the branch re-anchor to the sealed map on revisit, so we stay here
+  // until WELDED (then a short dwell) or until we give up re-anchoring.
+  if (attemptWeld(act)) episode_welded_ = true;
 
-  if (gap <= cfg_.recently_lost_gap_s) {
-    if (++recover_count_ >= cfg_.recover_dwell_frames) {
-      state_ = SupervisorState::OK;
-      recover_count_ = 0;
-      gate_.reset();  // stop the recovery's relocalization attempts (loop-closure = P2.5)
-    }
-  } else {
+  if (gap <= cfg_.recently_lost_gap_s) ++recover_count_;
+  else recover_count_ = 0;
+
+  const bool recovered =
+      (episode_welded_ && recover_count_ >= cfg_.recover_dwell_frames) ||
+      (recover_count_ >= cfg_.reloc_give_up_frames);  // gave up re-anchoring
+  if (recovered) {
+    state_ = SupervisorState::OK;
     recover_count_ = 0;
+    gate_.reset();
   }
   return act;
 }

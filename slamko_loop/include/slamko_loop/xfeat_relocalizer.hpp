@@ -38,6 +38,11 @@ struct XFeatRelocConfig {
   double ransac_thresh_px = 3.0;          // reprojection inlier threshold
   int    min_inliers = 15;                // accept a relocalization above this
   unsigned seed = 1u;                     // RANSAC RNG seed (deterministic)
+  // Brute-force NN match is O(N_query · N_db · D); the cumulative submap can hold
+  // tens of thousands of landmarks. Stride-subsample a registered submap to at
+  // most this many descriptors so a relocalize() call stays cheap (a real system
+  // would use a vocabulary/inverted index — that's the scalable swap).
+  int    max_db_landmarks = 3000;
 };
 
 class XFeatRelocalizer : public Relocalizer {

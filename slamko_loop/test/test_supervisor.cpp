@@ -280,6 +280,28 @@ TEST(Supervisor, WeldComposesWithLiveOdom) {
   expectSE3Near(s.mapToOdom(), Tqm * Todom.inverse(), 1e-9);
 }
 
+// While Relocalizing, healthy odom ALONE must not recover to OK — the supervisor
+// keeps attempting the weld (the re-acquired vision on revisit is what re-anchors
+// the branch). It recovers only once WELDED (then a dwell), or after give-up.
+TEST(Supervisor, RelocalizingStaysUntilWelded) {
+  InjectableRelocalizer reloc;
+  NeverLostSupervisor s(cfg(), &reloc);
+  s.submitQueryFeatures(Features{});
+  double t = 0;
+  triggerLoss(s, t);
+  ASSERT_EQ(s.state(), SupervisorState::Relocalizing);
+  // Healthy odom but NO relocalization hit → stays Relocalizing (not OK).
+  for (int i = 0; i < 10; ++i) stepGap(s, 0.0, t);
+  EXPECT_EQ(s.state(), SupervisorState::Relocalizing);
+  // A clustered weld arrives → re-anchor, then recover to OK after the dwell.
+  const SE3 T = makeSE3(1, 0, 0, 0.1, {0, 0, 1});
+  for (int i = 0; i < 3; ++i) reloc.push(0, T, 30, 1.0);
+  bool welded = false;
+  for (int i = 0; i < 6; ++i) welded |= stepGap(s, 0.0, t).welded;
+  EXPECT_TRUE(welded);
+  EXPECT_EQ(s.state(), SupervisorState::OK);
+}
+
 // --- SubMapArchive primitives -------------------------------------------------
 
 TEST(SubMapArchive, SealBranchFindAnchor) {

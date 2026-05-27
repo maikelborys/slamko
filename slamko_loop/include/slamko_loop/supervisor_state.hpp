@@ -28,7 +28,12 @@ struct SupervisorConfig {
   double recently_lost_gap_s = 0.25;
   double lost_gap_s          = 1.0;
   int    lost_dwell_frames   = 3;   // consecutive over-threshold steps before sealing
-  int    recover_dwell_frames = 3;  // consecutive healthy steps before declaring OK
+  int    recover_dwell_frames = 3;  // healthy steps AFTER a weld before declaring OK
+  // While Relocalizing we keep attempting the weld even once odom is healthy
+  // again — the re-acquired vision is exactly what lets us re-anchor to the
+  // sealed map on revisit. Only give up (accept the branch as a standalone map,
+  // un-welded) after this many healthy steps without a weld.
+  int    reloc_give_up_frames = 400;
 
   // Lazy-anchor weld gate — THE false-relocalization defense (R2). A weld fires
   // only once weld_min_matches candidates agree within these radii (the analog of

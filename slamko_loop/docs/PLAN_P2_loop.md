@@ -29,8 +29,11 @@ OUTSIDE the estimator graph). Loss = odometry **stale-gap**, not covariance.
   gains a node-only `slamko_loop` dep, core stays decoupled). MH_01 forced-loss replay
   (`dr_force_loss=[30,33]s`): the full cycle fired on real VIO health —
   OK→RecentlyLost→**SEAL+BRANCH** (stale-gap 1.15s)→Relocalizing→recover→OK. In-process
-  logging, no rosbag2. **Follow-on:** the weld (re-anchor on revisit) needs XFeat
-  descriptors + a revisiting sequence. See STATUS.
+  logging, no rosbag2. **Weld ✅** (V1_01 XFeat, forced loss [25,28]s): the full
+  seal→branch→**WELD**→recover loop fired — the branch re-localized against the sealed
+  map via XFeat→PnP, re-anchoring map→odom (~0.2 m). Needed: supervisor stays
+  Relocalizing until welded + a relocalizer DB cap (`max_db_landmarks`). Plot via
+  `scripts/plot_neverlost.py`. See STATUS.
 - **P2.5** — loop-closure-as-factor + a tiny self-contained SE3 pose-graph solver over
   submap anchors (Gauss-Newton, uses only `se3.hpp`; try/catch → damp → drop-edge,
   Hard Rule #4). The v1 stores the edge data model so this adds only the solve loop.

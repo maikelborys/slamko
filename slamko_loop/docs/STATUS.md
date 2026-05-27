@@ -123,8 +123,37 @@ self-kills (this caused the earlier empty-output failures). Reap by PID, or in a
 separate command, or rely on the process-group kill. (3) `ros2 launch` children can
 escape the launch process group — reap leftover `euroc_player`/node by PID after.
 
-**Next:** P2c-follow-on (weld on a revisiting xfeat sequence) · P2.5 (loop-closure +
-self-contained SE3 pose-graph solver).
+## 2026-05-27 — P2c weld VALIDATED end-to-end on V1_01 (XFeat) ✅
+
+**What:** the **weld** (re-anchor on revisit) now fires on a real bag — the full
+never-lost loop **seal→branch→relocalize→WELD→recover** is closed. Two fixes made it work:
+- **Supervisor stays Relocalizing until welded** (or a give-up timeout,
+  `reloc_give_up_frames`) — it no longer exits to OK on healthy odom alone, so the
+  re-acquired vision after the blackout actually gets used to re-anchor (the earlier
+  run recovered to OK before a weld could cluster).
+- **Relocalizer DB cap** (`max_db_landmarks`, stride-subsample) — brute-force NN match
+  against the cumulative submap (tens of thousands of landmarks) would stall the node;
+  capped to keep `relocalize()` cheap (a vocabulary/inverted index is the scalable swap).
+
+**GATE — V1_01_easy (Vicon Room, `feature_source:=xfeat`, `dr_force_loss=[25,28]s`):**
+```
+t=25.0  forced loss → IMU dead-reckoning;  OK → RecentlyLost
+t=26.4  SEAL submap 0 + BRANCH 1 (odom_stale_gap 1.15s) → Relocalizing
+t=26.x  WELD to submap 0 (inliers-gated); map→odom t=[0.18 0.20 0.00]  ← XFeat re-localized
+        the branch against the sealed map; 7 welds refined map→odom (~0.2 m correction)
+t=28.0  tracking recovered → OK
+```
+So the branch's XFeat descriptors matched the **sealed** submap (same room) → PnP-RANSAC
+→ the lazy-anchor gate cleared → `map→odom` re-anchored. Plot (GT + Sim3-aligned estimate
++ 47.6k-landmark map + the red dead-reckoned loss segment) via the new
+`scripts/plot_neverlost.py`: Sim3-ATE 22.5 cm (inflated by the 3 s blackout; scale 0.9975).
+Loop unit tests: **17 gtest 0 fail** (added `RelocalizingStaysUntilWelded`).
+
+**Note:** the weld re-fires every gate cycle (7× here) — fine for v1 (each refines
+map→odom); a "weld-once-then-cooldown" is a cheap future polish.
+
+**Next:** P2.5 (loop-closure-as-factor + self-contained SE3 pose-graph solver) ·
+offline plotter is `scripts/plot_neverlost.py`.
 
 **Integration note (R1):** `lost_gap_s` (1.0 s default) ≥ the VIO dead-reckoning horizon
 (`dr_max_s_`=1.0) so the supervisor doesn't double-handle the ms-gap net. `odom_stale_gap_s`
