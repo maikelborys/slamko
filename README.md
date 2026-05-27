@@ -8,8 +8,8 @@ super-recoverable, and deliberately **simple and stable**.
 > **Status (2026-05-27):** `slamko_core` shipped (header-only spine, 25/25 tests).
 > `slamko_vio` runs a CUDA stereo-inertial tracker with a **swappable feature
 > front-end** — Shi-Tomasi (0.078 m ATE @ ~214 fps) or **XFeat-TensorRT**
-> (0.021 m, learned 64-d descriptors) on EuRoC MH_01, IMU-fused, with short-gap
-> dead-reckoning. Full state: [`docs/SYSTEM.md`](docs/SYSTEM.md).
+> (**0.049 m @ ~93 fps**, learned 64-d descriptors) on EuRoC MH_01 (equal-coverage,
+> IMU-fused, short-gap dead-reckoning). Full state: [`docs/SYSTEM.md`](docs/SYSTEM.md).
 
 ## The idea
 

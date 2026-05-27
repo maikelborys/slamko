@@ -1,6 +1,6 @@
 # slamko_vio — P0 plan (the swappable learned-feature VIO)
 
-<!-- validated: 74d1db6 2026-05-27 · tests: B1 done — MH_01 ATE 0.069 (klt_vo ref 0.090) -->
+<!-- validated: 8498021 2026-05-27 · tests: P0 shipped — equal-cov MH_01 ShiTomasi 0.078 / XFeat-TRT 0.049 -->
 
 Detailed plan for Milestone B. Read [`../../CLAUDE.md`](../../CLAUDE.md) +
 [`../../docs/SYSTEM.md`](../../docs/SYSTEM.md) +

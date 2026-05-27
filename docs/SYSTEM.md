@@ -1,6 +1,6 @@
 # slamko — System map (how the modules interact, now & next)
 
-<!-- validated: 91a03bd 2026-05-27 · tests: core 25/25 gtest · vio MH_01 ShiTomasi 0.078 / XFeat 0.021 -->
+<!-- validated: 8498021 2026-05-27 · tests: core 25/25 gtest · vio MH_01 equal-cov ShiTomasi 0.078 / XFeat 0.049 -->
 
 The one-page projection of the whole system. A **map, not a textbook** — it states
 what's true now + where it's headed, and is corrected as code lands. Deep detail
@@ -20,7 +20,7 @@ One row per package; updated when a milestone lands (detail in each `docs/STATUS
 | Package | Tier | Phase | State | Headline | Validated |
 |---|---|---|---|---|---|
 | `slamko_core` | spine | P1 | ✅ shipped | contracts + SE3 + feature seam · 25/25 gtests | `b36ea43` |
-| `slamko_vio` | T1 | P0 | 🟢 active | Shi-Tomasi 0.078 m / XFeat-TRT 0.021 m @ ~213 fps · B3/B4 left | `91a03bd` |
+| `slamko_vio` | T1 | P0 | ✅ shipped | Shi-Tomasi 0.078 m @ ~214 fps / **XFeat-TRT 0.049 m @ ~93 fps** (equal-coverage MH_01) · descriptors attached | `8498021` |
 | `slamko_fusion` | T2 | P1 | ⬜ planned | GtsamBackend (iSAM2) + marginalization (Schur+FEJ) | — |
 | `slamko_loop` | T3 | P2 | ⬜ planned | never-lost supervisor + relocalizer (LiftFeat-m1) | — |
 | `slamko_msgs` | — | P4 | ⬜ planned | map-server API / status / correspondences | — |

@@ -106,6 +106,28 @@ unbounded (klt_vo's cumulative map never prunes) — fine for a session, but the
 index should be restricted to submap-keyframe landmarks once submap management lands
 in slamko_loop.
 
-**Next — B4 (reduced, per user):** skip the exhaustive compare-all; one full-coverage
-XFeat run (cached engine) to confirm the 0.021 m ATE holds beyond partial coverage,
-keeping Shi-Tomasi as the fallback baseline.
+## 2026-05-27 — B4: XFeat full-coverage validation (Milestone B closed) ✅
+
+**What:** with the engine cached (~1 s startup, no build-drop), re-ran XFeat on the
+full MH_01 sequence — **3682 frames processed, 3419 poses (equal coverage to the
+Shi-Tomasi baseline)**, at rate 1.0 (real-time-capable, ~93 fps).
+
+**Equal-coverage A/B (MH_01, IMU-on, Sim3-ATE, both 3419 poses):**
+
+| front-end | ATE RMSE | mean | median | fps |
+|---|---|---|---|---|
+| Shi-Tomasi (baseline) | 0.078 m | 0.073 | 0.065 | ~214 |
+| **XFeat-TRT** | **0.049 m** | 0.045 | 0.040 | ~93 |
+
+**Verdict:** XFeat is **~37 % better** on equal coverage — a real, honest win (the
+earlier 0.021 m was a partial-coverage artifact from the one-time engine build
+dropping frames). XFeat keypoints track fine under KLT and stay real-time. Shi-Tomasi
+stays as the fast fallback. **No exhaustive multi-sequence compare-all run** (per user
+— XFeat is the chosen path; comparing-to-win adds nothing). Multi-sequence regression
+sweeps remain available via `scripts/bench_all_euroc.sh` when needed.
+
+**Milestone B (P0) closed:** swappable learned-feature VIO — ROS-agnostic
+`VioPipeline`, Shi-Tomasi/XFeat behind `slamko_core::FeatureSource`, IMU-fused,
+short-gap dead-reckoning, descriptors attached for reloc. Next phase: **P1
+`slamko_fusion`** (GTSAM iSAM2 + marginalization) → refactor vio onto `T_WB` + the
+`Factor` contract, guarded by this baseline.
