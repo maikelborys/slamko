@@ -369,3 +369,19 @@ auto-check learned the no-loss case (stayed-OK = success; "welds don't worsen AT
 **P4b status: cross-session localization complete** — both reactive (forced-loss recovery,
 P4b-1) and proactive (continuous reloc in OK, P4b-2). Next: cross-session merge VIZ (overlay
 the prior `.smap` landmarks with the live map in one frame) + split `slamko_mapping`.
+
+## 2026-05-27 — cross-session validated on a DIFFERENT trajectory (V1_02 → V1_01) ✅
+
+The earlier P4b runs replayed the SAME sequence (V1_01→V1_01). The honest test is a
+**different trajectory** localizing into a prior map. Built the V1_01 Atlas (`map_save_dir`),
+then ran **V1_02_medium** (faster, different path, same Vicon room) with `prior_map_dir` +
+`continuous_reloc`, no forced loss:
+```
+loaded 1 prior submaps
+WELD to submap 0 [CROSS-SESSION/prior map]   ← t≈15s, OK state, map→odom [0.07 0.02 -0.40]
+```
+V1_02 recognized V1_01's room from a new viewpoint and anchored into its frame — a **real
+41 cm** cross-session offset (vs ~2 cm for the identical replay). `check_neverlost.py`
+**7/7 PASS** (seals 0, weld 1, anchor 0.41 m, ATE 25 cm). Merge plot: V1_02's live map
+overlaps V1_01's prior map in the room. So prior-map relocalization works from a genuinely
+new path — the deploy-relevant case. (No code change — validation only; reuses P4b.)
