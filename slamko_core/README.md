@@ -18,11 +18,12 @@ until slamko_mapping is split out (P4).
 
 **Implements:** the interfaces themselves (abstract). **Consumes:** —.
 **Depends on:** nothing.
-**Status:** planned (Phase P1 — defined alongside slamko_fusion).
+**Status:** ✅ **shipped** (P1) — contracts + SE3 + `LocalSmoother` + health signals,
+plus **SubMap serialization** (`submap_io.hpp`, P4a: the map-persistence schema for
+cross-session). 26 gtests, 0 fail. `SubMap` lives here until `slamko_mapping` splits out.
 
-**Starting cold here?** Read the 3 hub docs above + this file, then enter plan
-mode → `docs/PLAN_P1_core.md`. The interface sketches in `../docs/DECOUPLING.md`
-are the starting point.
+**Starting cold here?** Read the 3 hub docs above + this file + `docs/STATUS.md`. The
+interface contracts are in `../docs/DECOUPLING.md`.
 
 **Doc rule:** on green tests → update `docs/STATUS.md` + bump validated stamps →
 commit code+docs together (`../docs/DOC_PROCESS.md`).

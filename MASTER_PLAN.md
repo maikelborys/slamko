@@ -68,18 +68,20 @@ relocalizer default **LiftFeat-m1** (un-boosted; beats XFeat, BoW-stable) · Apa
 
 ## 5. Roadmap (each phase → a module's detailed plan, made in plan mode)
 
-| Phase | Module(s) | What |
-|---|---|---|
-| **P0** | slamko_vio | Solidify S1: gravity init ✅, IMU dead-reckoning ✅, **feature compare-all ATE** (ShiTomasi vs XFeat vs LiftFeat-m1), full-suite validation |
-| **P1** | slamko_core, slamko_fusion | `Factor`/`Frontend`/`Backend` interfaces; **add marginalization**; GTSAM adapter |
-| **P2** | slamko_loop | Never-lost core: state machine + archive + decoupled supervisor + catch-damp-rebuild |
-| **P3** | slamko_reloc | LiftFeat-m1 + DBoW relocalizer; descriptor map; cheap weld |
-| **P4** | slamko_mapping, slamko_msgs | Submap persistence + map-server contract + multi-session |
-| **P5** | slamko_sensors | Wheel+ZUPT → LiDAR plane/line → GPS → (objects in semantic) |
-| **P6** | slamko_semantic | Object-level factors, semantic map layers, semantic reloc |
+| Phase | Module(s) | What | State |
+|---|---|---|---|
+| **P0** | slamko_vio | Solidify S1: gravity init, IMU dead-reckoning, feature compare-all ATE (ShiTomasi vs XFeat), full-suite validation | ✅ |
+| **P1** | slamko_core, slamko_fusion | `Factor`/`Frontend`/`Backend` + `LocalSmoother` interfaces; **marginalization**; GTSAM adapter (tracks MH_01) | ✅ |
+| **P2** | slamko_loop | Never-lost core: state machine + archive + decoupled supervisor + catch-damp-rebuild; **+P2.5** SE3 pose-graph backend (loop-closure-as-factor). Full seal→branch→WELD→recover + multi-submap merge live on V1_01 | ✅ |
+| **P3** | slamko_loop / reloc | **XFeat reloc + cheap weld ✅** (done in P2b — no separate package); LiftFeat-m1 deferred; **DBoW / inverted-index** for scalable place-rec = the remaining piece | 🟢 partial |
+| **P4** | slamko_core → slamko_mapping, slamko_msgs | **Submap persistence ✅** (`submap_io.hpp`) + **multi-session ✅** (load prior map → relocalize, reactive + continuous). map-server contract + package split = remaining | 🟢 active |
+| **P5** | slamko_sensors | Wheel+ZUPT → LiDAR plane/line → GPS → (objects in semantic) | ⬜ |
+| **P6** | slamko_semantic | Object-level factors, semantic map layers, semantic reloc | ⬜ |
 
-Sequencing: lean base solid (P0) → extensible (P1) → never-lost spine (P2, the
-priority) → recovery (P3) → persistence (P4) → sensors (P5) → semantics (P6).
+Sequencing: lean base solid (P0 ✅) → extensible (P1 ✅) → never-lost spine (P2 ✅, the
+priority) → recovery/reloc (P3 🟢) → persistence/multi-session (P4 🟢) → sensors (P5) →
+semantics (P6). **Note:** P3/P4 interleaved early because cross-session persistence reuses
+the same relocalizer + pose-graph weld as in-session recovery (one Atlas, one weld machine).
 
 ## 6. Open items
 Migrate klt_vo → slamko_vio (when P0 closes). Wire a Claude Code hook to run

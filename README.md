@@ -5,13 +5,20 @@ Strong like ORB-SLAM3 / OKVIS2-X / VILENS, but built from a small core where **e
 sensor and capability is a plugin behind a contract — not a rewrite.** Fast, robust,
 super-recoverable, and deliberately **simple and stable**.
 
-> **Status (2026-05-27):** `slamko_core` shipped (header-only spine, 25/25 tests).
-> `slamko_vio` runs a CUDA stereo-inertial tracker with a **swappable feature
-> front-end** — Shi-Tomasi (0.078 m ATE @ ~214 fps) or **XFeat-TensorRT**
-> (**0.049 m @ ~93 fps**, learned 64-d descriptors) on EuRoC MH_01 (equal-coverage,
-> IMU-fused, short-gap dead-reckoning). `slamko_fusion` (P1, in progress): a GTSAM
-> fixed-lag smoother with **marginalization** is built behind the `LocalSmoother`
-> contract. Full state + status table: [`docs/SYSTEM.md`](docs/SYSTEM.md).
+> **Status (2026-05-27) — the never-lost loop is closed end-to-end, including across
+> sessions.** `slamko_core` shipped (header-only spine + map serialization, 26 tests).
+> `slamko_vio` runs a CUDA stereo-inertial tracker with a **swappable feature front-end**
+> — Shi-Tomasi (0.078 m ATE @ ~214 fps) or **XFeat-TensorRT** (**0.049 m @ ~93 fps**,
+> learned 64-d descriptors) on EuRoC MH_01 — routed through a pluggable `LocalSmoother`
+> (ceres **or** GTSAM). `slamko_fusion` (**P1 ✅**): GTSAM fixed-lag smoother +
+> **marginalization**, tracks MH_01 end-to-end. `slamko_loop` (**P2 ✅ + P2.5**): the
+> never-lost supervisor + XFeat relocalizer + a self-contained **SE3 pose-graph backend**
+> (loop-closure-as-factor) — full `seal → branch → relocalize → WELD → recover` and
+> **multi-submap merge** validated live on V1_01. **Cross-session (P4a/P4b ✅):** the Atlas
+> persists to disk and a fresh session **relocalizes into a prior map** — both reactively
+> (after a loss) and proactively (continuous reloc while OK). Every run is gated by
+> `scripts/check_neverlost.py` (PASS/FAIL, no eyeballing). Full state + numbers:
+> [`docs/SYSTEM.md`](docs/SYSTEM.md).
 
 ## The idea
 
@@ -24,11 +31,13 @@ extractor means surgery on the whole estimator). slamko is built to avoid both.
 | When vision degrades | What catches it | Where |
 |---|---|---|
 | blur / occlusion (ms–0.5 s) | IMU + constant-velocity **dead-reckoning** | `slamko_vio` ✅ |
-| medium loss (seconds) | **archive-don't-discard**: seal the submap, branch a fresh one, keep emitting odometry | `slamko_loop` (P2) |
-| kidnap / long loss | **relocalize** by appearance + weld with one pose constraint | `slamko_loop` (P2/P3) |
+| medium loss (seconds) | **archive-don't-discard**: seal the submap, branch a fresh one, keep emitting odometry | `slamko_loop` ✅ |
+| kidnap / long loss / new session | **relocalize** by XFeat appearance + **weld** as a pose-graph factor; merges multiple submaps and **prior-session maps** | `slamko_loop` ✅ |
 
 Loss is detected by the **odometry stale-gap**, not a covariance spike — a blackout
-*pauses* odometry, it doesn't inflate uncertainty (the OKVIS2-X lesson).
+*pauses* odometry, it doesn't inflate uncertainty (the OKVIS2-X lesson). All three nets
+are validated end-to-end on EuRoC V1_01 (forced-loss + cross-session replays), gated by
+`scripts/check_neverlost.py`.
 
 **2. Pluggable — everything is a `Factor` behind a contract.** A sensor frontend
 turns a measurement into factors `{keys, residual, √information, robust_kernel}`; a
@@ -65,14 +74,15 @@ glossary in [`docs/SYSTEM.md`](docs/SYSTEM.md).
 
 | Package | Role |
 |---|---|
-| **`slamko_core`** | contracts (`Factor`/`SensorFrontend`/`FactorGraphBackend`/`FeatureSource`/`Relocalizer`) + types + SE3 + health signals. Header-only, Eigen-only. ✅ |
-| **`slamko_vio`** | the fast visual-inertial tracker: swappable feature front-end (Shi-Tomasi / XFeat-TRT / LiftFeat-m1) + KLT + stereo + PnP + IMU + dead-reckoning. 🟢 |
-| **`slamko_fusion`** | GTSAM fixed-lag smoother + marginalization (Schur + FEJ), the VILENS heart. _P1 in progress: `GtsamLocalSmoother` built; vio wiring + EuRoC validation next._ |
-| **`slamko_loop`** | global graph + loop closure + relocalization + the never-lost supervisor. _planned (P2)_ |
-| **`slamko_msgs`** | ROS 2 interface defs (map-server API). _planned (P4)_ |
+| **`slamko_core`** | contracts (`Factor`/`SensorFrontend`/`FactorGraphBackend`/`FeatureSource`/`Relocalizer`) + types + SE3 + health signals + **SubMap serialization**. Header-only, Eigen-only. ✅ |
+| **`slamko_vio`** | the fast visual-inertial tracker: swappable feature front-end (Shi-Tomasi / XFeat-TRT) + KLT + stereo + PnP + IMU + dead-reckoning, routed through `LocalSmoother` (ceres/gtsam). Disjoint per-submap maps. ✅ |
+| **`slamko_fusion`** | GTSAM fixed-lag smoother + marginalization (Schur + FEJ), the VILENS heart, behind `LocalSmoother`. Tracks MH_01 end-to-end. ✅ |
+| **`slamko_loop`** | global graph + **SE3 pose-graph backend** (loop-closure-as-factor) + XFeat relocalization + the never-lost supervisor + cross-session Atlas seeding. ✅ |
+| **`slamko_msgs`** | ROS 2 interface defs (map-server API). _planned (P4, with map-server)_ |
 | **`slamko_ros`** | ROS 2 integration: nodes, `map→odom→base` bridge, visualization. _planned_ |
 
-Deferred until their phase: `slamko_mapping` (P4), `slamko_sensors` (P5),
+Deferred until their phase: `slamko_mapping` (P4 — map persistence lives in `slamko_core`
+for now; splits out with the map-server contract), `slamko_sensors` (P5),
 `slamko_semantic` (P6).
 
 ## Build & run
@@ -86,6 +96,21 @@ source install/setup.bash
 # EuRoC bench (needs ~/datasets/euroc + the euroc_publisher workspace):
 bash scripts/bench_ate.sh MH_01_easy                         # Shi-Tomasi baseline
 ros2 launch slamko_vio vio_euroc.launch.py seq:=<MH_01> feature_source:=xfeat  # XFeat-TRT
+
+# Never-lost + cross-session: session 1 maps + saves the Atlas; session 2 loads it
+# and relocalizes into it (continuous reloc, no loss needed).
+ros2 launch slamko_vio vio_euroc.launch.py seq:=<V1_01> feature_source:=xfeat \
+  enable_neverlost:=true neverlost_use_pose_graph:=true \
+  map_save_dir:=/tmp/site_map                                # build + persist
+ros2 launch slamko_vio vio_euroc.launch.py seq:=<V1_01> feature_source:=xfeat \
+  enable_neverlost:=true neverlost_use_pose_graph:=true neverlost_continuous_reloc:=true \
+  prior_map_dir:=/tmp/site_map                               # relocalize into prior map
+
+# Validate any never-lost run (PASS/FAIL gate) + plot the corrected/merged map:
+python3 scripts/check_neverlost.py --log run.log --gt GT.tum --est est.tum \
+  --submaps est_lm.csv.submaps --pose-epoch est.tum.epoch
+python3 scripts/plot_neverlost.py --gt GT.tum --est est.tum --landmarks est_lm.csv \
+  --submaps est_lm.csv.submaps --pose-epoch est.tum.epoch --prior-map-dir /tmp/site_map --out merge.png
 ```
 
 ## Docs
