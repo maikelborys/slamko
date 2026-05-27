@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <deque>
@@ -103,6 +104,14 @@ class VioPipeline {
   const std::vector<StereoTrack>& tracks() const { return tracks_; }
   slamko::HealthSignal health() const { return health_; }
   std::uint32_t frameIdx() const { return frame_idx_; }
+  // Largest landmark id created so far. IDs are monotonic, so this is the seam
+  // between pre- and post- a given instant — used by the node to partition the
+  // map per never-lost submap (everything ≤ this belongs to the just-sealed one).
+  std::uint64_t maxLandmarkId() const {
+    std::uint64_t m = 0;
+    for (const auto& kv : landmark_world_) m = std::max<std::uint64_t>(m, kv.first);
+    return m;
+  }
 
   // Assemble the current global map as a slamko_core::SubMap (landmarks +
   // their XFeat descriptor index). One submap for now; submap splitting is P2.

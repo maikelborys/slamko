@@ -161,6 +161,10 @@ class VioNode : public rclcpp::Node {
       pose_dump_.open(cfg.pose_dump_path);
       RCLCPP_INFO(get_logger(), "pose dump (TUM) -> %s", cfg.pose_dump_path.c_str());
     }
+    // Never-lost map reconstruction: remember the dump paths; the per-frame epoch
+    // file + per-submap sidecar are opened/written once neverlost_enabled_ is known.
+    nl_landmark_dump_path_ = cfg.landmark_dump_path;
+    nl_pose_dump_path_     = cfg.pose_dump_path;
 
     // P2c: the Tier-3 never-lost supervisor + XFeat relocalizer, driven in-process
     // from the VIO outputs. Built lazily once K + T_BS resolve (need intrinsics +
@@ -170,6 +174,8 @@ class VioNode : public rclcpp::Node {
     // merge); weld-once bounds the duplicate-edge growth per episode.
     nl_use_pose_graph_ = declare_parameter("neverlost_use_pose_graph", false);
     nl_weld_once_      = declare_parameter("neverlost_weld_once", true);
+    if (neverlost_enabled_ && !nl_pose_dump_path_.empty())
+      pose_epoch_.open(nl_pose_dump_path_ + ".epoch");  // per-frame "ts submap_id"
 
     using ImgSub = message_filters::Subscriber<sensor_msgs::msg::Image>;
     using CamSub = message_filters::Subscriber<sensor_msgs::msg::CameraInfo>;
@@ -194,7 +200,34 @@ class VioNode : public rclcpp::Node {
     tf_pub_   = std::make_shared<tf2_ros::TransformBroadcaster>(*this);
   }
 
+  ~VioNode() override { writeSubmapSidecar(); }
+
  private:
+  // At shutdown, write "<landmark_dump>.submaps": for each never-lost submap, the
+  // landmark-id range it owns + its final (welded) anchor. The offline viz uses this
+  // to place each submap's landmarks in the corrected MAP frame (map = anchor·odom),
+  // making the merge visible instead of the raw drifted odom-frame cloud.
+  void writeSubmapSidecar() {
+    if (!neverlost_enabled_ || nl_landmark_dump_path_.empty() || !supervisor_) return;
+    std::ofstream f(nl_landmark_dump_path_ + ".submaps");
+    if (!f.is_open()) return;
+    f << "submap_id,id_lo,id_hi,a00,a01,a02,a03,a10,a11,a12,a13,a20,a21,a22,a23\n";
+    auto rows = seal_idhi_;  // sealed submaps, in seal order
+    rows.emplace_back(supervisor_->archive().activeId(), pipeline_->maxLandmarkId());
+    std::uint64_t lo = 1;
+    for (const auto& [sid, hi] : rows) {
+      const slamko::SubMap* s = supervisor_->archive().find(sid);
+      const Eigen::Matrix4d A = s ? s->anchor.matrix() : Eigen::Matrix4d::Identity();
+      f << sid << ',' << lo << ',' << hi;
+      for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 4; ++c) f << ',' << std::setprecision(9) << A(r, c);
+      f << '\n';
+      lo = hi + 1;
+    }
+    RCLCPP_INFO(get_logger(), "[neverlost] wrote %zu-submap map sidecar -> %s.submaps",
+                rows.size(), nl_landmark_dump_path_.c_str());
+  }
+
   using SyncPolicy = message_filters::sync_policies::ApproximateTime<
       sensor_msgs::msg::Image, sensor_msgs::msg::Image,
       sensor_msgs::msg::CameraInfo, sensor_msgs::msg::CameraInfo>;
@@ -331,6 +364,10 @@ class VioNode : public rclcpp::Node {
       // Register the just-sealed submap so the relocalizer can match against it.
       const auto& sealed = supervisor_->archive().sealed();
       if (!sealed.empty()) reloc_->addSubMap(sealed.back());
+      // Landmark-id seam: everything created so far belongs to the just-sealed
+      // submap (ids are monotonic) — lets the offline map reconstruction place
+      // each landmark in the corrected frame via its submap's welded anchor.
+      seal_idhi_.emplace_back(a.sealed_id, pipeline_->maxLandmarkId());
       RCLCPP_WARN(get_logger(),
                   "[neverlost] SEAL submap %lu + BRANCH %lu (odom_stale_gap=%.2fs)",
                   (unsigned long)a.sealed_id, (unsigned long)a.branched_id, h.odom_stale_gap_s);
@@ -360,6 +397,13 @@ class VioNode : public rclcpp::Node {
                  << t.x() << ' ' << t.y() << ' ' << t.z() << ' '
                  << q.x() << ' ' << q.y() << ' ' << q.z() << ' ' << q.w() << '\n';
       pose_dump_.flush();  // complete lines stay durable even if the run is killed
+      // Lockstep epoch line (same frames as the TUM dump): which submap is active
+      // now, so this pose can later be moved into the corrected map frame.
+      if (pose_epoch_.is_open()) {
+        const std::uint64_t sid = supervisor_ ? supervisor_->archive().activeId() : 0;
+        pose_epoch_ << std::fixed << std::setprecision(9) << ts << ' ' << sid << '\n';
+        pose_epoch_.flush();
+      }
     }
 
     nav_msgs::msg::Odometry odom;
@@ -409,6 +453,9 @@ class VioNode : public rclcpp::Node {
   bool neverlost_enabled_ = false;
   bool nl_use_pose_graph_ = false;
   bool nl_weld_once_      = true;
+  std::string nl_landmark_dump_path_, nl_pose_dump_path_;
+  std::ofstream pose_epoch_;  // per-frame "ts active_submap_id" (corrected-map viz)
+  std::vector<std::pair<std::uint64_t, std::uint64_t>> seal_idhi_;  // (submap_id, max_lm_id@seal)
   Eigen::Matrix4d node_T_BS_ = Eigen::Matrix4d::Identity();
   std::unique_ptr<slamko::XFeatRelocalizer> reloc_;
   std::unique_ptr<slamko::NeverLostSupervisor> supervisor_;

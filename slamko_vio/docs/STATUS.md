@@ -238,3 +238,17 @@ all node/pipeline glue, no algorithm change.
 pose-graph merge of 2 sealed submaps, weld-once held (1 weld/episode). See
 `slamko_loop/docs/STATUS.md` (2026-05-27 P2 CLOSED). No new unit tests here (glue);
 the loop suite (32 gtests) + the live run are the gate.
+
+## 2026-05-27 — per-submap map sidecars for never-lost merge viz ✅
+
+**What:** glue so the merged multi-submap map can be visualized in the corrected frame
+(the raw `landmark_dump`/`pose_dump` are the uncorrected odom frame — DR drift baked in).
+- `VioPipeline::maxLandmarkId()` — landmark IDs are monotonic, so this is the creation
+  seam used to partition the map per never-lost submap.
+- Node: records the id seam at each SEAL → writes `<landmark_dump>.submaps` at shutdown
+  (per-submap `id_lo,id_hi` + the final welded anchor 3×4) + a per-frame
+  `<pose_dump>.epoch` (active submap id, lockstep with the TUM dump).
+- `scripts/plot_neverlost.py --submaps --pose-epoch` applies each submap's anchor
+  (`map = anchor·odom`) before the Sim3 fit. Detail: `slamko_loop/docs/STATUS.md`
+  (2026-05-27 merge visualization fix). On V1_01: Sim3-ATE 56.9 → 31.1 cm with the
+  correction; submap 2's anchor was a ~49° rotation + 2.43 m (the measured blackout-2 drift).

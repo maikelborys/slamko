@@ -5,8 +5,15 @@
 # the SAME transform is applied to the landmarks so everything overlays in the GT
 # frame. Renders top-down (X-Y) + side (X-Z) panels to a PNG. No ROS.
 #
+# Never-lost CORRECTED-MAP mode (--submaps / --pose-epoch): the raw dumps are in
+# the continuous VIO odom frame, so dead-reckoning drift across a tracking blackout
+# leaves the post-blackout submap shifted/rotated. The never-lost WELD measures that
+# drift as each submap's anchor (map = anchor·odom). Given the per-submap sidecars
+# the node writes, we move each submap's landmarks + each pose into the corrected MAP
+# frame BEFORE the Sim3 fit — so the plot shows the merged map, not the drifted one.
+#
 # usage: plot_neverlost.py --gt GT.tum --est est.tum --landmarks lm.csv --out fig.png
-#                          [--loss 25 28] [--title "..."]
+#          [--loss s1 e1 s2 e2 ...] [--submaps lm.csv.submaps] [--pose-epoch est.tum.epoch]
 import argparse
 import numpy as np
 import matplotlib
@@ -23,7 +30,49 @@ def load_landmarks(path):
     d = np.loadtxt(path, delimiter=",", skiprows=1)  # id,x,y,z,obs
     if d.ndim == 1:
         d = d[None, :]
-    return d[:, 1:4], d[:, 4]
+    return d[:, 0].astype(np.int64), d[:, 1:4], d[:, 4]  # id, xyz, obs
+
+
+def load_submaps(path):
+    """Per-submap id range + welded anchor (3×4 row-major). Returns list of
+    (id, id_lo, id_hi, R[3×3], t[3])."""
+    r = np.loadtxt(path, delimiter=",", skiprows=1)
+    if r.ndim == 1:
+        r = r[None, :]
+    out = []
+    for row in r:
+        A = row[3:15].reshape(3, 4)
+        out.append((int(row[0]), int(row[1]), int(row[2]), A[:, :3].copy(), A[:, 3].copy()))
+    return out
+
+
+def load_epoch(path):
+    d = np.loadtxt(path)            # ts active_submap_id
+    if d.ndim == 1:
+        d = d[None, :]
+    return d[:, 0], d[:, 1].astype(np.int64)
+
+
+def correct_landmarks(ids, xyz, submaps):
+    """map = anchor·odom, per landmark, by which submap's id range owns it."""
+    out = xyz.copy()
+    for _, lo, hi, R, t in submaps:
+        msk = (ids >= lo) & (ids <= hi)
+        if msk.any():
+            out[msk] = (R @ xyz[msk].T).T + t
+    return out
+
+
+def correct_poses(ts, xyz, ets, esid, submaps):
+    """Move each pose into the corrected map frame via its active submap's anchor."""
+    anchor = {sid: (R, t) for sid, _, _, R, t in submaps}
+    out = xyz.copy()
+    j = np.clip(np.searchsorted(ets, ts), 0, len(ets) - 1)
+    for i in range(len(ts)):
+        a = anchor.get(int(esid[j[i]]))
+        if a is not None:
+            out[i] = a[0] @ xyz[i] + a[1]
+    return out
 
 
 def umeyama(src, dst):
@@ -57,29 +106,47 @@ def main():
     ap.add_argument("--loss", nargs="+", type=float, default=None,
                     help="forced-loss windows as flat pairs: s1 e1 [s2 e2 ...] (s, rel)")
     ap.add_argument("--min-obs", type=int, default=2, help="drop landmarks seen < this")
+    ap.add_argument("--submaps", default="", help="<lm>.submaps: per-submap id range + welded anchor")
+    ap.add_argument("--pose-epoch", default="", help="<pose>.epoch: per-frame active submap id")
     ap.add_argument("--title", default="slamko never-lost")
     a = ap.parse_args()
 
     tg, xg = load_tum(a.gt)
     te, xe = load_tum(a.est)
+
+    # Never-lost correction: move poses + landmarks into the merged MAP frame using
+    # the welded per-submap anchors, BEFORE the Sim3 fit to GT.
+    submaps = load_submaps(a.submaps) if a.submaps else None
+    if submaps and a.pose_epoch:
+        ets, esid = load_epoch(a.pose_epoch)
+        xe = correct_poses(te, xe, ets, esid, submaps)
+
+    lm_xyz = lm_n = None
+    if a.landmarks:
+        lid, lm_all, obs = load_landmarks(a.landmarks)
+        keep = obs >= a.min_obs
+        lid, lm_xyz = lid[keep], lm_all[keep]
+        if submaps:
+            lm_xyz = correct_landmarks(lid, lm_xyz, submaps)
+        lm_n = len(lm_xyz)
+
     m, idx = associate(te, tg)
     if m.sum() < 10:
         raise SystemExit(f"too few GT↔est associations ({m.sum()})")
     s, R, t = umeyama(xe[m], xg[idx[m]])           # est → GT frame
     xe_a = (s * (R @ xe.T).T) + t                  # aligned estimate
     rmse = float(np.sqrt(((xe_a[m] - xg[idx[m]]) ** 2).sum(1).mean()))
+    lm_a = (s * (R @ lm_xyz.T).T) + t if lm_xyz is not None else None
 
     fig, ax = plt.subplots(1, 2, figsize=(15, 7))
     panels = [(0, 1, "X (m)", "Y (m)", "top-down"), (0, 2, "X (m)", "Z (m)", "side")]
     for k, (i, j, xl, yl, name) in enumerate(panels):
-        if a.landmarks:
-            lm, obs = load_landmarks(a.landmarks)
-            lm = lm[obs >= a.min_obs]
-            lm_a = (s * (R @ lm.T).T) + t
+        if lm_a is not None:
             ax[k].scatter(lm_a[:, i], lm_a[:, j], s=1.0, c="0.7", alpha=0.35,
-                          label=f"landmarks ({len(lm_a)})", rasterized=True)
+                          label=f"landmarks ({lm_n})", rasterized=True)
         ax[k].plot(xg[:, i], xg[:, j], "-", c="k", lw=2.0, label="ground truth")
-        ax[k].plot(xe_a[:, i], xe_a[:, j], "-", c="tab:blue", lw=1.3, label="estimate (Sim3-aligned)")
+        ax[k].plot(xe_a[:, i], xe_a[:, j], "-", c="tab:blue", lw=1.3,
+                   label="estimate (Sim3-aligned)")
         if a.loss is not None:
             tr = te - te[0]  # --loss is relative-to-start (est stamps are absolute)
             for w, (s0, s1) in enumerate(zip(a.loss[0::2], a.loss[1::2])):
@@ -91,10 +158,13 @@ def main():
         ax[k].set_xlabel(xl); ax[k].set_ylabel(yl); ax[k].set_title(name)
         ax[k].axis("equal"); ax[k].grid(alpha=0.3)
     ax[0].legend(loc="best", fontsize=9)
-    fig.suptitle(f"{a.title}   |   Sim3-ATE {rmse*100:.1f} cm   |   {m.sum()} poses", fontsize=13)
+    tag = f"  |  {len(submaps)} submaps (anchor-corrected)" if submaps else ""
+    fig.suptitle(f"{a.title}   |   Sim3-ATE {rmse*100:.1f} cm   |   {m.sum()} poses{tag}",
+                 fontsize=13)
     fig.tight_layout()
     fig.savefig(a.out, dpi=130)
-    print(f"wrote {a.out}  (ATE={rmse*100:.2f} cm, scale={s:.4f}, {m.sum()} assoc poses)")
+    print(f"wrote {a.out}  (ATE={rmse*100:.2f} cm, scale={s:.4f}, {m.sum()} assoc poses"
+          f"{', ' + str(len(submaps)) + ' submaps' if submaps else ''})")
 
 
 if __name__ == "__main__":

@@ -262,6 +262,31 @@ in `vio_euroc.launch.py`) — the bool analog of the `30` vs `30.0` double lesso
 **P2 status: CLOSED.** Never-lost spine validated end-to-end — single-submap weld
 (P2c) and now multi-submap pose-graph merge — on real V1_01 data. Next phase is P3/P4.
 
+## 2026-05-27 — merge VISUALIZATION fix: anchor-corrected map (the welds were right) ✅
+
+**Symptom (user):** in the live multi-submap plot the sealed submaps looked "shifted,
+one turned." **Root cause (NOT a seal bug):** the VIO landmark + pose dumps are the raw
+continuous **odom frame** — dead-reckoning drift across each forced blackout is baked in,
+and the never-lost weld correction (each submap's `anchor`, i.e. `map = anchor·odom`) was
+**never applied to the dumps.** The `.submaps` sidecar makes it concrete: submap 0 = gauge
+(identity), submap 1 anchor = small (the 0.33 m weld), **submap 2 anchor = a ~49° rotation
++ 2.43 m shift** — exactly the yaw+translation DR drift the user saw as "turned" (3 s of
+IMU-only with the known gravity-direction error). The weld *measured* it correctly.
+
+**Fix (viz/reconstruction, no algorithm change):** the node now tags the map by submap —
+the landmark-id seam at each SEAL (`pipeline_->maxLandmarkId()`; IDs are monotonic) →
+`<lm>.submaps` (per-submap id range + final welded anchor) + a per-frame `<pose>.epoch`
+(active submap id). `scripts/plot_neverlost.py --submaps --pose-epoch` moves each submap's
+landmarks/poses into the merged MAP frame via its anchor BEFORE the Sim3 fit. Result on
+V1_01: the cloud tightens into one coherent room and **Sim3-ATE drops 56.9 → 31.1 cm**
+purely from applying the welds — the quantitative proof the merge realigns the submaps.
+
+**Honest residual:** a single rigid anchor per submap fixes the submap's *placement*, not
+the *intra-blackout* trajectory wiggle (continuous DR drift), so the red dead-reckon
+segments still bend; a fully clean map needs re-integration from the corrected poses (P4
+mapping) or shorter/again-bounded blackouts. The never-lost contract — never lost, re-anchor
+on revisit — holds; map polish is P4.
+
 **Integration note (R1):** `lost_gap_s` (1.0 s default) ≥ the VIO dead-reckoning horizon
 (`dr_max_s_`=1.0) so the supervisor doesn't double-handle the ms-gap net. `odom_stale_gap_s`
 is populated by the VIO only while `in_dead_reckoning_` (gated by `dr_enabled_`, default
