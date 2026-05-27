@@ -85,6 +85,28 @@ Deferred until their phase: `slamko_mapping` (P4 — map persistence lives in `s
 for now; splits out with the map-server contract), `slamko_sensors` (P5),
 `slamko_semantic` (P6).
 
+## Results — what it looks like
+
+Validated end-to-end on EuRoC V1 (Vicon room). Submaps are **connected via the
+pose-graph, never fused** — the "merged" map is the union of `anchor·landmarks`, so each
+panel below overlays the anchor-corrected submaps in one frame (ground truth black,
+estimate blue, landmarks grey/orange). Every run is gated by `scripts/check_neverlost.py`
+(PASS/FAIL); figures rendered by `scripts/plot_neverlost.py`.
+
+**Never-lost recovery + multi-submap merge (single session).** Two forced tracking
+blackouts → seal + branch + relocalize + WELD; the disjoint submaps re-anchor into one
+coherent room (Sim3-ATE 16.9 cm; the red segments are the IMU dead-reckoning through each
+blackout).
+
+![multi-submap merge](docs/figures/multi_submap_merge_V1_01.png)
+
+**Cross-session relocalization.** A *different* trajectory (V1_02, faster path) loads
+V1_01's saved map and localizes into it — orange = the prior map from disk, grey = the live
+map, overlapping in the room (real 41 cm cross-session offset; weld in the OK state, no loss
+needed; Sim3-ATE 25 cm).
+
+![cross-session V1_02 into V1_01](docs/figures/cross_session_V1_02_into_V1_01.png)
+
 ## Build & run
 
 ```bash

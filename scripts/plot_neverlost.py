@@ -152,6 +152,7 @@ def main():
     ap.add_argument("--prior-map-dir", default="",
                     help="prior session's saved Atlas dir — overlay its map (cross-session merge)")
     ap.add_argument("--title", default="slamko never-lost")
+    ap.add_argument("--dpi", type=int, default=130, help="output PNG dpi (lower = smaller file)")
     a = ap.parse_args()
 
     tg, xg = load_tum(a.gt)
@@ -222,7 +223,7 @@ def main():
     fig.suptitle(f"{a.title}   |   Sim3-ATE {rmse*100:.1f} cm   |   {m.sum()} poses{tag}",
                  fontsize=13)
     fig.tight_layout()
-    fig.savefig(a.out, dpi=130)
+    fig.savefig(a.out, dpi=a.dpi)
     print(f"wrote {a.out}  (ATE={rmse*100:.2f} cm, scale={s:.4f}, {m.sum()} assoc poses"
           f"{', ' + str(len(submaps)) + ' submaps' if submaps else ''})")
 

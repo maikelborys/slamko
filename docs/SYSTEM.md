@@ -29,6 +29,11 @@ One row per package; updated when a milestone lands (detail in each `docs/STATUS
 | `slamko_sensors` | T1 | P5 | ⬜ deferred | wheel/ZUPT → LiDAR → GPS frontends | — |
 | `slamko_semantic` | T1/T3 | P6 | ⬜ deferred | object-level factors + semantic reloc | — |
 
+**Visual results** (anchor-corrected merges, rendered by `scripts/plot_neverlost.py`,
+gated by `scripts/check_neverlost.py`): [`figures/multi_submap_merge_V1_01.png`](figures/multi_submap_merge_V1_01.png)
+(never-lost recovery + multi-submap merge) · [`figures/cross_session_V1_02_into_V1_01.png`](figures/cross_session_V1_02_into_V1_01.png)
+(cross-session: a different trajectory localized into a prior map). See the README "Results" section.
+
 **External integration** (robot stack, *not* slamko packages): D455 driver / sim
 (`cerebro_robot_sim`) / EuRoC bag → `slamko_ros` inputs; `slamko_ros` → Nav2 + TF
 downstream. The wider workspace is mapped in [`~/coding/CLAUDE.md`](../../CLAUDE.md).
