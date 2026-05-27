@@ -9,7 +9,9 @@ super-recoverable, and deliberately **simple and stable**.
 > `slamko_vio` runs a CUDA stereo-inertial tracker with a **swappable feature
 > front-end** — Shi-Tomasi (0.078 m ATE @ ~214 fps) or **XFeat-TensorRT**
 > (**0.049 m @ ~93 fps**, learned 64-d descriptors) on EuRoC MH_01 (equal-coverage,
-> IMU-fused, short-gap dead-reckoning). Full state: [`docs/SYSTEM.md`](docs/SYSTEM.md).
+> IMU-fused, short-gap dead-reckoning). `slamko_fusion` (P1, in progress): a GTSAM
+> fixed-lag smoother with **marginalization** is built behind the `LocalSmoother`
+> contract. Full state + status table: [`docs/SYSTEM.md`](docs/SYSTEM.md).
 
 ## The idea
 
@@ -65,7 +67,7 @@ glossary in [`docs/SYSTEM.md`](docs/SYSTEM.md).
 |---|---|
 | **`slamko_core`** | contracts (`Factor`/`SensorFrontend`/`FactorGraphBackend`/`FeatureSource`/`Relocalizer`) + types + SE3 + health signals. Header-only, Eigen-only. ✅ |
 | **`slamko_vio`** | the fast visual-inertial tracker: swappable feature front-end (Shi-Tomasi / XFeat-TRT / LiftFeat-m1) + KLT + stereo + PnP + IMU + dead-reckoning. 🟢 |
-| **`slamko_fusion`** | GTSAM iSAM2 fixed-lag smoother + marginalization (Schur + FEJ). _planned (P1)_ |
+| **`slamko_fusion`** | GTSAM fixed-lag smoother + marginalization (Schur + FEJ), the VILENS heart. _P1 in progress: `GtsamLocalSmoother` built; vio wiring + EuRoC validation next._ |
 | **`slamko_loop`** | global graph + loop closure + relocalization + the never-lost supervisor. _planned (P2)_ |
 | **`slamko_msgs`** | ROS 2 interface defs (map-server API). _planned (P4)_ |
 | **`slamko_ros`** | ROS 2 integration: nodes, `map→odom→base` bridge, visualization. _planned_ |
