@@ -23,6 +23,7 @@
 #include <algorithm>
 
 #include "slamko_vio/feature/shitomasi_source.hpp"
+#include "slamko_vio/feature/xfeat_source.hpp"
 
 #define VIO_LOG(fmt, ...) std::fprintf(stderr, "[slamko_vio] " fmt "\n", ##__VA_ARGS__)
 
@@ -49,10 +50,24 @@ VioPipeline::VioPipeline(const VioConfig& cfg) {
     scfg.grid_cols   = cfg.grid_cols;
     scfg.grid_rows   = cfg.grid_rows;
     scfg.k_per_cell  = cfg.k_per_cell;
-    // The detector is swappable behind slamko_core::FeatureSource. B1b wires the
-    // Shi-Tomasi baseline; B2 registers XFeatSource here instead (cfg.feature_source).
-    feature_source_ = std::make_unique<ShiTomasiSource>(
-        image_width_, image_height_, scfg);
+    // The detector is swappable behind slamko_core::FeatureSource. Select the
+    // backend by cfg.feature_source ("shitomasi" baseline | "xfeat" TRT). KLT
+    // tracking is unchanged either way (the doc-13 "XFeat-detect + KLT-track").
+    if (cfg.feature_source == "xfeat") {
+      XFeatConfig xc;
+      xc.input_width  = image_width_;
+      xc.input_height = image_height_;
+      xc.max_keypoints = max_corners_;
+      xc.keypoint_threshold = (float)cfg.xfeat_keypoint_threshold;
+      xc.onnx_file   = cfg.xfeat_onnx_path;
+      xc.engine_file = cfg.xfeat_engine_path;
+      feature_source_ = std::make_unique<XFeatSource>(xc);
+      VIO_LOG("feature_source = xfeat (onnx=%s)", cfg.xfeat_onnx_path.c_str());
+    } else {
+      feature_source_ = std::make_unique<ShiTomasiSource>(
+          image_width_, image_height_, scfg);
+      VIO_LOG("feature_source = shitomasi");
+    }
 
     slamko_vio::KltTracker::Config kcfg;
     kcfg.pyramid_levels = pyramid_lvls_;

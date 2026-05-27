@@ -27,6 +27,8 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
+#include <ament_index_cpp/get_package_share_directory.hpp>
+
 #include "slamko_core/image_view.hpp"
 #include "slamko_vio/vio_pipeline.hpp"
 #include "slamko_vio/types.hpp"
@@ -101,6 +103,13 @@ class VioNode : public rclcpp::Node {
     cfg.lmp_image_border_px= P("lmp_image_border_px", cfg.lmp_image_border_px);
     cfg.lmp_ncc_threshold  = P("lmp_ncc_threshold", cfg.lmp_ncc_threshold);
     cfg.feature_source     = P("feature_source", cfg.feature_source);
+    cfg.xfeat_onnx_path    = P("xfeat_onnx_path", cfg.xfeat_onnx_path);
+    cfg.xfeat_engine_path  = P("xfeat_engine_path", cfg.xfeat_engine_path);
+    cfg.xfeat_keypoint_threshold = P("xfeat_keypoint_threshold", cfg.xfeat_keypoint_threshold);
+    if (cfg.feature_source == "xfeat" && cfg.xfeat_onnx_path.empty()) {
+      cfg.xfeat_onnx_path =
+          ament_index_cpp::get_package_share_directory("slamko_vio") + "/models/xfeat.onnx";
+    }
 
     image_width_  = cfg.image_width;
     image_height_ = cfg.image_height;

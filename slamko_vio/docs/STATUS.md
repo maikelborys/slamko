@@ -64,5 +64,29 @@ contract without a tracking-state rework that would risk the baseline — and KL
 in the primary "XFeat-detect + KLT-track" config regardless. The `FeatureSource`
 (detector) seam is the one B2 needs; KLT remains a pipeline-internal stage for now.
 
-**Next — B2:** XFeat-TRT `FeatureSource` (port AirSLAM `xfeat.cpp` + `xfeat_postproc.cu`,
-build the 752×480 engine), wire XFeat-detect + KLT-track, `feature_source:=xfeat`.
+## 2026-05-27 — B2: XFeat-TRT FeatureSource (primary config) ✅
+
+**What:** ported AirSLAM's XFeat extractor + the Apache `tensorrtbuffer` utils into
+`slamko_vio` (**host post-proc only** — dropped the optional CUDA-postproc path;
+local plain `XFeatConfig`, no yaml). Added **`XFeatSource : slamko::FeatureSource`**
+(`ImageView`→`cv::Mat`→TRT `infer`→`Features` with 64-d L2 descriptors). VioPipeline
+selects `shitomasi|xfeat` by config; KLT tracking unchanged (doc-13 "XFeat-detect +
+KLT-track"). CMake discovers + links TensorRT 10 (`nvinfer`+`nvonnxparser`); the
+752×480 ONNX is installed to share and the engine builds on first run (cached to
+`/tmp/slamko_vio_xfeat_752x480.engine`). `feature_source:=xfeat` exposed via launch.
+
+**GATE — MH_01_easy, `feature_source:=xfeat`:** valid trajectory produced, no crash.
+Per-frame **10.7 ms total / 4.73 ms XFeat detect** (≈ AirSLAM's ~4.5 ms), **healthy
+tracking** (active ~1400, PnP inliers ~1000 — XFeat keypoints track fine under KLT,
+contradicting the doc-13 flow worry). **ATE 0.0211 m RMSE** on the tracked portion.
+
+**Coverage caveat (bench artifact, not a VIO bug):** only 848/3682 frames produced
+poses — the one-time ~30 s engine build blocked node startup (player streamed
+meanwhile → dropped frames) + the XFeat path is sub-real-time at rate 1.0. Engine is
+now cached (deserialize ~1 s), so this won't recur. The **fair equal-coverage A/B is
+B4's job** (pre-built engine + a sustainable replay rate / per-frame mode). Build:
+only benign TensorRT-10 deprecation warnings from NVIDIA's `common.h`.
+
+**Next — B3:** attach XFeat 64-d descriptors to mature landmarks at KF rate →
+populate `SubMap.descriptors` (reloc map for free). **B4:** feature compare-all
+(Shi-Tomasi vs XFeat) at equal coverage — Sim3-ATE + un-aligned divergence + FPS.

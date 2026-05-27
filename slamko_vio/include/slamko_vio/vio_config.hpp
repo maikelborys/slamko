@@ -97,6 +97,10 @@ struct VioConfig {
 
   // feature front-end selector (B2): "shitomasi" | "xfeat"
   std::string feature_source = "shitomasi";
+  // XFeat-TRT (used only when feature_source == "xfeat")
+  std::string xfeat_onnx_path;                                   // node fills from share/
+  std::string xfeat_engine_path = "/tmp/slamko_vio_xfeat_752x480.engine";
+  double      xfeat_keypoint_threshold = 0.05;
 };
 
 }  // namespace slamko_vio

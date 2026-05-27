@@ -22,6 +22,7 @@ def generate_launch_description():
     dr_enabled     = LaunchConfiguration('dr_enabled')
     dr_loss_start  = LaunchConfiguration('dr_force_loss_start_s')
     dr_loss_end    = LaunchConfiguration('dr_force_loss_end_s')
+    feature_source = LaunchConfiguration('feature_source')
 
     player = Node(
         package='euroc_publisher',
@@ -65,6 +66,7 @@ def generate_launch_description():
             'dr_enabled':         dr_enabled,
             'dr_force_loss_start_s': dr_loss_start,
             'dr_force_loss_end_s':   dr_loss_end,
+            'feature_source':        feature_source,
         }],
         remappings=[
             ('left/image_rect_raw',  '/euroc/left/image_rect_raw'),
@@ -95,6 +97,8 @@ def generate_launch_description():
         DeclareLaunchArgument('dr_enabled', default_value='true'),
         DeclareLaunchArgument('dr_force_loss_start_s', default_value='-1.0'),
         DeclareLaunchArgument('dr_force_loss_end_s', default_value='-1.0'),
+        DeclareLaunchArgument('feature_source', default_value='shitomasi',
+            description='Detector backend: shitomasi | xfeat'),
         DeclareLaunchArgument('start_s', default_value='0.0',
             description='Crop: skip first N seconds of the sequence'),
         DeclareLaunchArgument('end_s', default_value='1000000',

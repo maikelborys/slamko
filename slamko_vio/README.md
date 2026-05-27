@@ -15,9 +15,11 @@ when P0 closes. Detailed prior docs: `~/coding/klt_vo/docs/13` + `docs/14`.
 
 **Implements:** `SensorFrontend` (+ IMU & reprojection `Factor`s). **Uses:**
 `CeresBackend` as the S1 inner loop. **Depends on:** slamko_core (+ CUDA, Ceres).
-**Status:** **B1 done** — klt_vo ported + building, MH_01 baseline reproduced
-(ATE 0.069 m vs klt_vo ref 0.090, ~210 fps). **Phase P0** in progress: B1b decompose
-behind the FeatureSource/Tracker seam → B2 XFeat-TRT → feature compare-all. See
+**Status:** **B1+B1b+B2 done** — klt_vo ported, decomposed into a ROS-agnostic
+`VioPipeline` + thin node, detector swappable behind `slamko_core::FeatureSource`
+(`feature_source:=shitomasi|xfeat`). Shi-Tomasi baseline ATE 0.078 m @ ~213 fps;
+**XFeat-TRT** functional (ATE 0.021 m, 4.7 ms detect). **Phase P0** remaining: B3
+descriptor@KF → B4 feature compare-all (equal-coverage A/B). See
 [`docs/PLAN_P0_vio.md`](docs/PLAN_P0_vio.md) + [`docs/STATUS.md`](docs/STATUS.md).
 
 **Build + bench:**
