@@ -18,6 +18,16 @@ yet SIMPLE and STABLE.** Five principles (one per reference system):
 4. **Decouple at a published map contract** (DigiForest) — odom ⊥ reloc ⊥ mapping ⊥ map-server.
 5. **Recovery = state machine + archive-restart, not merge** (ORB-SLAM3) — heavy merge optional/S2.
 
+## Package structure (start lean: 6)
+
+Start at **6 packages** — `core, vio, fusion, loop, msgs, ros` — not 12. The
+pluggability lives in `slamko_core`'s interfaces, not in package count; split more
+out only when a phase's code crosses a real boundary (so contracts aren't frozen
+before data flows). **Deferred:** `slamko_mapping` (P4), `slamko_sensors` (P5),
+`slamko_semantic` (P6). Folded: reloc→loop (libtorch as optional target), viz→ros,
+bench→`scripts/`. Health is designed-in (signal ifaces in core, policy in loop).
+Grounded in how GLIM/Kimera (≈1 lib) and OKVIS (~13, matured) actually package.
+
 ## 1. Architecture — 3 tiers, 2 graphs
 
 - **Tier 1 · Frontends** (`slamko_vio`, `slamko_sensors`, `slamko_semantic`): each

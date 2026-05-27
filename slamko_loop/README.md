@@ -9,8 +9,12 @@ OK→RECENTLY_LOST→LOST + **archive-don't-discard** + the user's validated
 **seal→branch→relocalize→merge** (decoupled, gates OUTSIDE the graph); (3)
 **defensive numerics** (GLIM): disposable global graph, catch singular-system →
 damp → rebuild from odometry. Loss detection = **odometry stale-gap** (not covariance).
+(4) **relocalization** (folded in): LiftFeat-m1 default place-recognition + weld;
+the libtorch/TRT extractor is an **optional build target**, not a package.
+(5) the **health POLICY**: the Good/Marginal/Lost state machine + watchdogs +
+recovery triggers ARE this supervisor (health *signals* come from core/vio/fusion).
 
-**Depends on:** slamko_core, slamko_mapping, slamko_reloc. **Owns:** `map→odom`.
+**Depends on:** slamko_core only. **Owns:** `map→odom`.
 **Status:** planned. **Phase P2 — the priority feature.**
 
 **Starting cold here?** Read the 3 hub docs + this + the user's OKVIS2-X

@@ -7,7 +7,9 @@ Part of **slamko** — read [`../CLAUDE.md`](../CLAUDE.md) + [`../MASTER_PLAN.md
 implementations together (composition root) and exposes them to ROS 2. Nodes,
 launch files, and the **bridge** that owns the Nav2 contract: `/map` (latched),
 `/tf` (`map→odom→base_link`), `/odom`, lifecycle gating on localization status.
-Mirrors the proven `okvis_nav2_bridge` pattern.
+Mirrors the proven `okvis_nav2_bridge` pattern. **Also hosts visualization**
+(rviz panels: submaps, segment graph, health/localization status); offline Plotly
+viz lives in `../scripts/`.
 
 **Depends on:** all `slamko_*` + slamko_msgs. **Status:** planned (after the
 modules it composes exist).

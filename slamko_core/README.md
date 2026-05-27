@@ -8,6 +8,14 @@ Part of **slamko** — read [`../CLAUDE.md`](../CLAUDE.md) + [`../MASTER_PLAN.md
 `NodeKey`/`NodeType`, `RobustKernel`, SE3/manifold helpers. **Header-light, zero
 heavy deps** (Eigen only). Everything depends on this; this depends on nothing.
 
+**Also owns cross-cutting infra** (GLIM `common/`+`util/` model): time-sync /
+buffering (TimeKeeper, interpolatable trajectory buffer, thread-safe queues),
+config + per-platform presets, structured logging, map **serialization schema**,
+frame conventions, and the **health-signal interfaces** (probes `vio`/`fusion`
+emit). The "easy-to-forget" pieces every reference built into core (GLIM) or
+painfully retrofitted (OKVIS2-X). Still thin on *algorithms*. `SubMap` lives here
+until slamko_mapping is split out (P4).
+
 **Implements:** the interfaces themselves (abstract). **Consumes:** —.
 **Depends on:** nothing.
 **Status:** planned (Phase P1 — defined alongside slamko_fusion).

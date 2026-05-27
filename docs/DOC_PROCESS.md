@@ -6,10 +6,12 @@ that makes that happen — a convention + one guard script. No heavy tooling.
 
 ## The three doc layers (per module)
 
-Every `slamko_*` module carries exactly three docs (create on first real work):
+The **single authoritative instructions doc is the root `../CLAUDE.md`** (always
+loaded; holds the orchestrator role, system map, and these rules). Per package,
+NO per-module CLAUDE.md — instead three docs (create on first real work):
 
-1. **`CLAUDE.md`** — orientation: role, how it fits the system (links to root
-   `../CLAUDE.md` + `../MASTER_PLAN.md`), the contracts it implements/consumes,
+1. **`README.md`** — short orientation: role, how it fits the system (links to
+   root `../CLAUDE.md` + `../MASTER_PLAN.md`), contracts it implements/consumes,
    build + test command, current status. Update when the **interface / build /
    contract** changes.
 2. **`docs/ARCHITECTURE.md`** — how it works (the design, the math, key files).

@@ -5,7 +5,9 @@ Part of **slamko** — read [`../CLAUDE.md`](../CLAUDE.md) + [`../MASTER_PLAN.md
 
 **Role:** the fast local tracker. Feature front-end (**Shi-Tomasi / XFeat /
 LiftFeat-m1**, swappable) + **KLT** flow + stereo + PnP + IMU preintegration +
-**dead-reckoning on tracking loss** (const-vel+gyro). Emits factors; owns `odom→base`.
+**dead-reckoning on tracking loss** (const-vel+gyro) + **re-entrant VI
+initialization** (gravity/bias — NOT a one-shot latch; re-triggerable by the
+health supervisor, the gap that stops OKVIS self-recovering). Emits factors; owns `odom→base`.
 
 **Seeded by `~/coding/klt_vo`** (functional CUDA stereo VIO: MH_01 ATE 0.054 m
 VIO @ ~240 fps; gravity-locked init; short-gap IMU dead-reckoning). Migrate here
