@@ -41,6 +41,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_contracts test/test_contracts.cpp)
   target_link_libraries(test_contracts slamko_core)
+
+  ament_add_gtest(test_submap_io test/test_submap_io.cpp)
+  target_link_libraries(test_submap_io slamko_core)
 endif()
 
 ament_package()

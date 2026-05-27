@@ -1,6 +1,6 @@
 # slamko — System map (how the modules interact, now & next)
 
-<!-- validated: 2026-05-27 (P2 CLOSED) · tests: core 25/25 · fusion 4 + vio 24 + loop 32 gtest 0 fail · gtsam tracks MH_01 · never-lost seal→branch→WELD→recover + MULTI-SUBMAP pose-graph merge (2 sealed) validated end-to-end on live V1_01 (XFeat) · SE3 pose-graph backend + stress suite + weld-once -->
+<!-- validated: 2026-05-27 (P2 CLOSED · P4a) · tests: core 26 + fusion 4 + vio 24 + loop 32 gtest 0 fail · gtsam tracks MH_01 · never-lost seal→branch→WELD→recover + MULTI-SUBMAP pose-graph merge (2 disjoint sealed) validated live on V1_01 (XFeat, auto-check 7/7) · SE3 pose-graph + stress + weld-once + disjoint submaps + SubMap serialization (P4a) -->
 
 The one-page projection of the whole system. A **map, not a textbook** — it states
 what's true now + where it's headed, and is corrected as code lands. Deep detail
@@ -19,13 +19,13 @@ One row per package; updated when a milestone lands (detail in each `docs/STATUS
 
 | Package | Tier | Phase | State | Headline | Validated |
 |---|---|---|---|---|---|
-| `slamko_core` | spine | P1 | ✅ shipped | contracts + SE3 + feature seam · 25/25 gtests | `b36ea43` |
+| `slamko_core` | spine | P1 | ✅ shipped | contracts + SE3 + feature seam + **SubMap serialization (`submap_io.hpp`, P4a)** · 26 gtests | `e7a1953`+ |
 | `slamko_vio` | T1 | P0/P1b | ✅ shipped | Shi-Tomasi 0.078 m @ ~214 fps / **XFeat-TRT 0.049 m @ ~93 fps** (equal-coverage MH_01) · descriptors attached · **routed through `LocalSmoother` (ceres), `backend:=ceres\|gtsam`** | `8498021`+ |
 | `slamko_fusion` | T2 | P1 | ✅ shipped | GtsamLocalSmoother; **P1b** ceres routing (unit-exact); **P1c** `backend:=gtsam` injected at node, **tracks MH_01 end-to-end 0 smoother-fails, real-time** (fixed latent CombinedImuFactor arg-order bug + landmark mgmt). Full-seq ATE + default-flip deferred (box harness) | `8498021`+ |
 | `slamko_loop` | T3 | **P2 ✅ CLOSED** | ✅ shipped | never-lost supervisor + XFeat relocalizer + **SE3 pose-graph backend** (loop-closure-as-factor, GN+LM, drop-bad-edge) + weld-once. **Validated end-to-end on live V1_01 (XFeat): single-submap weld (P2c) AND multi-submap pose-graph merge** (2 sealed submaps, 2 welds, nodes{0,1,2}/edges{0→1,0→2}). 32 gtests 0 fail (incl. 10-test stress suite: 30-submap chain, 5×5 grid loops, outlier-drop, deterministic, gauge-free stability) | `0139e29`+ |
 | `slamko_msgs` | — | P4 | ⬜ planned | map-server API / status / correspondences | — |
 | `slamko_ros` | root | — | ⬜ planned | composition root + map→odom→base bridge + viz | — |
-| `slamko_mapping` | T3 | P4 | ⬜ deferred | submap persistence behind the map-server contract | — |
+| `slamko_mapping` | T3 | P4 | 🟢 starting | **P4a ✅** SubMap (de)serialization in `slamko_core` (`submap_io.hpp`); next: node save/load + cross-session weld (P4b), then split the package | — |
 | `slamko_sensors` | T1 | P5 | ⬜ deferred | wheel/ZUPT → LiDAR → GPS frontends | — |
 | `slamko_semantic` | T1/T3 | P6 | ⬜ deferred | object-level factors + semantic reloc | — |
 
