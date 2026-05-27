@@ -1,6 +1,6 @@
 # slamko — System map (how the modules interact, now & next)
 
-<!-- validated: 2026-05-27 (P2.5) · tests: core 25/25 · fusion 4 + vio 24 + loop 22 gtest 0 fail · gtsam tracks MH_01 · full never-lost seal→branch→WELD→recover validated end-to-end on V1_01 (XFeat forced-loss) · SE3 pose-graph backend (loop-closure-as-factor) -->
+<!-- validated: 2026-05-27 (P2.5+hardening) · tests: core 25/25 · fusion 4 + vio 24 + loop 32 gtest 0 fail · gtsam tracks MH_01 · full never-lost seal→branch→WELD→recover validated end-to-end on V1_01 (XFeat forced-loss) · SE3 pose-graph backend (loop-closure-as-factor) + stress suite + weld-once polish -->
 
 The one-page projection of the whole system. A **map, not a textbook** — it states
 what's true now + where it's headed, and is corrected as code lands. Deep detail
@@ -22,7 +22,7 @@ One row per package; updated when a milestone lands (detail in each `docs/STATUS
 | `slamko_core` | spine | P1 | ✅ shipped | contracts + SE3 + feature seam · 25/25 gtests | `b36ea43` |
 | `slamko_vio` | T1 | P0/P1b | ✅ shipped | Shi-Tomasi 0.078 m @ ~214 fps / **XFeat-TRT 0.049 m @ ~93 fps** (equal-coverage MH_01) · descriptors attached · **routed through `LocalSmoother` (ceres), `backend:=ceres\|gtsam`** | `8498021`+ |
 | `slamko_fusion` | T2 | P1 | ✅ shipped | GtsamLocalSmoother; **P1b** ceres routing (unit-exact); **P1c** `backend:=gtsam` injected at node, **tracks MH_01 end-to-end 0 smoother-fails, real-time** (fixed latent CombinedImuFactor arg-order bug + landmark mgmt). Full-seq ATE + default-flip deferred (box harness) | `8498021`+ |
-| `slamko_loop` | T3 | P2 | 🟢 active | **P2a/b/c ✅** never-lost supervisor + XFeat relocalizer wired into the live VIO; **full seal→branch→relocalize→WELD→recover validated end-to-end on V1_01 (XFeat, forced loss)**. **P2.5 ✅** self-contained SE3 **pose-graph backend** (loop-closure-as-factor over submap anchors, GN+LM, drop-bad-edge; opt-in `use_pose_graph`, single-weld≡closed-form). 22 gtests 0 fail | `6a2e95d`+ |
+| `slamko_loop` | T3 | P2 | 🟢 active | **P2a/b/c ✅** never-lost supervisor + XFeat relocalizer wired into the live VIO; **full seal→branch→relocalize→WELD→recover validated end-to-end on V1_01 (XFeat, forced loss)**. **P2.5 ✅** self-contained SE3 **pose-graph backend** (loop-closure-as-factor over submap anchors, GN+LM, drop-bad-edge; opt-in `use_pose_graph`, single-weld≡closed-form) + stress suite (30-submap chain, 5×5 grid loops, outlier-drop, deterministic, gauge-free stability) + weld-once polish. 32 gtests 0 fail | `58ef6e2`+ |
 | `slamko_msgs` | — | P4 | ⬜ planned | map-server API / status / correspondences | — |
 | `slamko_ros` | root | — | ⬜ planned | composition root + map→odom→base bridge + viz | — |
 | `slamko_mapping` | T3 | P4 | ⬜ deferred | submap persistence behind the map-server contract | — |

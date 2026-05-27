@@ -1,6 +1,6 @@
 # slamko_loop — P2 plan (the never-lost supervisor)
 
-<!-- validated: (P2.5) 2026-05-27 · 22 gtest 0 fail (incl. 5 pose-graph + 2 supervisor pose-graph) + never-lost cycle (seal→branch→WELD→recover) validated end-to-end on V1_01 XFeat forced-loss replay -->
+<!-- validated: (P2.5+hardening) 2026-05-27 · 32 gtest 0 fail (5 pose-graph + 10 stress + 2 supervisor pose-graph + weld-once) + never-lost cycle (seal→branch→WELD→recover) validated end-to-end on V1_01 XFeat forced-loss replay -->
 
 Read [`../../docs/SYSTEM.md`](../../docs/SYSTEM.md) (never-lost spine) +
 [`../../docs/DECOUPLING.md`](../../docs/DECOUPLING.md) + [`../README.md`](../README.md)

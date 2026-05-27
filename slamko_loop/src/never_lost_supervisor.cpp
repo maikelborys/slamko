@@ -34,6 +34,14 @@ bool NeverLostSupervisor::attemptWeld(RecoveryAction& act) {
   const SubMap* s = archive_.find(sealed_id);
   if (!s) return false;  // welds only to a known sealed submap
 
+  // Weld-once-per-target: the clustered consensus is already an average, so a second
+  // weld to the SAME sealed map this episode adds nothing (and a duplicate graph edge).
+  // Welding to a different sealed map is still allowed.
+  if (cfg_.weld_once_per_target) {
+    for (const auto id : episode_welded_ids_)
+      if (id == sealed_id) return false;
+  }
+
   if (!cfg_.use_pose_graph) {
     // v1 closed form: map→odom = active.anchor = S.anchor * (active→sealed).
     archive_.setAnchor(archive_.activeId(), s->anchor * consensus);
@@ -58,6 +66,7 @@ bool NeverLostSupervisor::attemptWeld(RecoveryAction& act) {
       if (graph_.hasNode(sm.id)) archive_.setAnchor(sm.id, graph_.node(sm.id));
     archive_.setAnchor(archive_.activeId(), graph_.node(archive_.activeId()));
   }
+  episode_welded_ids_.push_back(sealed_id);
   act.welded = true;
   act.welded_to_id = sealed_id;
   act.applied_T_active_sealed = consensus;
@@ -87,6 +96,7 @@ RecoveryAction NeverLostSupervisor::step(const HealthSignal& h,
         lost_count_ = 0;
         recover_count_ = 0;
         episode_welded_ = false;  // fresh recovery episode
+        episode_welded_ids_.clear();
       } else {
         state_ = SupervisorState::RecentlyLost;  // climbing toward Lost
       }

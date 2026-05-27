@@ -51,6 +51,15 @@ struct SupervisorConfig {
   // the composition (anchor_active = anchor_sealed · consensus), so default-off is
   // byte-identical to the validated P2c behavior. Turn on when merging >1 sealed map.
   bool   use_pose_graph = false;
+
+  // P2.5 polish: weld at most once to each sealed TARGET per recovery episode. The
+  // gate already fires whenever a fresh cluster of ≥weld_min_matches agreeing hits
+  // forms, so without this it re-welds every few frames (the V1_01 "7× weld"
+  // artifact) — harmless for the closed form, but in the pose-graph path it appends a
+  // duplicate edge each time (unbounded growth). The clustered consensus is already an
+  // average, so one weld per target carries the same correction. Welding to a DIFFERENT
+  // sealed map in the same episode is still allowed. false = legacy refine-every-cycle.
+  bool   weld_once_per_target = true;
 };
 
 // Boundary projection to the core health vocabulary.

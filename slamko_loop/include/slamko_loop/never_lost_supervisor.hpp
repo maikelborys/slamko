@@ -21,6 +21,9 @@
 
 #pragma once
 
+#include <cstdint>
+#include <vector>
+
 #include "slamko_core/estimation_frame.hpp"
 #include "slamko_core/features.hpp"
 #include "slamko_core/health.hpp"
@@ -76,6 +79,7 @@ class NeverLostSupervisor {
   int              lost_count_ = 0;     // consecutive over-threshold steps
   int              recover_count_ = 0;  // consecutive healthy steps (recovery dwell)
   bool             episode_welded_ = false;  // re-anchored this Relocalizing episode?
+  std::vector<std::uint64_t> episode_welded_ids_;  // sealed targets welded this episode
   double           last_now_s_ = 0.0;
   SE3              odom_T_WB_;           // latest live odom body pose (for the weld)
 

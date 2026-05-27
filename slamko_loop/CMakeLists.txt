@@ -41,7 +41,7 @@ install(DIRECTORY include/ DESTINATION include)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-  foreach(t test_supervisor test_relocalizer test_pose_graph)
+  foreach(t test_supervisor test_relocalizer test_pose_graph test_stress)
     ament_add_gtest(${t} test/${t}.cpp)
     target_link_libraries(${t} slamko_loop Eigen3::Eigen)
     ament_target_dependencies(${t} slamko_core)

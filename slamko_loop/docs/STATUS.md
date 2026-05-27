@@ -200,6 +200,34 @@ rather than only firing during recovery) now that the graph backend exists; full
 `J_r⁻¹` if a real inconsistent-graph ATE pass ever shows the approximation costs us;
 deferred dense submap-to-submap `Factor` (OKVIS2-X map-to-map) as a graph edge.
 
+## 2026-05-27 — P2.5 hardening: stress suite + weld-once polish ✅
+
+**What:** stress-tested the pose-graph backend + supervisor at scale, and shipped the
+polish the P2c log flagged (the weld re-firing every gate cycle — the V1_01 "7× weld").
+
+- **Polish — `weld_once_per_target` (default ON):** the supervisor now welds at most
+  once to each sealed TARGET per recovery episode (tracks `episode_welded_ids_`, cleared
+  on episode start). The gate's clustered consensus is already an average, so a second
+  weld to the same map adds nothing — and in the pose-graph path it appended a DUPLICATE
+  edge each cycle (unbounded growth). Welding to a *different* sealed map in the same
+  episode is still allowed. Final anchor quality is unchanged (same clustered consensus);
+  the V1_01 closed-form path now logs 1 weld instead of 7. `false` = legacy refine-every-cycle.
+
+- **Stress suite (`test_stress.cpp`, +10 gtests):**
+  - *PoseGraph (7):* 30-submap chain + loop-closure recovered (consistent ⇒ cost→0) ·
+    5×5 grid, 16 loops, converges · 6 good + **5 gross outliers ALL dropped** (worst-χ²
+    first) → good consensus · **deterministic** (two identical graphs → bit-identical
+    anchors, `EXPECT_DOUBLE_EQ`) · **idempotent** re-optimize (≤2 iters, no drift) ·
+    **under-constrained gauge-free component stays FINITE** + preserves its internal
+    relative (LM damping, Hard Rule #4) · large-rotation (~1.2 rad) loop converges.
+  - *Supervisor (3):* **10 seal→branch→weld→recover cycles** (Atlas scale) → graph grows
+    exactly 1 node + 1 edge/cycle, no crash · **weld-once bounds edges** (30 hits → 1 weld
+    / 1 edge ON; >1 / >1 OFF) · **flapping health doesn't thrash** (alternating gap never
+    seals — needs consecutive dwell).
+
+**GATE — 32 gtests, 0 failures** (`colcon test slamko_loop`; was 22). No new deps, no
+RNG in the solver (the determinism test guarantees reproducibility the VIO harness lacks).
+
 **Integration note (R1):** `lost_gap_s` (1.0 s default) ≥ the VIO dead-reckoning horizon
 (`dr_max_s_`=1.0) so the supervisor doesn't double-handle the ms-gap net. `odom_stale_gap_s`
 is populated by the VIO only while `in_dead_reckoning_` (gated by `dr_enabled_`, default
