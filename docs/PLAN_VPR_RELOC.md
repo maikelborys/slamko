@@ -117,6 +117,34 @@ arch + verlab XFeat-64 weights), the user's matcher in `orbslam3_xfeat`/`AirSLAM
 **Gotchas:** trace N=512 but slamko XFeat `max_corners=1500` → **top-K to 512 by score**
 before matching (or re-export at higher N, ~4× slower). Run off the hot path (reloc stage only).
 
+## Beyond verification: OKVIS-class GLOBAL ALIGNMENT (the road from 1.9 m → cm)
+
+LighterGlue makes loops FIRE; getting the map as *aligned* as OKVIS2-X (8.6 cm magistrale1)
+needs the alignment mechanism too. From the OKVIS root investigation — **supereight submap
+stabilization is NOT the trick** (it consumes corrected poses; the optional submap-ICP
+feedback is off by default; OKVIS's 3.22 cm is the SPARSE binary, no supereight). What
+matters, ranked:
+
+1. **Global BA on LANDMARKS (dominant gap).** slamko's loop closure is anchors-only
+   pose-graph (chain of SE3 nodes); OKVIS un-marginalizes the loop keyframes back into
+   **reprojection errors** and reoptimizes landmarks+poses+IMU (`ViSlamBackend::optimiseFullGraph`
+   1971-2003, `addLoopClosureFrame`→`convertToObservations` 1445-1460). This is why slamko
+   lands at 1.9 m not cm. **slamko_fusion already has GTSAM** — host a global VI-BA there
+   (structure+pose factors), not in the loop pose-graph.
+2. **Closed-form segment-rigid weighted distribution** applied instantly before the async
+   BA (`attemptLoopClosure` 2700-2734): translation weighted by per-segment distance,
+   rotation uniform, previously-closed loops kept RIGID via a `loopId` group so a new
+   closure can't smear old good geometry.
+3. **Reversible Schur marginalization** (`TwoPoseGraphError` 354-385/399): dropped KFs →
+   relative-pose factors, re-expandable to reprojection errors when a later closure touches
+   them (so the global BA can reoptimize old structure). + freeze the window edge (FEJ).
+4. **Distance-scaled drift gate** (`attemptLoopClosure` 2655-2691): reject a closure if
+   `‖dr_W‖/dist > 1.35%/100 + 2%·scale + 8%/√numSteps` (+ 3σ covariance test). Quality gate
+   — keep slamko's separate place-rec path for the catastrophic-jump never-lost case.
+
+This is a multi-step roadmap (LighterGlue verify → global landmark BA is the big one). The
+substrate (auto-seal + chain pose-graph + VPR retrieval) is done; #1 (BA) is the major build.
+
 ## Risks
 - **Domain gap** (main): outdoor-trained weights on indoor TUM VI — de-risk said GO
   (ranking is decisive even with compressed cosines), but if live recall is weak, fine-tune
