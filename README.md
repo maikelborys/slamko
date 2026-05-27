@@ -16,8 +16,11 @@ super-recoverable, and deliberately **simple and stable**.
 > (loop-closure-as-factor) — full `seal → branch → relocalize → WELD → recover` and
 > **multi-submap merge** validated live on V1_01. **Cross-session (P4a/P4b ✅):** the Atlas
 > persists to disk and a fresh session **relocalizes into a prior map** — both reactively
-> (after a loss) and proactively (continuous reloc while OK). Every run is gated by
-> `scripts/check_neverlost.py` (PASS/FAIL, no eyeballing). Full state + numbers:
+> (after a loss) and proactively (continuous reloc while OK); validated with a *different*
+> trajectory (V1_02 → V1_01). **Scalable place-rec (P3 ✅):** a BoW vocabulary + inverted
+> index pre-selects candidate submaps so relocalization stays sublinear in map count.
+> Every run is gated by `scripts/check_neverlost.py`, and the whole pipeline reproduces with
+> one command (`scripts/bench_neverlost.sh`). Full state + numbers:
 > [`docs/SYSTEM.md`](docs/SYSTEM.md).
 
 ## The idea
@@ -77,7 +80,7 @@ glossary in [`docs/SYSTEM.md`](docs/SYSTEM.md).
 | **`slamko_core`** | contracts (`Factor`/`SensorFrontend`/`FactorGraphBackend`/`FeatureSource`/`Relocalizer`) + types + SE3 + health signals + **SubMap serialization**. Header-only, Eigen-only. ✅ |
 | **`slamko_vio`** | the fast visual-inertial tracker: swappable feature front-end (Shi-Tomasi / XFeat-TRT) + KLT + stereo + PnP + IMU + dead-reckoning, routed through `LocalSmoother` (ceres/gtsam). Disjoint per-submap maps. ✅ |
 | **`slamko_fusion`** | GTSAM fixed-lag smoother + marginalization (Schur + FEJ), the VILENS heart, behind `LocalSmoother`. Tracks MH_01 end-to-end. ✅ |
-| **`slamko_loop`** | global graph + **SE3 pose-graph backend** (loop-closure-as-factor) + XFeat relocalization + the never-lost supervisor + cross-session Atlas seeding. ✅ |
+| **`slamko_loop`** | global graph + **SE3 pose-graph backend** (loop-closure-as-factor) + XFeat relocalization + **BoW inverted-index** (scalable candidate pre-selection) + the never-lost supervisor + cross-session Atlas seeding. ✅ |
 | **`slamko_msgs`** | ROS 2 interface defs (map-server API). _planned (P4, with map-server)_ |
 | **`slamko_ros`** | ROS 2 integration: nodes, `map→odom→base` bridge, visualization. _planned_ |
 

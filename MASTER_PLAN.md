@@ -73,14 +73,14 @@ relocalizer default **LiftFeat-m1** (un-boosted; beats XFeat, BoW-stable) · Apa
 | **P0** | slamko_vio | Solidify S1: gravity init, IMU dead-reckoning, feature compare-all ATE (ShiTomasi vs XFeat), full-suite validation | ✅ |
 | **P1** | slamko_core, slamko_fusion | `Factor`/`Frontend`/`Backend` + `LocalSmoother` interfaces; **marginalization**; GTSAM adapter (tracks MH_01) | ✅ |
 | **P2** | slamko_loop | Never-lost core: state machine + archive + decoupled supervisor + catch-damp-rebuild; **+P2.5** SE3 pose-graph backend (loop-closure-as-factor). Full seal→branch→WELD→recover + multi-submap merge live on V1_01 | ✅ |
-| **P3** | slamko_loop / reloc | **XFeat reloc + cheap weld ✅** (done in P2b — no separate package); LiftFeat-m1 deferred; **DBoW / inverted-index** for scalable place-rec = the remaining piece | 🟢 partial |
+| **P3** | slamko_loop / reloc | **XFeat reloc + cheap weld ✅** (P2b) + **BoW vocabulary + inverted-index** for scalable candidate pre-selection ✅ (P3a/b, `bow.{hpp,cpp}`, fallback-safe, no recall regression). LiftFeat-m1 + a persisted/pre-trained vocabulary deferred | ✅ |
 | **P4** | slamko_core → slamko_mapping, slamko_msgs | **Submap persistence ✅** (`submap_io.hpp`) + **multi-session ✅** (load prior map → relocalize, reactive + continuous). map-server contract + package split = remaining | 🟢 active |
 | **P5** | slamko_sensors | Wheel+ZUPT → LiDAR plane/line → GPS → (objects in semantic) | ⬜ |
 | **P6** | slamko_semantic | Object-level factors, semantic map layers, semantic reloc | ⬜ |
 
 Sequencing: lean base solid (P0 ✅) → extensible (P1 ✅) → never-lost spine (P2 ✅, the
-priority) → recovery/reloc (P3 🟢) → persistence/multi-session (P4 🟢) → sensors (P5) →
-semantics (P6). **Note:** P3/P4 interleaved early because cross-session persistence reuses
+priority) → recovery/reloc (P3 ✅, scalable index in) → persistence/multi-session (P4 🟢) →
+sensors (P5) → semantics (P6). **Note:** P3/P4 interleaved early because cross-session persistence reuses
 the same relocalizer + pose-graph weld as in-session recovery (one Atlas, one weld machine).
 
 ## 6. Open items
