@@ -66,6 +66,11 @@ class NeverLostSupervisor {
   void submitActiveSubMap(SubMap sm) { archive_.setActiveContent(std::move(sm)); }
   void submitQueryFeatures(const Features& f) { query_ = f; have_query_ = true; }
 
+  // Cross-session: seed the archive with a prior map's submaps (frozen, anchored).
+  // The relocalizer DB is seeded by the caller (it owns the Relocalizer*); thereafter
+  // the SAME weld machinery localizes the live session into the prior map.
+  void seedPriorMap(std::vector<SubMap> priors) { archive_.seedPriorMap(std::move(priors)); }
+
  private:
   bool attemptWeld(RecoveryAction& act);
 

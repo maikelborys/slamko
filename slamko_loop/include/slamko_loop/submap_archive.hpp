@@ -48,6 +48,13 @@ class SubMapArchive {
   // Set a submap's anchor (the only legal post-seal mutation — the weld uses it).
   void setAnchor(std::uint64_t id, const SE3& anchor);
 
+  // Cross-session: seed the archive with a PRIOR map's submaps (loaded from disk) as
+  // frozen sealed submaps — they keep their ids + anchors (session-1 frame). The live
+  // active submap is re-id'd to a fresh id PAST the priors so in-session seals never
+  // collide. This is what makes the Atlas grow across sessions (the prior map is just
+  // more sealed submaps; the same weld machinery localizes the live session into it).
+  void seedPriorMap(std::vector<SubMap> priors);
+
  private:
   std::vector<SubMap> sealed_;   // append-only, frozen priors
   SubMap              active_;

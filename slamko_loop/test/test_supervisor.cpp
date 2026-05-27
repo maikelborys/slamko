@@ -356,6 +356,40 @@ TEST(Supervisor, PoseGraphChainsTwoSubmapsExactly) {
   EXPECT_EQ(s.poseGraph().edgeCount(), 2u);        // 0→1, 1→2
 }
 
+// --- P4: cross-session prior-map seeding --------------------------------------
+
+// seedPriorMap imports prior submaps as frozen sealed maps (keeping ids+anchors),
+// namespaces the live submap id PAST them, and a later weld can target a PRIOR
+// submap → the live session re-anchors into the prior map's frame (cross-session).
+TEST(Supervisor, SeedPriorMapImportsAndWeldsCrossSession) {
+  SupervisorConfig c = cfg();
+  c.use_pose_graph = true;
+  InjectableRelocalizer reloc;
+  NeverLostSupervisor s(c, &reloc);
+
+  std::vector<SubMap> priors(2);
+  priors[0].id = 0; priors[0].anchor = SE3();                          // gauge
+  priors[1].id = 1; priors[1].anchor = makeSE3(2, 0, 0, 0.1, {0, 0, 1});
+  s.seedPriorMap(priors);
+  EXPECT_EQ(s.archive().sealedCount(), 2u);
+  EXPECT_GE(s.archive().activeId(), 2u);            // live id past the priors
+  ASSERT_NE(s.archive().find(1), nullptr);
+
+  double t = 0;
+  triggerLoss(s, t);                                 // seal the (empty) live map, branch
+  s.submitQueryFeatures(Features{});
+  const SE3 T = makeSE3(0.3, 0.0, 0.0, 0.05, {0, 0, 1});
+  for (int i = 0; i < 3; ++i) reloc.push(/*sealed_id=*/1, T, 30, 1.0);  // matches PRIOR submap 1
+  bool welded = false;
+  for (int i = 0; i < 3; ++i) {
+    const RecoveryAction a = stepGap(s, 0.5, t);
+    if (a.welded) { welded = true; EXPECT_EQ(a.welded_to_id, 1u); }
+  }
+  EXPECT_TRUE(welded);
+  // map→odom = prior1.anchor · consensus  → the live session is now in the prior frame.
+  expectSE3Near(s.mapToOdom(), priors[1].anchor * T, 1e-9);
+}
+
 // --- SubMapArchive primitives -------------------------------------------------
 
 TEST(SubMapArchive, SealBranchFindAnchor) {

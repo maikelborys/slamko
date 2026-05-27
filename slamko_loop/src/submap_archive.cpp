@@ -6,6 +6,8 @@
 
 #include "slamko_loop/submap_archive.hpp"
 
+#include <algorithm>
+
 namespace slamko {
 
 SubMapArchive::SubMapArchive() {
@@ -45,6 +47,17 @@ void SubMapArchive::setAnchor(std::uint64_t id, const SE3& anchor) {
   if (active_.id == id) { active_.anchor = anchor; return; }
   for (auto& s : sealed_)
     if (s.id == id) { s.anchor = anchor; return; }
+}
+
+void SubMapArchive::seedPriorMap(std::vector<SubMap> priors) {
+  std::uint64_t maxid = 0;
+  for (auto& p : priors) {
+    maxid = std::max(maxid, p.id);
+    sealed_.push_back(std::move(p));
+  }
+  next_id_ = std::max<std::uint64_t>(next_id_, maxid + 1);
+  active_.id = next_id_++;   // live submap id past the priors (no collision)
+  active_.anchor = SE3();    // fresh local origin == odom (welds re-anchor it)
 }
 
 }  // namespace slamko

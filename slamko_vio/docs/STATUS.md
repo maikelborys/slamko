@@ -264,3 +264,12 @@ byte-identical to before** (normal/no-loss runs unaffected; the validated single
 reloc path unchanged). V1_01 multi-loss re-run: SEAL 0 = 40,615 lm, SEAL 1 = 90,707 lm
 (own epochs, not cumulative); both welds fired; `scripts/check_neverlost.py` 7/7 PASS
 (corrected ATE 16.9 cm). Detail: `slamko_loop/docs/STATUS.md` (2026-05-27 submap partition).
+
+## 2026-05-27 — P4b-1: cross-session map I/O wiring (node) ✅
+
+Node params `prior_map_dir` (loadSubMaps at startup → seed `XFeatRelocalizer` DB +
+`supervisor.seedPriorMap`) and `map_save_dir` (saveSubMaps of the sealed Atlas + active at
+shutdown). Cross-session welds are flagged in the log (`[CROSS-SESSION/prior map]` when
+`welded_to_id < first_live_id`). Two-session V1_01 run: session 1 saved a 1-submap Atlas,
+session 2 loaded it and welded into it (`WELD to submap 0 [CROSS-SESSION]`), `check_neverlost.py`
+7/7 PASS (ATE 13.9 cm). Detail: `slamko_loop/docs/STATUS.md` (2026-05-27 P4b-1).

@@ -317,3 +317,31 @@ or the reloc DB) — the foundation cross-session persistence (P4) needs.
 is populated by the VIO only while `in_dead_reckoning_` (gated by `dr_enabled_`, default
 off) — a fully general wall-clock stale-gap is a minor VIO refinement for the live wiring
 (P4); the v1 supervisor is validated on synthetic signals, so not blocked.
+
+## 2026-05-27 — P4b-1: cross-session Atlas seeding (load prior map → relocalize into it) ✅
+
+**What:** the never-lost archive now seeds from a PRIOR map on disk, so a fresh session
+localizes into it — the cross-session pillar. `SubMapArchive::seedPriorMap(priors)` imports
+the loaded submaps as frozen sealed maps (keeping ids+anchors = session-1 frame) and
+re-ids the live submap PAST them (no collision). The node gains `prior_map_dir` (loadSubMaps
+→ seed archive + reloc DB at startup) and `map_save_dir` (saveSubMaps at shutdown). The SAME
+weld machinery then localizes the live session into the prior map — the prior map is just
+more sealed submaps in the Atlas (no new "localization mode").
+
+**GATE — two sessions on V1_01 (XFeat, pose-graph):**
+- Session 1: mapped the room, saved a 1-submap Atlas (`submap_0.smap`, 43 MB w/ descriptors).
+- Session 2: `loaded 1 prior submaps (live ids start at 1)`; early forced loss → SEAL submap
+  1 (14,295 lm) + BRANCH 2 → `WELD to submap 1` (own) → **`WELD to submap 0 [CROSS-SESSION/
+  prior map]`** — relocalized into session 1's map, tying session 2's frame into it via a
+  pose-graph edge (live→prior). `check_neverlost.py` **7/7 PASS**, anchor-corrected ATE
+  13.9 cm < raw 24.0. Welding to BOTH its own submap 1 AND the prior submap 0 is the
+  weld-once-per-TARGET multi-target behavior working as designed.
+
+**Unit gate:** `SeedPriorMapImportsAndWeldsCrossSession` (loop) — seed 2 priors, live id past
+them, weld to a prior id re-anchors map→odom into the prior frame. Loop suite 14 supervisor
+gtests, 0 fail.
+
+**Next — P4b-2:** continuous relocalization in the OK state — so a session localizes into the
+prior map WITHOUT needing a forced loss (the deploy-correct behavior; the forced loss here
+just reuses the recovery flow to exercise the data path). Then map-merge viz across sessions
+(overlay the prior `.smap` landmarks) + split slamko_mapping when the I/O grows.

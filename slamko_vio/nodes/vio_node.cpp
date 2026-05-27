@@ -43,6 +43,7 @@
 #include "slamko_fusion/gtsam_local_smoother.hpp"        // node-only (composition root)
 #include "slamko_loop/never_lost_supervisor.hpp"          // node-only (P2c)
 #include "slamko_loop/xfeat_relocalizer.hpp"
+#include "slamko_core/submap_io.hpp"                       // P4: cross-session map I/O
 
 using slamko_vio::VioConfig;
 
@@ -174,6 +175,11 @@ class VioNode : public rclcpp::Node {
     // merge); weld-once bounds the duplicate-edge growth per episode.
     nl_use_pose_graph_ = declare_parameter("neverlost_use_pose_graph", false);
     nl_weld_once_      = declare_parameter("neverlost_weld_once", true);
+    // P4: cross-session map persistence. prior_map_dir → load a prior Atlas at startup
+    // (seed archive + reloc DB) so the live session localizes into it; map_save_dir →
+    // dump the sealed Atlas at shutdown for the next session.
+    nl_prior_map_dir_ = declare_parameter("prior_map_dir", std::string{});
+    nl_map_save_dir_  = declare_parameter("map_save_dir", std::string{});
     if (neverlost_enabled_ && !nl_pose_dump_path_.empty())
       pose_epoch_.open(nl_pose_dump_path_ + ".epoch");  // per-frame "ts submap_id"
 
@@ -208,24 +214,41 @@ class VioNode : public rclcpp::Node {
   // to place each submap's landmarks in the corrected MAP frame (map = anchor·odom),
   // making the merge visible instead of the raw drifted odom-frame cloud.
   void writeSubmapSidecar() {
-    if (!neverlost_enabled_ || nl_landmark_dump_path_.empty() || !supervisor_) return;
-    std::ofstream f(nl_landmark_dump_path_ + ".submaps");
-    if (!f.is_open()) return;
-    f << "submap_id,id_lo,id_hi,a00,a01,a02,a03,a10,a11,a12,a13,a20,a21,a22,a23\n";
-    auto rows = seal_idhi_;  // sealed submaps, in seal order
-    rows.emplace_back(supervisor_->archive().activeId(), pipeline_->maxLandmarkId());
-    std::uint64_t lo = 1;
-    for (const auto& [sid, hi] : rows) {
-      const slamko::SubMap* s = supervisor_->archive().find(sid);
-      const Eigen::Matrix4d A = s ? s->anchor.matrix() : Eigen::Matrix4d::Identity();
-      f << sid << ',' << lo << ',' << hi;
-      for (int r = 0; r < 3; ++r)
-        for (int c = 0; c < 4; ++c) f << ',' << std::setprecision(9) << A(r, c);
-      f << '\n';
-      lo = hi + 1;
+    if (!neverlost_enabled_ || !supervisor_) return;
+
+    // Viz sidecar (only if a landmark dump was requested).
+    if (!nl_landmark_dump_path_.empty()) {
+      std::ofstream f(nl_landmark_dump_path_ + ".submaps");
+      if (f.is_open()) {
+        f << "submap_id,id_lo,id_hi,a00,a01,a02,a03,a10,a11,a12,a13,a20,a21,a22,a23\n";
+        auto rows = seal_idhi_;  // sealed submaps, in seal order
+        rows.emplace_back(supervisor_->archive().activeId(), pipeline_->maxLandmarkId());
+        std::uint64_t lo = 1;
+        for (const auto& [sid, hi] : rows) {
+          const slamko::SubMap* s = supervisor_->archive().find(sid);
+          const Eigen::Matrix4d A = s ? s->anchor.matrix() : Eigen::Matrix4d::Identity();
+          f << sid << ',' << lo << ',' << hi;
+          for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 4; ++c) f << ',' << std::setprecision(9) << A(r, c);
+          f << '\n';
+          lo = hi + 1;
+        }
+        RCLCPP_INFO(get_logger(), "[neverlost] wrote %zu-submap map sidecar -> %s.submaps",
+                    rows.size(), nl_landmark_dump_path_.c_str());
+      }
     }
-    RCLCPP_INFO(get_logger(), "[neverlost] wrote %zu-submap map sidecar -> %s.submaps",
-                rows.size(), nl_landmark_dump_path_.c_str());
+
+    // P4: persist the Atlas (sealed + the live active) for the next session to load.
+    if (!nl_map_save_dir_.empty()) {
+      std::vector<slamko::SubMap> maps = supervisor_->archive().sealed();
+      maps.push_back(supervisor_->archive().active());
+      if (slamko::saveSubMaps(maps, nl_map_save_dir_))
+        RCLCPP_INFO(get_logger(), "[neverlost] saved %zu-submap Atlas -> %s",
+                    maps.size(), nl_map_save_dir_.c_str());
+      else
+        RCLCPP_WARN(get_logger(), "[neverlost] FAILED to save Atlas to %s",
+                    nl_map_save_dir_.c_str());
+    }
   }
 
   using SyncPolicy = message_filters::sync_policies::ApproximateTime<
@@ -328,6 +351,24 @@ class VioNode : public rclcpp::Node {
       RCLCPP_INFO(get_logger(),
                   "[neverlost] supervisor + XFeat relocalizer up (pose_graph=%d weld_once=%d)",
                   (int)nl_use_pose_graph_, (int)nl_weld_once_);
+      // Cross-session: load a prior Atlas → seed the archive (frozen sealed submaps)
+      // and the relocalizer DB, so the live session welds into the prior map on
+      // revisit. Live submap ids continue PAST the priors (set by seedPriorMap).
+      if (!nl_prior_map_dir_.empty()) {
+        std::vector<slamko::SubMap> priors;
+        if (slamko::loadSubMaps(priors, nl_prior_map_dir_) && !priors.empty()) {
+          for (const auto& p : priors) reloc_->addSubMap(p);
+          supervisor_->seedPriorMap(priors);
+          nl_first_live_id_ = supervisor_->archive().activeId();  // priors are < this
+          RCLCPP_WARN(get_logger(),
+                      "[neverlost] loaded %zu prior submaps from %s (live ids start at %lu)",
+                      priors.size(), nl_prior_map_dir_.c_str(),
+                      (unsigned long)nl_first_live_id_);
+        } else {
+          RCLCPP_WARN(get_logger(), "[neverlost] prior_map_dir set but no map loaded from %s",
+                      nl_prior_map_dir_.c_str());
+        }
+      }
     }
 
     // odom body pose: T_WB = T_WC · T_BS⁻¹ (worldPose is camera-in-world).
@@ -381,9 +422,11 @@ class VioNode : public rclcpp::Node {
     }
     if (a.welded) {
       const Eigen::Vector3d t = supervisor_->mapToOdom().translation();
+      const bool cross_session = a.welded_to_id < nl_first_live_id_;
       RCLCPP_WARN(get_logger(),
-                  "[neverlost] WELD to submap %lu (inliers-gated); map→odom t=[%.3f %.3f %.3f]",
-                  (unsigned long)a.welded_to_id, t.x(), t.y(), t.z());
+                  "[neverlost] WELD to submap %lu%s (inliers-gated); map→odom t=[%.3f %.3f %.3f]",
+                  (unsigned long)a.welded_to_id, cross_session ? " [CROSS-SESSION/prior map]" : "",
+                  t.x(), t.y(), t.z());
     }
     if (supervisor_->state() != nl_last_state_) {
       RCLCPP_INFO(get_logger(), "[neverlost] state %d → %d",
@@ -461,6 +504,8 @@ class VioNode : public rclcpp::Node {
   bool nl_use_pose_graph_ = false;
   bool nl_weld_once_      = true;
   std::string nl_landmark_dump_path_, nl_pose_dump_path_;
+  std::string nl_prior_map_dir_, nl_map_save_dir_;  // P4 cross-session map I/O
+  std::uint64_t nl_first_live_id_ = 0;              // submap ids < this are prior-session
   std::ofstream pose_epoch_;  // per-frame "ts active_submap_id" (corrected-map viz)
   std::vector<std::pair<std::uint64_t, std::uint64_t>> seal_idhi_;  // (submap_id, max_lm_id@seal)
   Eigen::Matrix4d node_T_BS_ = Eigen::Matrix4d::Identity();
