@@ -287,6 +287,22 @@ segments still bend; a fully clean map needs re-integration from the corrected p
 mapping) or shorter/again-bounded blackouts. The never-lost contract — never lost, re-anchor
 on revisit — holds; map polish is P4.
 
+**Auto-check (no more eyeballing):** `scripts/check_neverlost.py` is a PASS/FAIL gate over a
+run's log + dumps — asserts (1) expected #SEAL/#WELD + ended OK, (2) weld anchors SANE (no
+"100 m jump in a 5 m room" false-reloc), (3) the welds IMPROVE ATE (corrected < raw), (4)
+corrected ATE under a bound, (5) #submaps == #seals+1. On the V1_01 multi-loss run: **7/7
+PASS** (seals 2, welds 2, ended OK, max|anchor t| 2.39 m < 5, ATE 31.1 < 56.9 cm < 45). So
+the seal/weld is objectively correct — the earlier "shifted/turned" was purely the
+uncorrected-odom viz.
+
+**Known wart (the cumulative-submap "overexpose"):** the VIO's `landmark_world_` is never
+pruned, and `buildSubMap()` returns the WHOLE cumulative map each call — so each sealed
+submap is a SUPERSET of the earlier ones and the reloc DB registers overlapping copies
+(landmarks duplicated across submaps, NOT dissolved). The merge still works (the viz sidecar
+partitions by creation-id so nothing double-draws), but the proper fix is for `buildSubMap()`
+to return only the active submap's OWN (since-last-branch) landmarks → disjoint, self-
+contained submaps (the OKVIS2-X/GLIM submap model). Tracked for P4/the next correctness pass.
+
 **Integration note (R1):** `lost_gap_s` (1.0 s default) ≥ the VIO dead-reckoning horizon
 (`dr_max_s_`=1.0) so the supervisor doesn't double-handle the ms-gap net. `odom_stale_gap_s`
 is populated by the VIO only while `in_dead_reckoning_` (gated by `dr_enabled_`, default
