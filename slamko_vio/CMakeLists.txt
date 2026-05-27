@@ -67,6 +67,7 @@ add_library(slamko_vio_core
   src/pnp_cuda.cu
   src/vio_pipeline.cpp
   src/xfeat.cpp
+  src/eigenplaces.cpp
   3rdparty/tensorrtbuffer/src/logger.cpp
 )
 target_include_directories(slamko_vio_core PUBLIC
