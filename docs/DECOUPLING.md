@@ -47,6 +47,16 @@ class FactorGraphBackend {
 // adapters: GtsamBackend (default, iSAM2), CeresBackend (S1 inner loop)
 ```
 
+**`FactorGraphBackend` (generic) vs `LocalSmoother` (VI façade).** The Tier-2 swap
+the VIO actually uses is at **VI-keyframe granularity**, and each backend owns its
+IMU preintegration — so `slamko_core::LocalSmoother` (`local_smoother.hpp`) is the
+practical contract: `setImuParams`/`setStereoCalib`/`insertKeyframe(T_WB, raw-IMU
+span, stereo obs)`/`optimize`/readback/`health`. Impls: `GtsamLocalSmoother`
+(`slamko_fusion`, IncrementalFixedLagSmoother + marginalization) and
+`CeresLocalSmoother` (`slamko_vio`, wraps klt_vo's LocalBA). `FactorGraphBackend`
+above stays the **low-level extension seam** for arbitrary/custom factors (→
+`gtsam::CustomFactor`); LocalSmoother is the optimized VI-core fast path.
+
 ### 4. `SubMap` / `EstimationFrame` — the only types crossing tiers
 Serializable, with a `custom_data: map<string, shared_ptr<void>>` escape hatch
 (GLIM) so the pipeline extends without changing the interface. `SubMap` = {KF

@@ -32,6 +32,16 @@ config + platform presets, structured logging, serialization schema — is NOT
 built yet. It lands with its first consumer (vio time-sync, loop serialization),
 per "don't freeze contracts before data flows."
 
+## 2026-05-27 — P1 contract additions: LocalSmoother + VI types
+
+Added the Tier-2 VI fusion contract used by slamko_fusion/slamko_vio:
+`local_smoother.hpp` (`LocalSmoother`: setImuParams/setStereoCalib/setExtrinsics/
+insertKeyframe(T_WB, raw-IMU span, stereo obs)/optimize/readback/health),
+`imu_sample.hpp` (`ImuSample`, `ImuBias`, `ImuParams`), `stereo_observation.hpp`
+(`StereoObservation`, `StereoCalib`). Still header-only, Eigen-only. The generic
+`FactorGraphBackend` stays the low-level extension seam; `LocalSmoother` is the
+VI-core swap surface (see `DECOUPLING.md`). Exercised by slamko_fusion's gtests.
+
 **Next:** Milestone B — `slamko_vio`: refactor klt_vo behind
 `FeatureSource`/`FeatureTracker`, reproduce MH_01 EuRoC baseline (≈0.054 m @ ~240
 fps) as the regression guard, then add the XFeat-TRT `FeatureSource` (primary:

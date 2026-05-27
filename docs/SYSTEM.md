@@ -21,7 +21,7 @@ One row per package; updated when a milestone lands (detail in each `docs/STATUS
 |---|---|---|---|---|---|
 | `slamko_core` | spine | P1 | ✅ shipped | contracts + SE3 + feature seam · 25/25 gtests | `b36ea43` |
 | `slamko_vio` | T1 | P0 | ✅ shipped | Shi-Tomasi 0.078 m @ ~214 fps / **XFeat-TRT 0.049 m @ ~93 fps** (equal-coverage MH_01) · descriptors attached | `8498021` |
-| `slamko_fusion` | T2 | P1 | ⬜ planned | GtsamBackend (iSAM2) + marginalization (Schur+FEJ) | — |
+| `slamko_fusion` | T2 | P1 | 🟢 active | GtsamLocalSmoother (BatchFixedLagSmoother + Schur marg + CombinedImu + stereo) built, synthetic SfM ✅; P1b/c wire+validate | `8498021`+ |
 | `slamko_loop` | T3 | P2 | ⬜ planned | never-lost supervisor + relocalizer (LiftFeat-m1) | — |
 | `slamko_msgs` | — | P4 | ⬜ planned | map-server API / status / correspondences | — |
 | `slamko_ros` | root | — | ⬜ planned | composition root + map→odom→base bridge + viz | — |
