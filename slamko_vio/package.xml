@@ -16,9 +16,11 @@
   <build_depend>eigen</build_depend>
 
   <depend>slamko_core</depend>
-  <!-- node-only: the composition root injects the gtsam Tier-2 backend
-       (backend:=gtsam). slamko_vio_core itself depends only on slamko_core. -->
+  <!-- node-only (composition root): the gtsam Tier-2 backend (backend:=gtsam) +
+       the Tier-3 never-lost supervisor/relocalizer (enable_neverlost). The core
+       lib slamko_vio_core itself depends only on slamko_core. -->
   <depend>slamko_fusion</depend>
+  <depend>slamko_loop</depend>
   <depend>ament_index_cpp</depend>
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>

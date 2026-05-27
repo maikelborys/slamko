@@ -31,11 +31,15 @@
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
+#include "slamko_core/estimation_frame.hpp"
+#include "slamko_core/features.hpp"
 #include "slamko_core/image_view.hpp"
 #include "slamko_core/local_smoother.hpp"
 #include "slamko_vio/vio_pipeline.hpp"
 #include "slamko_vio/types.hpp"
-#include "slamko_fusion/gtsam_local_smoother.hpp"   // node-only (composition root)
+#include "slamko_fusion/gtsam_local_smoother.hpp"        // node-only (composition root)
+#include "slamko_loop/never_lost_supervisor.hpp"          // node-only (P2c)
+#include "slamko_loop/xfeat_relocalizer.hpp"
 
 using slamko_vio::VioConfig;
 
@@ -151,6 +155,11 @@ class VioNode : public rclcpp::Node {
       RCLCPP_INFO(get_logger(), "pose dump (TUM) -> %s", cfg.pose_dump_path.c_str());
     }
 
+    // P2c: the Tier-3 never-lost supervisor + XFeat relocalizer, driven in-process
+    // from the VIO outputs. Built lazily once K + T_BS resolve (need intrinsics +
+    // extrinsic). Logs seal/branch/weld; the weld re-anchors map→odom on revisit.
+    neverlost_enabled_ = declare_parameter("enable_neverlost", false);
+
     using ImgSub = message_filters::Subscriber<sensor_msgs::msg::Image>;
     using CamSub = message_filters::Subscriber<sensor_msgs::msg::CameraInfo>;
     sub_left_  = std::make_shared<ImgSub>(this, "left/image_rect_raw",  rmw_qos_profile_sensor_data);
@@ -210,6 +219,7 @@ class VioNode : public rclcpp::Node {
       T(0,3) = p.x; T(1,3) = p.y; T(2,3) = p.z;
       if (!T.isIdentity(1.0e-9)) {
         pipeline_->setExtrinsics(T);
+        node_T_BS_ = T;  // kept for the never-lost supervisor wiring (P2c)
         extrinsics_set_ = true;
         RCLCPP_INFO(get_logger(), "resolved T_BS (cam->imu) from TF");
       }
@@ -237,6 +247,72 @@ class VioNode : public rclcpp::Node {
 
     pipeline_->processStereo(left, right, ts, K_);
     publish(msg_l->header);
+    if (neverlost_enabled_) driveSupervisor(ts);
+  }
+
+  // P2c: feed the live VIO outputs to the never-lost supervisor each frame and log
+  // its recovery actions. Built lazily once K + T_BS are known.
+  void driveSupervisor(double ts) {
+    if (!have_K_ || !extrinsics_set_) return;
+    if (!supervisor_) {
+      slamko::XFeatRelocConfig rc;
+      rc.fx = K_.fx; rc.fy = K_.fy; rc.cx = K_.cx; rc.cy = K_.cy;
+      rc.body_T_cam = slamko::SE3(node_T_BS_);   // T_BS (cam→body)
+      reloc_ = std::make_unique<slamko::XFeatRelocalizer>(rc);
+      supervisor_ = std::make_unique<slamko::NeverLostSupervisor>(
+          slamko::SupervisorConfig{}, reloc_.get());
+      RCLCPP_INFO(get_logger(), "[neverlost] supervisor + XFeat relocalizer up");
+    }
+
+    // odom body pose: T_WB = T_WC · T_BS⁻¹ (worldPose is camera-in-world).
+    slamko::EstimationFrame ef;
+    ef.timestamp = ts;
+    ef.T_WB = slamko::SE3(Eigen::Matrix4d(
+        pipeline_->worldPose().cast<double>() * node_T_BS_.inverse()));
+
+    // Refresh the active submap content occasionally (buildSubMap is O(landmarks)).
+    if (++nl_frame_ % 30 == 0) supervisor_->submitActiveSubMap(pipeline_->buildSubMap());
+
+    // Query features from the current tracks (those carrying an XFeat descriptor).
+    slamko::Features q;
+    const auto& tr = pipeline_->tracks();
+    int nd = 0;
+    for (const auto& t : tr) if (t.has_desc) ++nd;
+    if (nd > 0) {
+      q.keypoints.resize(nd, 3);
+      q.descriptors.resize(nd, 64);
+      int r = 0;
+      for (const auto& t : tr) {
+        if (!t.has_desc) continue;
+        q.keypoints(r, 0) = t.left_curr_x; q.keypoints(r, 1) = t.left_curr_y; q.keypoints(r, 2) = 1.f;
+        for (int d = 0; d < 64; ++d) q.descriptors(r, d) = t.desc[d];
+        ++r;
+      }
+      supervisor_->submitQueryFeatures(q);
+    }
+
+    const slamko::HealthSignal h = pipeline_->health();
+    const slamko::RecoveryAction a = supervisor_->step(h, ef, ts);
+
+    if (a.sealed) {
+      // Register the just-sealed submap so the relocalizer can match against it.
+      const auto& sealed = supervisor_->archive().sealed();
+      if (!sealed.empty()) reloc_->addSubMap(sealed.back());
+      RCLCPP_WARN(get_logger(),
+                  "[neverlost] SEAL submap %lu + BRANCH %lu (odom_stale_gap=%.2fs)",
+                  (unsigned long)a.sealed_id, (unsigned long)a.branched_id, h.odom_stale_gap_s);
+    }
+    if (a.welded) {
+      const Eigen::Vector3d t = supervisor_->mapToOdom().translation();
+      RCLCPP_WARN(get_logger(),
+                  "[neverlost] WELD to submap %lu (inliers-gated); map→odom t=[%.3f %.3f %.3f]",
+                  (unsigned long)a.welded_to_id, t.x(), t.y(), t.z());
+    }
+    if (supervisor_->state() != nl_last_state_) {
+      RCLCPP_INFO(get_logger(), "[neverlost] state %d → %d",
+                  (int)nl_last_state_, (int)supervisor_->state());
+      nl_last_state_ = supervisor_->state();
+    }
   }
 
   void publish(const std_msgs::msg::Header& hdr) {
@@ -295,6 +371,14 @@ class VioNode : public rclcpp::Node {
 
   std::unique_ptr<slamko_vio::VioPipeline> pipeline_;
   std::ofstream pose_dump_;  // optional TUM trajectory export
+
+  // P2c never-lost supervisor (node = composition root).
+  bool neverlost_enabled_ = false;
+  Eigen::Matrix4d node_T_BS_ = Eigen::Matrix4d::Identity();
+  std::unique_ptr<slamko::XFeatRelocalizer> reloc_;
+  std::unique_ptr<slamko::NeverLostSupervisor> supervisor_;
+  std::uint64_t nl_frame_ = 0;
+  slamko::SupervisorState nl_last_state_ = slamko::SupervisorState::OK;
   std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> sub_left_, sub_right_;
   std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::CameraInfo>> sub_lcam_, sub_rcam_;
   std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;

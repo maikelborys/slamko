@@ -1,6 +1,6 @@
 # slamko_loop — P2 plan (the never-lost supervisor)
 
-<!-- validated: (P2b) 2026-05-27 · tests: 16 gtest 0 fail (supervisor + relocalizer, synthetic, no ROS) -->
+<!-- validated: (P2c) 2026-05-27 · 16 gtest 0 fail + never-lost cycle (seal→branch→recover) validated end-to-end on MH_01 forced-loss replay -->
 
 Read [`../../docs/SYSTEM.md`](../../docs/SYSTEM.md) (never-lost spine) +
 [`../../docs/DECOUPLING.md`](../../docs/DECOUPLING.md) + [`../README.md`](../README.md)
@@ -24,6 +24,13 @@ OUTSIDE the estimator graph). Loss = odometry **stale-gap**, not covariance.
   `RelocResult.T_query_match`. Supervisor weld now composes with live odom
   (`T_active_sealed = T_query_match · T_WB⁻¹`). 16 gtests 0 fail. No new model, no
   OpenCV. LiftFeat-m1 = future swappable option. See STATUS.
+- **P2c ✅ (seal→branch→recover end-to-end; weld = follow-on)** — supervisor +
+  relocalizer wired into the **live `slamko_vio_node`** (`enable_neverlost:=true`; node
+  gains a node-only `slamko_loop` dep, core stays decoupled). MH_01 forced-loss replay
+  (`dr_force_loss=[30,33]s`): the full cycle fired on real VIO health —
+  OK→RecentlyLost→**SEAL+BRANCH** (stale-gap 1.15s)→Relocalizing→recover→OK. In-process
+  logging, no rosbag2. **Follow-on:** the weld (re-anchor on revisit) needs XFeat
+  descriptors + a revisiting sequence. See STATUS.
 - **P2.5** — loop-closure-as-factor + a tiny self-contained SE3 pose-graph solver over
   submap anchors (Gauss-Newton, uses only `se3.hpp`; try/catch → damp → drop-edge,
   Hard Rule #4). The v1 stores the edge data model so this adds only the solve loop.

@@ -31,6 +31,7 @@ find_package(slamko_core REQUIRED)
 # fully encapsulated inside the shared libslamko_fusion.so (PIMPL), so the node
 # links only that — it never finds or links gtsam itself.
 find_package(slamko_fusion REQUIRED)
+find_package(slamko_loop REQUIRED)   # node-only: Tier-3 never-lost supervisor (P2c)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
@@ -90,7 +91,7 @@ if(SLAMKO_VIO_BUILD_NODE)
   add_executable(slamko_vio_node nodes/vio_node.cpp)
   target_link_libraries(slamko_vio_node slamko_vio_core)
   ament_target_dependencies(slamko_vio_node
-    slamko_core slamko_fusion ament_index_cpp rclcpp sensor_msgs nav_msgs geometry_msgs visualization_msgs
+    slamko_core slamko_fusion slamko_loop ament_index_cpp rclcpp sensor_msgs nav_msgs geometry_msgs visualization_msgs
     std_msgs tf2 tf2_ros cv_bridge image_transport message_filters)
   # libslamko_fusion.so carries its own DT_RPATH to GTSAM 4.3 (/usr/local); add it
   # here too (+ --disable-new-dtags) so the transitive gtsam load can't fall back

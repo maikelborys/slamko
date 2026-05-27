@@ -71,6 +71,7 @@ def generate_launch_description():
             'feature_source':        feature_source,
             'backend':               backend,
             'pose_dump_path':        pose_dump,
+            'enable_neverlost':      LaunchConfiguration('enable_neverlost'),
         }],
         remappings=[
             ('left/image_rect_raw',  '/euroc/left/image_rect_raw'),
@@ -107,6 +108,8 @@ def generate_launch_description():
             description='Tier-2 fusion backend: ceres | gtsam (gtsam in P1c)'),
         DeclareLaunchArgument('pose_dump_path', default_value='',
             description='If set, node writes per-frame world pose as TUM (offline ATE)'),
+        DeclareLaunchArgument('enable_neverlost', default_value='false',
+            description='P2c: run the Tier-3 never-lost supervisor + relocalizer in-process'),
         DeclareLaunchArgument('start_s', default_value='0.0',
             description='Crop: skip first N seconds of the sequence'),
         DeclareLaunchArgument('end_s', default_value='1000000',

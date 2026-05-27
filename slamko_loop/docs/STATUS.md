@@ -90,6 +90,42 @@ relocalizer, induces a vision-loss window (`dr_force_loss_start_s/end_s`), and l
 seal→branch→relocalize→weld on real data (the first end-to-end never-lost bag test;
 replay + action-logging, no rosbag2 recording).
 
+## 2026-05-27 — P2c: never-lost spine validated END-TO-END on a real bag ✅
+
+**What:** the supervisor + XFeat relocalizer are now wired into the **live VIO** (the
+`slamko_vio_node` is the composition root, behind `enable_neverlost:=true`; it gains a
+node-only dep on `slamko_loop`, core lib stays decoupled). Each frame the node feeds the
+supervisor: `health()` (the odom stale-gap), the odom `EstimationFrame`
+(`T_WB = worldPose · T_BS⁻¹`), the active `buildSubMap()` (every 30 frames), and query
+`Features` from the current tracks; on SEAL it registers the sealed submap with the
+relocalizer. Logs every recovery action + state transition.
+
+**GATE — forced-loss replay on MH_01 (rate 1.0, `dr_force_loss=[30,33]s`):** the FULL
+never-lost cycle fired on real VIO health (not synthetic):
+```
+t=30.0  tracking loss (forced) → IMU dead-reckoning
+        [neverlost] OK → RecentlyLost
+t=31.8  [neverlost] SEAL submap 0 + BRANCH 1  (odom_stale_gap=1.15s > lost_gap 1.0, after dwell)
+        [neverlost] RecentlyLost → Relocalizing
+t=33.0  tracking recovered (60 dead-reckoned frames, 3.05s)
+        [neverlost] Relocalizing → OK
+```
+So **seal→branch→keep-emitting-odom→recover** works end-to-end on a bag, the loss
+trigger being the real odometry stale-gap. The **weld** (re-anchor on revisit) is the
+remaining piece — it needs XFeat descriptors (this run used Shi-Tomasi, descriptor-less)
+AND a revisit of the pre-loss area; a revisiting/xfeat sequence is the P2c follow-on.
+
+**Harness lessons (documented so the next session doesn't relearn):** (1) double-typed
+launch args MUST be passed with a decimal (`dr_force_loss_start_s:=30.0`, not `30`) or
+rclcpp aborts with InvalidParameterType. (2) NEVER put `pkill -f <pattern>` inside a
+run-script whose own text contains `<pattern>` — it matches the script's bash and
+self-kills (this caused the earlier empty-output failures). Reap by PID, or in a
+separate command, or rely on the process-group kill. (3) `ros2 launch` children can
+escape the launch process group — reap leftover `euroc_player`/node by PID after.
+
+**Next:** P2c-follow-on (weld on a revisiting xfeat sequence) · P2.5 (loop-closure +
+self-contained SE3 pose-graph solver).
+
 **Integration note (R1):** `lost_gap_s` (1.0 s default) ≥ the VIO dead-reckoning horizon
 (`dr_max_s_`=1.0) so the supervisor doesn't double-handle the ms-gap net. `odom_stale_gap_s`
 is populated by the VIO only while `in_dead_reckoning_` (gated by `dr_enabled_`, default
