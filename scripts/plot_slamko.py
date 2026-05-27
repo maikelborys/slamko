@@ -44,6 +44,10 @@ def main():
     ap.add_argument("--min-obs", type=int, default=2)
     ap.add_argument("--max-landmarks", type=int, default=40000,
                     help="cap landmark markers for browser performance")
+    ap.add_argument("--no-scale", action="store_true",
+                    help="render at TRUE metric scale (SE3, s=1) instead of Sim3. "
+                         "Sim3 hides scale/drift by absorbing it into the scale factor "
+                         "(CLAUDE.md rule #5: report both). Both ATEs are always printed.")
     ap.add_argument("--title", default="slamko run")
     a = ap.parse_args()
 
@@ -67,9 +71,22 @@ def main():
     m, idx = associate(te, tg)
     if m.sum() < 10:
         raise SystemExit(f"too few GT↔est associations ({m.sum()})")
+    # Sim3 (Umeyama: scale+R+t) and SE3 (s=1, same R). Umeyama's R is scale-free, so
+    # the SE3 fit reuses it with s=1 and a recomputed translation. We report BOTH ATEs
+    # (rule #5: Sim3 hides scale/drift); --no-scale renders the metric (SE3) frame.
     s, R, t = umeyama(xe[m], xg[idx[m]])
+    s_sim3 = s  # keep the Sim3 scale for the title even when --no-scale overrides s
+    dst = xg[idx[m]]
+    sim3_all = (s * (R @ xe.T).T) + t
+    rmse_sim3 = float(np.sqrt(((sim3_all[m] - dst) ** 2).sum(1).mean()))
+    t_se3 = dst.mean(0) - (R @ xe[m].mean(0))
+    se3_all = (R @ xe.T).T + t_se3
+    rmse_se3 = float(np.sqrt(((se3_all[m] - dst) ** 2).sum(1).mean()))
+    if a.no_scale:
+        s, t, rmse, mode = 1.0, t_se3, rmse_se3, "SE3 metric (scale=1)"
+    else:
+        rmse, mode = rmse_sim3, f"Sim3 (scale={s:.2f})"
     xe_a = (s * (R @ xe.T).T) + t
-    rmse = float(np.sqrt(((xe_a[m] - xg[idx[m]]) ** 2).sum(1).mean()))
     lm_a = (s * (R @ lm_xyz.T).T) + t if lm_xyz is not None else None
 
     prior_a = None
@@ -110,8 +127,11 @@ def main():
                             marker=dict(size=6, color="limegreen")))
 
     tag = f" · {len(submaps)} submaps (anchor-corrected)" if submaps else ""
+    # Report BOTH ATEs (rule #5): a scale far from 1 means Sim3 is hiding drift.
     fig.update_layout(
-        title=f"{a.title}   |   Sim3-ATE {rmse*100:.1f} cm   |   {m.sum()} poses{tag}",
+        title=(f"{a.title}   |   render: {mode}   |   "
+               f"Sim3-ATE {rmse_sim3*100:.1f} cm · SE3-ATE {rmse_se3*100:.1f} cm "
+               f"(scale {s_sim3:.2f})   |   {m.sum()} poses{tag}"),
         scene=dict(xaxis_title="X (m)", yaxis_title="Y (m)", zaxis_title="Z (m)",
                    aspectmode="data"),
         legend=dict(itemsizing="constant"),
@@ -119,8 +139,8 @@ def main():
         template="plotly_white",
     )
     fig.write_html(a.out, include_plotlyjs=True)  # embed plotly.js → opens offline anywhere
-    print(f"wrote {a.out}  (Sim3-ATE={rmse*100:.2f} cm, scale={s:.4f}, "
-          f"{m.sum()} assoc poses, {lm_n or 0} landmarks)")
+    print(f"wrote {a.out}  (render={mode}; Sim3-ATE={rmse_sim3*100:.2f} cm scale={s_sim3:.4f}; "
+          f"SE3-ATE={rmse_se3*100:.2f} cm; {m.sum()} poses, {lm_n or 0} landmarks)")
 
 
 if __name__ == "__main__":
