@@ -1,6 +1,6 @@
 # slamko — Decoupling & Contracts
 
-<!-- validated: 3995b5c 2026-05-27 · tests: slamko_core 25/25 gtest -->
+<!-- validated: b36ea43 2026-05-27 · tests: slamko_core 25/25 gtest -->
 
 > **Status (2026-05-27):** the contracts below are implemented header-only in
 > `slamko_core` and exercised by 25 passing gtests. The feature seam

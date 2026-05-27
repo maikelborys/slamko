@@ -1,6 +1,6 @@
 # slamko_core — Architecture
 
-<!-- validated: 3995b5c 2026-05-27 · tests: 25/25 gtest -->
+<!-- validated: b36ea43 2026-05-27 · tests: 25/25 gtest -->
 
 The spine. Header-only, **Eigen-only** (no ROS / CUDA / GTSAM / Ceres), so every
 other package links it for free. Defines the contracts modules meet at and the
