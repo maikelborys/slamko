@@ -302,6 +302,60 @@ TEST(Supervisor, RelocalizingStaysUntilWelded) {
   EXPECT_EQ(s.state(), SupervisorState::OK);
 }
 
+// --- P2.5: weld routed through the pose-graph backend (opt-in) ----------------
+
+// One weld through the pose graph MUST equal the closed-form composition: a single
+// fixed sealed node + one edge solves to anchor_active = anchor_sealed · consensus.
+// This is the backward-compat property that makes use_pose_graph risk-free.
+TEST(Supervisor, WeldViaPoseGraphMatchesComposition) {
+  SupervisorConfig c = cfg();
+  c.use_pose_graph = true;
+  InjectableRelocalizer reloc;
+  NeverLostSupervisor s(c, &reloc);
+  double t = 0;
+  triggerLoss(s, t);  // seal id0 (anchor I), branch id1
+  s.submitQueryFeatures(Features{});
+  const SE3 T = makeSE3(1, 2, 3, 0.3, {0, 0, 1});
+  for (int i = 0; i < 3; ++i) reloc.push(0, T, 30, 1.0);
+  bool welded = false;
+  for (int i = 0; i < 3; ++i) welded |= stepGap(s, 0.5, t).welded;
+  EXPECT_TRUE(welded);
+  expectSE3Near(s.mapToOdom(), T, 1e-9);          // same as the closed-form weld
+  EXPECT_EQ(s.poseGraph().nodeCount(), 2u);       // sealed(0, gauge) + active(1)
+  EXPECT_EQ(s.poseGraph().edgeCount(), 1u);       // the one loop-closure factor
+}
+
+// Two sequential welds build a consistent anchor CHAIN in the graph (0→1→2). The
+// graph is a tree (one fixed gauge), so it solves exactly to the same chained
+// anchors as the closed form — proving the multi-submap path is correct.
+TEST(Supervisor, PoseGraphChainsTwoSubmapsExactly) {
+  SupervisorConfig c = cfg();
+  c.use_pose_graph = true;
+  InjectableRelocalizer reloc;
+  NeverLostSupervisor s(c, &reloc);
+  s.submitQueryFeatures(Features{});
+  double t = 0;
+  const SE3 T1 = makeSE3(1, 0, 0, 0.1, {0, 0, 1});
+  const SE3 T2 = makeSE3(0, 1, 0, 0.1, {1, 0, 0});
+
+  triggerLoss(s, t);                               // seal id0 (anchor I), branch id1
+  for (int i = 0; i < 3; ++i) reloc.push(0, T1, 30, 1.0);
+  for (int i = 0; i < 3; ++i) stepGap(s, 0.5, t);
+  expectSE3Near(s.archive().active().anchor, T1, 1e-9);
+  for (int i = 0; i < 3; ++i) stepGap(s, 0.0, t);  // recover to OK
+  ASSERT_EQ(s.state(), SupervisorState::OK);
+
+  triggerLoss(s, t);                               // seal id1 (anchor T1), branch id2
+  ASSERT_EQ(s.archive().sealedCount(), 2u);
+  for (int i = 0; i < 3; ++i) reloc.push(/*sealed_id=*/1, T2, 30, 1.0);
+  bool welded = false;
+  for (int i = 0; i < 3; ++i) welded |= stepGap(s, 0.5, t).welded;
+  EXPECT_TRUE(welded);
+  expectSE3Near(s.archive().active().anchor, T1 * T2, 1e-9);  // chained, exact
+  EXPECT_EQ(s.poseGraph().nodeCount(), 3u);        // 0(gauge) + 1 + 2
+  EXPECT_EQ(s.poseGraph().edgeCount(), 2u);        // 0→1, 1→2
+}
+
 // --- SubMapArchive primitives -------------------------------------------------
 
 TEST(SubMapArchive, SealBranchFindAnchor) {

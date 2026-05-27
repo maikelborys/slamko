@@ -43,6 +43,14 @@ struct SupervisorConfig {
   int    weld_min_matches    = 3;
   int    weld_min_inliers    = 15;   // RelocResult.num_inliers floor (pre-cluster gate)
   double weld_min_confidence = 0.0;  // RelocResult.confidence floor
+
+  // P2.5: route the weld through the SE3 pose-graph backend instead of the single
+  // closed-form composition. Each weld becomes a loop-closure FACTOR (sealed→active)
+  // and ALL submap anchors are re-solved, so accumulated drift is distributed across
+  // a multi-submap map. With one fixed sealed node + one edge this reduces exactly to
+  // the composition (anchor_active = anchor_sealed · consensus), so default-off is
+  // byte-identical to the validated P2c behavior. Turn on when merging >1 sealed map.
+  bool   use_pose_graph = false;
 };
 
 // Boundary projection to the core health vocabulary.

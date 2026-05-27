@@ -34,8 +34,30 @@ bool NeverLostSupervisor::attemptWeld(RecoveryAction& act) {
   const SubMap* s = archive_.find(sealed_id);
   if (!s) return false;  // welds only to a known sealed submap
 
-  // map→odom = active.anchor = S.anchor * (active→sealed). Held until next weld.
-  archive_.setAnchor(archive_.activeId(), s->anchor * consensus);
+  if (!cfg_.use_pose_graph) {
+    // v1 closed form: map→odom = active.anchor = S.anchor * (active→sealed).
+    archive_.setAnchor(archive_.activeId(), s->anchor * consensus);
+  } else {
+    // P2.5 — loop-closure-as-factor: record the weld as a graph edge and re-solve
+    // ALL submap anchors so the constraint is distributed (and a later bad weld can
+    // be dropped). Single fixed sealed node + one edge ⇒ this reduces algebraically
+    // to the composition above (asserted in tests), so opt-in is risk-free.
+    if (!graph_.hasNode(s->id))
+      graph_.setNode(s->id, s->anchor, graph_.nodeCount() == 0);  // first node = gauge
+    if (!graph_.hasNode(archive_.activeId()))
+      graph_.setNode(archive_.activeId(), s->anchor * consensus, false);  // warm start
+    PoseGraphEdge e;
+    e.from_id = s->id;
+    e.to_id = archive_.activeId();
+    e.T_from_to = consensus;  // measured anchor_sealed⁻¹ · anchor_active
+    graph_.addEdge(e);
+    graph_.optimize();
+    // Write the optimized anchors back (the sole legal post-seal mutation). The
+    // fixed gauge is unchanged; the rest absorb the loop-closure correction.
+    for (const auto& sm : archive_.sealed())
+      if (graph_.hasNode(sm.id)) archive_.setAnchor(sm.id, graph_.node(sm.id));
+    archive_.setAnchor(archive_.activeId(), graph_.node(archive_.activeId()));
+  }
   act.welded = true;
   act.welded_to_id = sealed_id;
   act.applied_T_active_sealed = consensus;

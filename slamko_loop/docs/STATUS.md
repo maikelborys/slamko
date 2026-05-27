@@ -155,6 +155,51 @@ map→odom); a "weld-once-then-cooldown" is a cheap future polish.
 **Next:** P2.5 (loop-closure-as-factor + self-contained SE3 pose-graph solver) ·
 offline plotter is `scripts/plot_neverlost.py`.
 
+## 2026-05-27 — P2.5: SE3 pose-graph backend (loop-closure-as-factor) ✅
+
+**What:** the closed-form single weld is now backed by a tiny, self-contained
+**SE(3) pose-graph solver** (`PoseGraph`, `pose_graph.{hpp,cpp}`) — nodes = submap
+**anchors**, edges = revisit/loop-closure constraints **as factors**
+(`Z = anchor_from⁻¹ · anchor_to`). A Gauss-Newton sweep on the manifold (right-
+perturbation, `se3.hpp` only) finds the anchors that best satisfy all edges, so
+accumulated drift is **distributed across a multi-submap map** instead of jumping one
+anchor. Depends on `slamko_core` only (Hard Rule #2) — no GTSAM (dodges the SONAME
+fragility the fusion tier hit), ~210 lines.
+
+- **Jacobians:** small-residual approximation `J_r⁻¹(r) ≈ I` → `∂r/∂δ_from =
+  -Adj(X_to⁻¹·X_from)`, `∂r/∂δ_to = I`. **Exact at a consistent optimum** (all r→0,
+  weighting drops out) — the regime the never-lost weld lives in — and a standard,
+  robust approximation off it. Full SE(3) `J_r⁻¹` is a drop-in later. Win condition =
+  map-merge robustness, not sub-cm MAP optimality ([[slamko-robustness-over-accuracy]]).
+- **Disposable-graph robustness (Hard Rule #4):** LM damping on the H diagonal +
+  per-step trial/accept (reject → damp harder) means a non-SPD / ill-conditioned step
+  never crashes; an optional outlier pass drops the single worst-χ² edge and re-solves,
+  so a bad loop closure **can't stick**. `optimize()` never throws.
+- **Gauge:** exactly one fixed node (auto-pins the lowest id). One fixed node + one
+  edge reduces ALGEBRAICALLY to the closed-form weld `anchor_active = anchor_sealed ·
+  consensus` — the backward-compat property asserted in tests.
+
+**Supervisor integration (opt-in, `SupervisorConfig.use_pose_graph`, default OFF):**
+each weld now records a `PoseGraphEdge` (sealed→active) and re-solves ALL anchors,
+writing the optimized poses back via `archive_.setAnchor` (the sole legal post-seal
+mutation). **Default-off is byte-identical to the validated P2c behavior**, so the
+flagship V1_01 result is untouched; turn it on to merge >1 sealed map. Unbounded edge
+growth over a very long session = a P4 marginalization concern (noted, not blocking).
+
+**GATE — 22 gtests, 0 failures** (`colcon test slamko_loop`; synthetic, no ROS):
+- `test_pose_graph` (5): single edge == closed-form weld (1e-9) · consistent 3-submap
+  loop recovered exactly from a perturbed start (cost→0) · conflicting edges balance
+  residuals (Σrₖ=0, genuinely blended) · under-excited node stays put (LM stability) ·
+  gross-outlier edge dropped + good consensus recovered.
+- `test_supervisor` (+2 = 13): weld-via-pose-graph matches the composition (2 nodes,
+  1 edge) · two sequential welds chain submaps exactly (`T1·T2`, 3 nodes, 2 edges).
+- `test_relocalizer` (4) unchanged.
+
+**Next:** continuous relocalization in the OK state (welds add edges + re-optimize
+rather than only firing during recovery) now that the graph backend exists; full SE(3)
+`J_r⁻¹` if a real inconsistent-graph ATE pass ever shows the approximation costs us;
+deferred dense submap-to-submap `Factor` (OKVIS2-X map-to-map) as a graph edge.
+
 **Integration note (R1):** `lost_gap_s` (1.0 s default) ≥ the VIO dead-reckoning horizon
 (`dr_max_s_`=1.0) so the supervisor doesn't double-handle the ms-gap net. `odom_stale_gap_s`
 is populated by the VIO only while `in_dead_reckoning_` (gated by `dr_enabled_`, default

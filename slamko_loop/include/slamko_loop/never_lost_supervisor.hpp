@@ -29,6 +29,7 @@
 #include "slamko_core/submap.hpp"
 
 #include "slamko_loop/anchor_gate.hpp"
+#include "slamko_loop/pose_graph.hpp"
 #include "slamko_loop/submap_archive.hpp"
 #include "slamko_loop/supervisor_state.hpp"
 
@@ -56,6 +57,7 @@ class NeverLostSupervisor {
   HealthState     healthState() const { return toHealthState(state_); }
   SE3             mapToOdom() const { return archive_.active().anchor; }
   const SubMapArchive& archive() const { return archive_; }
+  const PoseGraph&     poseGraph() const { return graph_; }  // P2.5 (opt-in) state
 
   // Estimator inputs (staged; consumed at the next step — single-writer doctrine).
   void submitActiveSubMap(SubMap sm) { archive_.setActiveContent(std::move(sm)); }
@@ -68,6 +70,7 @@ class NeverLostSupervisor {
   Relocalizer*     reloc_ = nullptr;
   SubMapArchive    archive_;
   AnchorGate       gate_;
+  PoseGraph        graph_;  // P2.5: submap-anchor pose graph (used iff cfg.use_pose_graph)
 
   SupervisorState  state_ = SupervisorState::OK;
   int              lost_count_ = 0;     // consecutive over-threshold steps

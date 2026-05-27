@@ -1,6 +1,6 @@
 # slamko_loop — P2 plan (the never-lost supervisor)
 
-<!-- validated: (P2c) 2026-05-27 · 16 gtest 0 fail + never-lost cycle (seal→branch→recover) validated end-to-end on MH_01 forced-loss replay -->
+<!-- validated: (P2.5) 2026-05-27 · 22 gtest 0 fail (incl. 5 pose-graph + 2 supervisor pose-graph) + never-lost cycle (seal→branch→WELD→recover) validated end-to-end on V1_01 XFeat forced-loss replay -->
 
 Read [`../../docs/SYSTEM.md`](../../docs/SYSTEM.md) (never-lost spine) +
 [`../../docs/DECOUPLING.md`](../../docs/DECOUPLING.md) + [`../README.md`](../README.md)
@@ -34,9 +34,15 @@ OUTSIDE the estimator graph). Loss = odometry **stale-gap**, not covariance.
   map via XFeat→PnP, re-anchoring map→odom (~0.2 m). Needed: supervisor stays
   Relocalizing until welded + a relocalizer DB cap (`max_db_landmarks`). Plot via
   `scripts/plot_neverlost.py`. See STATUS.
-- **P2.5** — loop-closure-as-factor + a tiny self-contained SE3 pose-graph solver over
-  submap anchors (Gauss-Newton, uses only `se3.hpp`; try/catch → damp → drop-edge,
-  Hard Rule #4). The v1 stores the edge data model so this adds only the solve loop.
+- **P2.5 ✅** — loop-closure-as-factor + a tiny self-contained SE3 pose-graph solver
+  over submap anchors (`PoseGraph`, `pose_graph.{hpp,cpp}`): nodes = anchors, edges =
+  relative-pose factors `Z = anchor_from⁻¹·anchor_to`, Gauss-Newton on `se3.hpp` only
+  (right-perturbation, `J_r⁻¹≈I` — exact at a consistent optimum). LM damping +
+  worst-χ²-edge drop = the disposable-graph robustness (Hard Rule #4); `optimize()`
+  never throws. One fixed gauge + one edge reduces ALGEBRAICALLY to the closed-form
+  weld, so the supervisor's `use_pose_graph` flag (default OFF) is byte-identical to
+  P2c; ON, each weld becomes an edge and ALL anchors re-solve (multi-submap merge).
+  22 gtests 0 fail (5 pose-graph + 2 supervisor pose-graph). See STATUS.
 - **Deferred (opt-in plugin):** dense submap-to-submap alignment `Factor` (the OKVIS2-X
   `useMap2MapFactors` mechanism — IoU overlap → dense ICP residuals) for
   forest/repetitive/appearance-change robustness where visual place-rec is weak. Needs a
@@ -49,8 +55,10 @@ multi-cluster lazy-anchor · `T_map_odom = active.anchor = S.anchor · T_query_m
 sparse core, dense as an opt-in factor · depends on `slamko_core` only (Hard Rule #2).
 
 ## Key files
-`include/slamko_loop/{supervisor_state,submap_archive,anchor_gate,never_lost_supervisor}.hpp`
-· `src/{submap_archive,anchor_gate,never_lost_supervisor}.cpp` · `test/test_supervisor.cpp`.
+`include/slamko_loop/{supervisor_state,submap_archive,anchor_gate,never_lost_supervisor,
+pose_graph,xfeat_relocalizer}.hpp` · `src/{submap_archive,anchor_gate,
+never_lost_supervisor,pose_graph,xfeat_relocalizer}.cpp` ·
+`test/{test_supervisor,test_relocalizer,test_pose_graph}.cpp`.
 
 ## Verify
 ```bash
