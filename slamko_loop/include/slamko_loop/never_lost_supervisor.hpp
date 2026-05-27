@@ -73,6 +73,7 @@ class NeverLostSupervisor {
   int              lost_count_ = 0;     // consecutive over-threshold steps
   int              recover_count_ = 0;  // consecutive healthy steps (recovery dwell)
   double           last_now_s_ = 0.0;
+  SE3              odom_T_WB_;           // latest live odom body pose (for the weld)
 
   Features         query_;
   bool             have_query_ = false;

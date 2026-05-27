@@ -24,7 +24,8 @@ find_package(Eigen3 REQUIRED)
 add_library(slamko_loop SHARED
   src/submap_archive.cpp
   src/anchor_gate.cpp
-  src/never_lost_supervisor.cpp)
+  src/never_lost_supervisor.cpp
+  src/xfeat_relocalizer.cpp)
 target_include_directories(slamko_loop PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -39,9 +40,11 @@ install(DIRECTORY include/ DESTINATION include)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-  ament_add_gtest(test_supervisor test/test_supervisor.cpp)
-  target_link_libraries(test_supervisor slamko_loop Eigen3::Eigen)
-  ament_target_dependencies(test_supervisor slamko_core)
+  foreach(t test_supervisor test_relocalizer)
+    ament_add_gtest(${t} test/${t}.cpp)
+    target_link_libraries(${t} slamko_loop Eigen3::Eigen)
+    ament_target_dependencies(${t} slamko_core)
+  endforeach()
 endif()
 
 ament_export_dependencies(slamko_core Eigen3)

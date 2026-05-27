@@ -1,6 +1,6 @@
 # slamko_loop — P2 plan (the never-lost supervisor)
 
-<!-- validated: (P2a) 2026-05-27 · tests: 10 gtest 0 fail (synthetic, no ROS) -->
+<!-- validated: (P2b) 2026-05-27 · tests: 16 gtest 0 fail (supervisor + relocalizer, synthetic, no ROS) -->
 
 Read [`../../docs/SYSTEM.md`](../../docs/SYSTEM.md) (never-lost spine) +
 [`../../docs/DECOUPLING.md`](../../docs/DECOUPLING.md) + [`../README.md`](../README.md)
@@ -18,10 +18,12 @@ OUTSIDE the estimator graph). Loss = odometry **stale-gap**, not covariance.
   `NeverLostSupervisor` (state machine + map→odom owner) + `SubMapArchive` (seal/branch
   Atlas) + `AnchorGate` (multi-cluster lazy-anchor weld gate) + the `Relocalizer` seam
   (tested with an injectable stub). 10 synthetic gtests, 0 fail. See STATUS.
-- **P2b** — **XFeat relocalizer**: a `slamko_core::Relocalizer` impl that matches a query's
-  XFeat descriptors against archived submaps' N×64 XFeat index (already produced by
-  `slamko_vio::buildSubMap()`) + PnP/RANSAC geometric verification → emits `RelocResult`
-  feeding the weld gate. No new model. LiftFeat-m1 = future swappable option.
+- **P2b ✅** — **XFeat relocalizer** (`XFeatRelocalizer : slamko_core::Relocalizer`): NN
+  descriptor match (Lowe ratio) on the submap's N×64 XFeat index + **PnP-RANSAC (P3P
+  copied to `slamko_core`)** → query cam-in-submaplocal → body via the extrinsic →
+  `RelocResult.T_query_match`. Supervisor weld now composes with live odom
+  (`T_active_sealed = T_query_match · T_WB⁻¹`). 16 gtests 0 fail. No new model, no
+  OpenCV. LiftFeat-m1 = future swappable option. See STATUS.
 - **P2.5** — loop-closure-as-factor + a tiny self-contained SE3 pose-graph solver over
   submap anchors (Gauss-Newton, uses only `se3.hpp`; try/catch → damp → drop-edge,
   Hard Rule #4). The v1 stores the edge data model so this adds only the solve loop.

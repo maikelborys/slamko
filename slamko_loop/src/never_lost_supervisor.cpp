@@ -17,9 +17,13 @@ bool NeverLostSupervisor::attemptWeld(RecoveryAction& act) {
   const RelocResult r = reloc_->relocalize(query_);
   if (!r.found) return false;
 
+  // RelocResult.T_query_match is the query BODY pose in sealed-local (absolute).
+  // Compose with the live odom to get the active→sealed weld constraint
+  // (OKVIS2-X: T_AB = T_AS_query · T_WS_current⁻¹). The gate clusters THIS — a
+  // frame transform invariant over the short reloc window even as odom moves.
   WeldCandidate c;
   c.sealed_submap_id = r.submap_id;
-  c.T_active_sealed  = r.T_query_match;  // active(query) → sealed-local (contract)
+  c.T_active_sealed  = r.T_query_match * odom_T_WB_.inverse();
   c.confidence       = r.confidence;
   c.inliers          = r.num_inliers;
 
@@ -39,9 +43,10 @@ bool NeverLostSupervisor::attemptWeld(RecoveryAction& act) {
 }
 
 RecoveryAction NeverLostSupervisor::step(const HealthSignal& h,
-                                         const EstimationFrame& /*odom*/,
+                                         const EstimationFrame& odom,
                                          double monotonic_now_s) {
   last_now_s_ = monotonic_now_s;
+  odom_T_WB_ = odom.T_WB;  // latest live body pose — used to compose the weld
   RecoveryAction act;
   const double gap = h.odom_stale_gap_s;
 

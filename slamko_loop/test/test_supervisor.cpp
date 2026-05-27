@@ -88,7 +88,17 @@ class InjectableRelocalizer : public slamko::Relocalizer {
 RecoveryAction stepGap(NeverLostSupervisor& s, double gap, double& t) {
   HealthSignal h;
   h.odom_stale_gap_s = gap;
-  EstimationFrame odom;  // identity T_WB; the supervisor does not read it in v1
+  EstimationFrame odom;  // identity T_WB
+  t += 0.1;
+  return s.step(h, odom, t);
+}
+
+RecoveryAction stepGapOdom(NeverLostSupervisor& s, double gap, const SE3& T_WB,
+                           double& t) {
+  HealthSignal h;
+  h.odom_stale_gap_s = gap;
+  EstimationFrame odom;
+  odom.T_WB = T_WB;
   t += 0.1;
   return s.step(h, odom, t);
 }
@@ -249,6 +259,25 @@ TEST(Supervisor, WeldComposesNonIdentitySealedAnchor) {
   }
   EXPECT_TRUE(welded);
   expectSE3Near(s.archive().active().anchor, T1 * T2, 1e-9);
+}
+
+// The relocalizer returns an ABSOLUTE query-body pose in sealed-local; the
+// supervisor composes it with the live odom (T_active_sealed = T_query_match ·
+// T_WB⁻¹) before gating. Verify that composition with a non-identity odom.
+TEST(Supervisor, WeldComposesWithLiveOdom) {
+  InjectableRelocalizer reloc;
+  NeverLostSupervisor s(cfg(), &reloc);
+  double t = 0;
+  triggerLoss(s, t);  // seal id0 (anchor I), branch id1
+  s.submitQueryFeatures(Features{});
+  const SE3 Tqm   = makeSE3(2, 0, 1, 0.2, {0, 0, 1});  // absolute body-in-sealed
+  const SE3 Todom = makeSE3(0, 1, 0, 0.1, {0, 1, 0});  // live odom T_WB
+  for (int i = 0; i < 3; ++i) reloc.push(0, Tqm, 30, 1.0);
+  bool welded = false;
+  for (int i = 0; i < 3; ++i) welded |= stepGapOdom(s, 0.5, Todom, t).welded;
+  EXPECT_TRUE(welded);
+  // active.anchor = S.anchor(I) · (Tqm · Todom⁻¹).
+  expectSE3Near(s.mapToOdom(), Tqm * Todom.inverse(), 1e-9);
 }
 
 // --- SubMapArchive primitives -------------------------------------------------

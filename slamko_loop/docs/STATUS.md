@@ -52,6 +52,44 @@ submap-to-submap alignment `Factor` (the OKVIS2-X map-to-map mechanism) for
 forest/repetitive robustness, opt-in via the pluggable `Factor` contract + a dense
 payload — zero core changes.
 
+## 2026-05-27 — P2b: XFeat relocalizer + supervisor weld refinement ✅
+
+**What:** the weld is now real — `XFeatRelocalizer` (implements
+`slamko_core::Relocalizer`) localizes a query frame against archived submaps using the
+XFeat descriptors the VIO already attaches to landmarks (`SubMap`'s N×64 index) — **no
+new model**: brute-force NN match (Lowe ratio) → 2D-3D correspondences → **PnP-RANSAC
+(core P3P)** → query camera pose in the matched submap's local frame → converted to the
+**body** frame via the cam↔body extrinsic. Depends on `slamko_core` only (no OpenCV).
+
+- **P3P → slamko_core** (`slamko_core/include/slamko_core/p3p_solver.hpp`, `slamko::p3p`):
+  the header-only pure-C P3P copied from slamko_vio so loop reuses it without a
+  cross-package dep (Hard Rule #2). HD macro renamed (`SLAMKO_P3P_HD`) so both copies
+  can coexist in one TU (the P2c app). vio keeps its copy; dedup later.
+- **PnP-RANSAC** = a small Eigen helper in the relocalizer (mirrors `pnp_cuda.cu`'s pure
+  math: sample 3 → P3P → reproject `u=fx·X/Z+cx`, count inliers < thr² → argmax),
+  deterministic RNG seed.
+- **Supervisor weld refinement (load-bearing, OKVIS2-X-validated):** the relocalizer
+  returns `RelocResult.T_query_match` = the query **body** pose in sealed-local
+  (absolute). The supervisor composes it with the live odom to get the weld constraint
+  `T_active_sealed = T_query_match · odom.T_WB⁻¹` (the OKVIS2-X `T_AB = T_AS_query ·
+  T_WS_current⁻¹` formula) and feeds THAT to the lazy-anchor gate — a frame transform
+  invariant over the short reloc window even as odom moves. Keeping the extrinsic in the
+  (camera-aware) relocalizer lets the supervisor stay body-frame. Backward-compatible:
+  the P2a tests use identity odom, so the composition is a no-op there — still green.
+
+**GATE — 16 gtests, 0 failures** (`colcon test slamko_loop`): the 10 P2a supervisor/
+archive tests still pass + a new **odom-composition weld** test; **4 relocalizer tests** —
+recovers a synthetic query pose with **identity AND non-identity extrinsic** (the
+cam↔body round-trip, asserted to 1e-4 — 3-pt P3P precision), **RANSAC rejects 10/30
+outlier correspondences** while recovering the exact pose, and **no-match / too-few →
+`found=false`**. Synthetic, no ROS/rosbag2.
+
+**Next — P2c:** the integration harness — a composition-root app linking
+slamko_vio+loop+core that replays EuRoC, runs the VIO, feeds the supervisor +
+relocalizer, induces a vision-loss window (`dr_force_loss_start_s/end_s`), and logs
+seal→branch→relocalize→weld on real data (the first end-to-end never-lost bag test;
+replay + action-logging, no rosbag2 recording).
+
 **Integration note (R1):** `lost_gap_s` (1.0 s default) ≥ the VIO dead-reckoning horizon
 (`dr_max_s_`=1.0) so the supervisor doesn't double-handle the ms-gap net. `odom_stale_gap_s`
 is populated by the VIO only while `in_dead_reckoning_` (gated by `dr_enabled_`, default
