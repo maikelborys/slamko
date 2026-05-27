@@ -273,3 +273,10 @@ shutdown). Cross-session welds are flagged in the log (`[CROSS-SESSION/prior map
 `welded_to_id < first_live_id`). Two-session V1_01 run: session 1 saved a 1-submap Atlas,
 session 2 loaded it and welded into it (`WELD to submap 0 [CROSS-SESSION]`), `check_neverlost.py`
 7/7 PASS (ATE 13.9 cm). Detail: `slamko_loop/docs/STATUS.md` (2026-05-27 P4b-1).
+
+## 2026-05-27 — P4b-2: continuous-reloc node param ✅
+
+Node param `neverlost_continuous_reloc` (default off) → `SupervisorConfig.continuous_reloc`:
+the live session welds into a prior map / closes loops while OK (no forced loss). Validated
+session 2 on V1_01 (prior map loaded, no loss): `WELD to submap 0 [CROSS-SESSION]` at ~2 s
+in the OK state, `check_neverlost.py` 7/7 PASS (ATE 6.9 cm). Detail: `slamko_loop/docs/STATUS.md`.

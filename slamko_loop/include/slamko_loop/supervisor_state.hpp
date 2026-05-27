@@ -52,6 +52,15 @@ struct SupervisorConfig {
   // byte-identical to the validated P2c behavior. Turn on when merging >1 sealed map.
   bool   use_pose_graph = false;
 
+  // P4b-2: continuous relocalization — attempt a weld in the OK state too (not only
+  // during recovery), throttled to every continuous_reloc_interval frames. This is
+  // how a session localizes into a PRIOR map / closes a loop with its own sealed
+  // submaps WITHOUT having to get lost first (the deploy-correct behavior). It only
+  // updates map→odom on a clustered match (the gate still guards false-relocs); the
+  // state stays OK and the fast odometry is untouched (Hard Rule #4). Default off.
+  bool continuous_reloc          = false;
+  int  continuous_reloc_interval = 15;  // frames between OK-state weld attempts
+
   // P2.5 polish: weld at most once to each sealed TARGET per recovery episode. The
   // gate already fires whenever a fresh cluster of ≥weld_min_matches agreeing hits
   // forms, so without this it re-welds every few frames (the V1_01 "7× weld"

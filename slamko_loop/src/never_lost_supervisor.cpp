@@ -6,6 +6,8 @@
 
 #include "slamko_loop/never_lost_supervisor.hpp"
 
+#include <algorithm>
+
 namespace slamko {
 
 NeverLostSupervisor::NeverLostSupervisor(const SupervisorConfig& cfg,
@@ -106,6 +108,13 @@ RecoveryAction NeverLostSupervisor::step(const HealthSignal& h,
     } else {
       state_ = SupervisorState::OK;
       lost_count_ = 0;
+    }
+    // P4b-2: continuous relocalization. While healthy (OK), periodically try to weld
+    // the live submap to a prior/sealed one — localize into a prior map or close a
+    // loop without getting lost. Gate-guarded; updates map→odom only, stays OK.
+    if (cfg_.continuous_reloc && state_ == SupervisorState::OK &&
+        (++cont_counter_ % std::max(1, cfg_.continuous_reloc_interval)) == 0) {
+      attemptWeld(act);
     }
     return act;
   }

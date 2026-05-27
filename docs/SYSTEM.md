@@ -25,7 +25,7 @@ One row per package; updated when a milestone lands (detail in each `docs/STATUS
 | `slamko_loop` | T3 | **P2 ✅ CLOSED** | ✅ shipped | never-lost supervisor + XFeat relocalizer + **SE3 pose-graph backend** (loop-closure-as-factor, GN+LM, drop-bad-edge) + weld-once. **Validated end-to-end on live V1_01 (XFeat): single-submap weld (P2c) AND multi-submap pose-graph merge** (2 sealed submaps, 2 welds, nodes{0,1,2}/edges{0→1,0→2}). 32 gtests 0 fail (incl. 10-test stress suite: 30-submap chain, 5×5 grid loops, outlier-drop, deterministic, gauge-free stability) | `0139e29`+ |
 | `slamko_msgs` | — | P4 | ⬜ planned | map-server API / status / correspondences | — |
 | `slamko_ros` | root | — | ⬜ planned | composition root + map→odom→base bridge + viz | — |
-| `slamko_mapping` | T3 | P4 | 🟢 active | **P4a ✅** SubMap (de)serialization (`submap_io.hpp`); **P4b-1 ✅** cross-session Atlas seed (`prior_map_dir`/`map_save_dir`) — session 2 loaded session 1's map + **welded into it** on V1_01 (`[CROSS-SESSION]`, ATE 13.9 cm, auto-check 7/7). Next: P4b-2 continuous reloc in OK, then split the package | — |
+| `slamko_mapping` | T3 | P4 | 🟢 active | **P4a ✅** SubMap (de)serialization (`submap_io.hpp`); **P4b ✅** cross-session localization — reactive (`prior_map_dir` + recovery weld, ATE 13.9 cm) AND proactive (`continuous_reloc` welds into the prior map while OK, no loss — ATE 6.9 cm), both auto-check 7/7 on V1_01. Next: cross-session merge viz, then split the package | — |
 | `slamko_sensors` | T1 | P5 | ⬜ deferred | wheel/ZUPT → LiDAR → GPS frontends | — |
 | `slamko_semantic` | T1/T3 | P6 | ⬜ deferred | object-level factors + semantic reloc | — |
 

@@ -87,6 +87,7 @@ class NeverLostSupervisor {
   std::vector<std::uint64_t> episode_welded_ids_;  // sealed targets welded this episode
   double           last_now_s_ = 0.0;
   SE3              odom_T_WB_;           // latest live odom body pose (for the weld)
+  int              cont_counter_ = 0;    // throttle for OK-state continuous reloc
 
   Features         query_;
   bool             have_query_ = false;

@@ -390,6 +390,33 @@ TEST(Supervisor, SeedPriorMapImportsAndWeldsCrossSession) {
   expectSE3Near(s.mapToOdom(), priors[1].anchor * T, 1e-9);
 }
 
+// P4b-2: with continuous_reloc on, a weld fires in the OK state (no loss/seal) once
+// a clustered match to a prior submap forms — the live session localizes into the
+// prior map without getting lost, and never leaves OK.
+TEST(Supervisor, ContinuousRelocWeldsInOKWithoutLoss) {
+  SupervisorConfig c = cfg();
+  c.continuous_reloc = true;
+  c.continuous_reloc_interval = 1;   // attempt every frame (test)
+  InjectableRelocalizer reloc;
+  NeverLostSupervisor s(c, &reloc);
+
+  std::vector<SubMap> priors(1);
+  priors[0].id = 5; priors[0].anchor = makeSE3(1, 0, 0, 0.1, {0, 0, 1});
+  s.seedPriorMap(priors);
+  s.submitQueryFeatures(Features{});
+  ASSERT_EQ(s.state(), SupervisorState::OK);
+
+  const SE3 T = makeSE3(0.2, 0.0, 0.0, 0.05, {0, 0, 1});
+  for (int i = 0; i < 3; ++i) reloc.push(/*sealed_id=*/5, T, 30, 1.0);  // matches prior 5
+  bool welded = false;
+  double t = 0;
+  for (int i = 0; i < 3; ++i) welded |= stepGap(s, 0.0, t).welded;       // healthy → stays OK
+  EXPECT_TRUE(welded);
+  EXPECT_EQ(s.state(), SupervisorState::OK);                            // never got lost
+  EXPECT_EQ(s.archive().sealedCount(), 1u);                            // no new seal
+  expectSE3Near(s.mapToOdom(), priors[0].anchor * T, 1e-9);            // localized into prior
+}
+
 // --- SubMapArchive primitives -------------------------------------------------
 
 TEST(SubMapArchive, SealBranchFindAnchor) {

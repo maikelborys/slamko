@@ -345,3 +345,27 @@ gtests, 0 fail.
 prior map WITHOUT needing a forced loss (the deploy-correct behavior; the forced loss here
 just reuses the recovery flow to exercise the data path). Then map-merge viz across sessions
 (overlay the prior `.smap` landmarks) + split slamko_mapping when the I/O grows.
+
+## 2026-05-27 — P4b-2: continuous relocalization in OK (deploy-correct localize) ✅
+
+**What:** the supervisor now attempts welds in the **OK state** too (config `continuous_reloc`,
+throttled by `continuous_reloc_interval` frames), gate-guarded as always. So a session
+localizes into a prior map / closes a loop **without having to get lost first** — the
+deploy-correct behavior (the forced loss in P4b-1 only existed to exercise the data path).
+A weld in OK updates map→odom only; the state stays OK and the fast odometry is untouched
+(Hard Rule #4). Default off → existing runs unchanged.
+
+**GATE — session 2 on V1_01, prior map loaded, `continuous_reloc=true`, NO forced loss:**
+```
+loaded 1 prior submaps (live ids start at 1)
+WELD to submap 0 [CROSS-SESSION/prior map]   ← t≈2s, NO seal, state stayed OK
+map→odom t=[0.004 0.017 -0.005]              ← ~2 cm: recognized it's already in the known room
+```
+So the live session auto-localized into the prior map from startup. `check_neverlost.py`
+**7/7 PASS** (seals 0, welds 1, ended OK via no-transition, anchor 0.02 m, ATE 6.9 cm).
+Unit: `ContinuousRelocWeldsInOKWithoutLoss` (loop, 15 supervisor gtests 0 fail). The
+auto-check learned the no-loss case (stayed-OK = success; "welds don't worsen ATE").
+
+**P4b status: cross-session localization complete** — both reactive (forced-loss recovery,
+P4b-1) and proactive (continuous reloc in OK, P4b-2). Next: cross-session merge VIZ (overlay
+the prior `.smap` landmarks with the live map in one frame) + split `slamko_mapping`.
