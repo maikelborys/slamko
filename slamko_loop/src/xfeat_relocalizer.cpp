@@ -5,6 +5,7 @@
 
 #include "slamko_loop/xfeat_relocalizer.hpp"
 
+#include <algorithm>
 #include <random>
 
 #include "slamko_core/p3p_solver.hpp"
@@ -131,12 +132,41 @@ void XFeatRelocalizer::addSubMap(const SubMap& submap) {
   }
   e.desc.conservativeResize(row, submap.descriptors.cols());
   db_.push_back(std::move(e));
+
+  // P3: BoW index. Train the vocabulary once (on the first submap that has enough
+  // descriptors — for the never-lost case that's the prior map / first sealed room,
+  // which is representative), then BoW-index every submap behind the inverted index.
+  if (cfg_.use_bow && submap.descriptors.rows() > 0) {
+    if (vocab_.empty() && submap.descriptors.rows() >= cfg_.bow_vocab_size) {
+      const int n = static_cast<int>(submap.descriptors.rows());
+      const int stride =
+          std::max(1, (n + cfg_.bow_train_sample - 1) / cfg_.bow_train_sample);
+      DescriptorBlock sample((n + stride - 1) / stride, submap.descriptors.cols());
+      int r = 0;
+      for (int i = 0; i < n && r < sample.rows(); i += stride)
+        sample.row(r++) = submap.descriptors.row(i);
+      sample.conservativeResize(r, submap.descriptors.cols());
+      vocab_.build(sample, cfg_.bow_vocab_size, 10, cfg_.seed);
+    }
+    if (!vocab_.empty()) bow_db_.addSubMap(submap.id, vocab_.transform(submap.descriptors));
+  }
 }
 
 RelocResult XFeatRelocalizer::relocalize(const Features& query) const {
   RelocResult best;  // found = false
   int best_inliers = 0;
+
+  // P3: BoW candidate pre-selection — PnP-verify only the top-k submaps that share
+  // visual words with the query. Empty = fall back to ALL submaps (untrained vocab
+  // or no shared words), so recall is never reduced, only hopeless submaps skipped.
+  std::vector<std::uint64_t> cand;
+  if (cfg_.use_bow && !vocab_.empty() && query.hasDescriptors())
+    cand = bow_db_.query(vocab_.transform(query.descriptors), cfg_.bow_top_k);
+
   for (const auto& e : db_) {
+    if (!cand.empty() &&
+        std::find(cand.begin(), cand.end(), e.id) == cand.end())
+      continue;  // not a BoW candidate this query
     std::vector<Eigen::Vector2d> uv;
     std::vector<Eigen::Vector3d> X;
     matchDescriptors(query, e.desc, e.pos, cfg_.match_ratio, uv, X);

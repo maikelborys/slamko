@@ -28,6 +28,8 @@
 #include "slamko_core/se3.hpp"
 #include "slamko_core/submap.hpp"
 
+#include "slamko_loop/bow.hpp"
+
 namespace slamko {
 
 struct XFeatRelocConfig {
@@ -43,6 +45,16 @@ struct XFeatRelocConfig {
   // most this many descriptors so a relocalize() call stays cheap (a real system
   // would use a vocabulary/inverted index — that's the scalable swap).
   int    max_db_landmarks = 3000;
+
+  // P3: BoW candidate pre-selection. Train a vocabulary on the first registered
+  // submap's descriptors, BoW-index every submap behind an inverted index, and at
+  // relocalize() PnP-verify only the top-k BoW candidates instead of every submap
+  // (sublinear in map count). Falls back to all-submaps if the vocab is untrained or
+  // returns no candidate — so it never lowers recall, only skips hopeless submaps.
+  bool   use_bow          = true;
+  int    bow_vocab_size   = 256;   // K visual words
+  int    bow_top_k        = 5;     // candidate submaps PnP-verified per query
+  int    bow_train_sample = 6000;  // max descriptors used to train the vocabulary
 };
 
 class XFeatRelocalizer : public Relocalizer {
@@ -70,6 +82,8 @@ class XFeatRelocalizer : public Relocalizer {
 
   XFeatRelocConfig    cfg_;
   std::vector<Entry>  db_;
+  BowVocabulary       vocab_;   // P3: trained on the first submap, fixed thereafter
+  BowDatabase         bow_db_;  // P3: inverted index for candidate pre-selection
 };
 
 }  // namespace slamko

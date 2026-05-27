@@ -416,3 +416,27 @@ database retrieves the right submap for a query drawn from a known place; empty/
 descriptors, BoW-index each `addSubMap`, and in `relocalize()` PnP-verify only the top-k BoW
 candidates instead of every submap. Validate it does NOT regress `bench_neverlost.sh` (the
 guard) — same welds, faster. Then lift the `max_db_landmarks` brute-force cap.
+
+## 2026-05-27 — P3b: BoW candidate pre-selection wired into XFeatRelocalizer ✅
+
+`XFeatRelocalizer` now trains a `BowVocabulary` on the first registered submap's
+descriptors (the prior map / first sealed room — representative), BoW-indexes every
+`addSubMap` in a `BowDatabase`, and at `relocalize()` PnP-verifies only the **top-k BoW
+candidate submaps** instead of every submap. **Fallback-safe:** if the vocab is untrained
+(submap < `bow_vocab_size`) or no candidate shares a word, it falls back to all-submaps —
+so recall is never reduced, only hopeless submaps skipped. `use_bow` default on.
+
+**GATE — bench_neverlost.sh (V1_01 → V1_02, BoW active), 7/7 PASS:** session 2 still fires
+`WELD to submap 0 [CROSS-SESSION]` (anchor 0.40 m, ATE 28.7 cm) — i.e. the BoW pre-selection
+did NOT regress the cross-session weld. Relocalizer + BoW unit suites green (38 loop gtests).
+
+**Harness lesson (re-learned hard):** running validation runs CONCURRENTLY makes the
+global `pkill -f slamko_vio_node|euroc_player` reap each other (CLAUDE.md "run serially"),
+and a `setsid`-detached launch survives if its bench is killed before teardown → a duplicate
+publisher (`TF_OLD_DATA` flood) that corrupts the next run. Fixes: `bench_neverlost.sh` now
+`trap reap EXIT INT TERM` (teardown always runs) + the reap loop waits on BOTH process names;
+**run benches one at a time.** Most of the P3b "failures" were these races, not the code.
+
+**Next:** with BoW pre-selecting a few candidates, the per-submap brute-force only runs on
+the top-k, so the `max_db_landmarks` cap can be raised (more recall per candidate) — a cheap
+follow-on. Then a persisted/pre-trained vocabulary (so it's not re-trained per session).

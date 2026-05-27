@@ -31,10 +31,13 @@ source "$SLAMKO/install/setup.bash"
 
 reap() {  # reap bench-owned processes by name (they escape the launch pgroup)
   pkill -INT -f 'slamko_vio_node' 2>/dev/null; pkill -INT -f 'euroc_player' 2>/dev/null
-  for _ in $(seq 1 15); do pgrep -f slamko_vio_node >/dev/null 2>&1 || break; sleep 1; done
+  for _ in $(seq 1 15); do pgrep -f 'slamko_vio_node|euroc_player' >/dev/null 2>&1 || break; sleep 1; done
   pkill -KILL -f 'slamko_vio_node' 2>/dev/null; pkill -KILL -f 'euroc_player' 2>/dev/null
   sleep 1
 }
+# Always reap on exit (incl. an early `exit 1` or SIGINT/SIGTERM) — a detached launch
+# left alive is a duplicate publisher that corrupts the NEXT run (CLAUDE.md zombie rule).
+trap reap EXIT INT TERM
 
 # run_session <seq> <end_s> <log> "<extra launch args>"
 run_session() {
