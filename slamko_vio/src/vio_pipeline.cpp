@@ -354,8 +354,17 @@ std::vector<ImuSample> VioPipeline::drain_imu_window(double t_lo, double t_hi) {
 void VioPipeline::processStereo(const slamko::ImageView& left,
                                 const slamko::ImageView& right,
                                 double timestamp, const StereoIntrinsics& K) {
+    const bool first_K = !have_K_;
     K_ = K;
     have_K_ = true;
+    if (first_K) {
+      // Hand the rectified-stereo calib to the Tier-2 backend once. The
+      // LocalSmoother contract carries observations WITHOUT K (unlike LocalBA's
+      // per-insert K), so the backend must be told the calibration here — both
+      // CeresLocalSmoother and GtsamLocalSmoother need it before insertKeyframe.
+      smoother_->setStereoCalib(
+          slamko::StereoCalib{K.fx, K.fy, K.cx, K.cy, K.baseline_m});
+    }
     cudaEventRecord(ev_start_);
 
     // Upload mono8 stereo pair.

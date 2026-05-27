@@ -171,3 +171,48 @@ moot (front-end nondeterminism dominates). The **unit-exactness proof** is the g
 the bench confirms no end-to-end regression. **Next — P1c:** wire `backend:=gtsam` at
 the node (node gains the `slamko_fusion` dep), validate the GTSAM smoother
 end-to-end on EuRoC (marginalization + IMU + accuracy + health probes).
+
+## 2026-05-27 — P1c: GTSAM backend wired + tracks end-to-end (the IMU regime) ✅
+
+**What:** `backend:=gtsam` now injects `slamko_fusion::GtsamLocalSmoother` at the
+**node** (composition root) — `slamko_vio_core` still links only `slamko_core`
+(Hard Rule #2 intact). GTSAM is fully encapsulated in the now-**shared**
+`libslamko_fusion.so` (RPATH → GTSAM 4.3 at `/usr/local`), so the node links the
+`.so` and never finds/links gtsam itself. Confirmed: `ldd` resolves
+`libgtsam.so.4 → /usr/local` (the 4.3, not the 4.2 at `/usr`).
+
+**The load-bearing fix — a latent P1a bug.** GTSAM's `CombinedImuFactor` ctor takes
+`(pose_i, vel_i, pose_j, vel_j, bias_i, bias_j)` — the smoother passed
+`(X_{i-1},V_{i-1},B_{i-1},X_i,V_i,B_i)`, swapping the bias/pose_j args, so GTSAM read
+`V(i)` as a bias → `"retrieve vN as ConstantBias"`. It **never fired in P1a** (its only
+test is visual-only, `use_imu=false` — the IMU factor was never exercised). This is
+exactly what end-to-end P1c was for. Also added, for the smoother to survive real data:
+- **Reset-on-setter** (`setExtrinsics`/`setImuParams` rebuild the window) so the
+  `X(i)` index stays in step with the pipeline's VI-init restarts (CeresLocalSmoother parity).
+- **V/B nodes only inside the IMU chain** (never for visual-only KFs — their
+  unconstrained velocity/bias made fixed-lag marginalization throw); first IMU-ready
+  KF anchors with priors.
+- **Landmark management** — admit a landmark only on its ≥`min_landmark_obs`-th
+  sighting + a weak prior + cap `max_landmarks=150`. Without it: an indeterminant
+  system (single-view points) AND an **8-SECOND** per-KF batch solve (thousands of
+  landmark vars). With it: `ms_ba` ~13 ms median (real-time), 0 indeterminants.
+- **`setStereoCalib` wired in the pipeline** (was never called → both backends ran on
+  zero intrinsics; the GTSAM stereo factors need the calib).
+
+**GATE — end-to-end (MH_01, shitomasi):** GTSAM **tracks end-to-end with 0 smoother
+failures**, real-time (`ms_ba` ~13 ms median, max ~196 ms at full-window KFs). On a
+clean early segment, Sim3-ATE **0.025 m** (72 poses); 40-s clip 0.16 m (incl. the VI-init
+transient). Robustness gate (per the project thesis — never-lost > accuracy): **met**.
+**Honest deferral:** a clean *full-sequence* regression ATE (gtsam vs the ceres band
+0.065–0.096) is **blocked by harness flakiness on this box** — (a) the rosbag2 recorder
+records 0 msgs despite the node publishing at 20 Hz (DDS delivery to the recorder is
+wedged; `rosbag2` works in isolation, `ros2 topic hz` sees the stream), and (b)
+orphaned `slamko_vio_node`/`euroc_player` from killed runs corrupted runs (duplicate
+publishers, SIGKILL-9 early deaths). Fixes landed: an **in-process pose→TUM dump**
+(`pose_dump_path`) that bypasses rosbag2 for ATE, and a **zombie guard** in
+`scripts/bench_ate.sh` + a CLAUDE.md rule. Full-sequence regression + flipping the
+**default to gtsam** are deferred until a clean harness; **default stays `ceres`**
+(validated-stable) — gtsam is validated-working.
+
+**Unit gate:** `colcon test` slamko_fusion + slamko_vio = **28 tests, 0 failures**
+(the gtsam smoother test still passes with reset + landmark mgmt + the factor fix).

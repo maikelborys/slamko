@@ -8,6 +8,8 @@ __pycache__/
 .venv*/
 # Results & artifacts
 results/*/
+# 'results' itself may be a symlink to a big drive (machine-specific) — never track it
+/results
 *.html
 # Large binaries / weights / vocab (tracked explicitly where needed)
 *.engine

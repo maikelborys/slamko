@@ -1,6 +1,6 @@
 # slamko_fusion — P1 plan (GTSAM fixed-lag smoother + marginalization)
 
-<!-- validated: (P1b) 2026-05-27 · tests: slamko_vio 23 gtest 0 fail (4 adapter parity) -->
+<!-- validated: (P1c) 2026-05-27 · tests: fusion 4 + vio 24 gtest 0 fail · gtsam tracks MH_01 end-to-end 0 smoother-fails -->
 
 Read [`../../docs/SYSTEM.md`](../../docs/SYSTEM.md) + [`../../docs/DECOUPLING.md`](../../docs/DECOUPLING.md)
 first. Progress + numbers: [`STATUS.md`](STATUS.md).
@@ -31,9 +31,18 @@ Both behind `slamko_core::LocalSmoother`, swappable via `backend:=ceres|gtsam`.
   visual + IMU paths) — the planned "==P0 ATE" gate was unmeasurable (VIO is
   nondeterministic run-to-run; front-end CUDA, upstream of this seam). Pre/post ATE
   bands overlap (MH_01 Shi-Tomasi median ~0.074). Detail: `slamko_vio/docs/STATUS.md`.
-- **P1c** — `backend:=gtsam` end-to-end on EuRoC (ShiTomasi + XFeat). Gate: GTSAM ≤
-  baseline ATE; window bounded; real-time. Emit health probes (degeneracy eigenvalue,
-  marginal cov). Validates marginalization + IMU + accuracy for real.
+- **P1c ✅ (tracks end-to-end; full-seq ATE deferred)** — `backend:=gtsam` injected at
+  the node (shared `libslamko_fusion.so`, GTSAM 4.3 RPATH; core stays decoupled).
+  **Tracks MH_01 end-to-end with 0 smoother failures, real-time** (`ms_ba` ~13 ms).
+  Fixed a **latent P1a bug**: `CombinedImuFactor` arg order `(pose_i,vel_i,pose_j,vel_j,
+  bias_i,bias_j)` (was bias/pose_j swapped → "retrieve vN as ConstantBias"; never fired
+  in P1a's visual-only test). Added reset-on-setter, IMU-chain-only V/B, landmark mgmt
+  (≥2-obs + cap → fixes indeterminant + an 8 s/KF batch solve), and wired
+  `setStereoCalib`. Marginalization-under-load (P1a's deferral) now exercised: works.
+  **Deferred:** clean full-sequence ATE (gtsam vs ceres band) + flipping default to
+  gtsam + health probes — blocked by this box's wedged rosbag2 recorder + orphan-prone
+  launches (bypassed via `pose_dump_path`; zombie guard added). Default stays `ceres`.
+  Detail + the honest caveat: `slamko_vio/docs/STATUS.md` (2026-05-27 P1c).
 
 ## Key files
 `include/slamko_fusion/gtsam_local_smoother.hpp` (PIMPL) ·

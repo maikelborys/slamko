@@ -53,6 +53,7 @@ struct GtsamLocalSmoother::Impl {
 
   std::uint64_t kf = 0;
   bool first = true;
+  bool imu_started = false;  // true once the IMU factor chain is anchored
   double latest_t = 0.0;
 
   // pending batch for the next optimize()
@@ -71,14 +72,40 @@ struct GtsamLocalSmoother::Impl {
   // observation falls out of the lag. A later re-sighting re-inserts its value.
   std::unordered_set<std::uint64_t> lm_active;
   std::unordered_map<std::uint64_t, double> lm_last_seen;
+  std::unordered_map<std::uint64_t, int> lm_obs_count;  // sightings while in-window
+
+  // Restart the window: fresh smoother + zeroed counters/estimates, KEEPING the
+  // configured calibration (cfg, imu_params, stereo_cal, body_T_cam,
+  // stereo_noise). Called on construction and whenever the pipeline reconfigures
+  // mid-stream (setExtrinsics on T_BS-resolve, setImuParams on gravity-calib) —
+  // matching CeresLocalSmoother's rebuild so the X(i) index stays in step with
+  // the pipeline's VI-init restarts (have_last_kf_ = false). Discards the
+  // visual-only init KFs, exactly as the ceres baseline does.
+  void reset() {
+    gtsam::LevenbergMarquardtParams lm;
+    smoother = std::make_unique<gtsam::BatchFixedLagSmoother>(cfg.lag, lm);
+    kf = 0;
+    first = true;
+    imu_started = false;
+    latest_t = 0.0;
+    pending_graph.resize(0);
+    pending_values.clear();
+    pending_stamps.clear();
+    estimate.clear();
+    cur_pose = gtsam::Pose3::Identity();
+    cur_vel = gtsam::Vector3::Zero();
+    cur_bias = gtsam::imuBias::ConstantBias();
+    lm_active.clear();
+    lm_last_seen.clear();
+    lm_obs_count.clear();
+  }
 };
 
 GtsamLocalSmoother::GtsamLocalSmoother(const GtsamSmootherConfig& cfg)
     : impl_(std::make_unique<Impl>()) {
   impl_->cfg = cfg;
-  gtsam::LevenbergMarquardtParams lm;  // defaults are fine for a bounded window
-  impl_->smoother = std::make_unique<gtsam::BatchFixedLagSmoother>(cfg.lag, lm);
   impl_->stereo_noise = gtsam::noiseModel::Isotropic::Sigma(3, cfg.pixel_sigma);
+  impl_->reset();
 }
 
 GtsamLocalSmoother::~GtsamLocalSmoother() = default;
@@ -94,6 +121,7 @@ void GtsamLocalSmoother::setImuParams(const slamko::ImuParams& params) {
   P->setBiasOmegaCovariance(gtsam::I_3x3 * (params.gyro_bias_rw * params.gyro_bias_rw));
   P->setBiasAccOmegaInit(gtsam::I_6x6 * 1e-5);
   impl_->imu_params = P;
+  impl_->reset();  // gravity-calib restart: start the IMU-fused window clean
 }
 
 void GtsamLocalSmoother::setStereoCalib(const slamko::StereoCalib& c) {
@@ -103,6 +131,7 @@ void GtsamLocalSmoother::setStereoCalib(const slamko::StereoCalib& c) {
 
 void GtsamLocalSmoother::setExtrinsics(const slamko::SE3& body_T_cam) {
   impl_->body_T_cam = toPose3(body_T_cam);
+  impl_->reset();  // T_BS-resolve restart (matches CeresLocalSmoother)
 }
 
 void GtsamLocalSmoother::insertKeyframe(
@@ -114,40 +143,73 @@ void GtsamLocalSmoother::insertKeyframe(
   const gtsam::Pose3 pose0 = toPose3(T_WB_init);
   const gtsam::imuBias::ConstantBias b0(bias_init.accel, bias_init.gyro);  // (acc, gyro)
 
+  // Pose node every KF.
   I.pending_values.insert(X(i), pose0);
   I.pending_stamps[X(i)] = t;
-  if (I.cfg.use_imu) {
+
+  const bool imu_ready = I.cfg.use_imu && I.imu_params && imu.size() >= 2;
+  auto insertVB = [&] {
     I.pending_values.insert(V(i), gtsam::Vector3(velocity_init));
     I.pending_values.insert(B(i), b0);
     I.pending_stamps[V(i)] = t;
     I.pending_stamps[B(i)] = t;
-  }
+  };
 
-  if (I.first) {
+  // Velocity/bias nodes exist ONLY inside the IMU factor chain — NEVER for a
+  // visual-only KF. The pipeline streams visual-only KFs through the whole
+  // VI-init (before gravity + gyro-bias are ready); inserting unconstrained
+  // V/B for those makes the fixed-lag marginalization throw (it tries to
+  // marginalize a velocity node with no factor — the "retrieve vN as
+  // ConstantBias" failure). So: the first KF (or the first IMU-ready KF after a
+  // visual-only run) ANCHORS the chain with full priors; subsequent IMU KFs
+  // chain via CombinedImuFactor; visual-only KFs are pose + stereo only.
+  if (I.first || (imu_ready && !I.imu_started)) {
     I.pending_graph.addPrior(
         X(i), pose0, gtsam::noiseModel::Isotropic::Sigma(6, I.cfg.prior_pose_sigma));
     if (I.cfg.use_imu) {
+      insertVB();
       I.pending_graph.addPrior(
           V(i), gtsam::Vector3(velocity_init),
           gtsam::noiseModel::Isotropic::Sigma(3, I.cfg.prior_vel_sigma));
       I.pending_graph.addPrior(
           B(i), b0, gtsam::noiseModel::Isotropic::Sigma(6, I.cfg.prior_bias_sigma));
     }
-  } else if (I.cfg.use_imu && I.imu_params && imu.size() >= 2) {
+    if (imu_ready) I.imu_started = true;
+  } else if (imu_ready) {
+    insertVB();
     gtsam::PreintegratedCombinedMeasurements pim(I.imu_params, b0);
     for (std::size_t k = 1; k < imu.size(); ++k) {
       const double dt = imu[k].timestamp - imu[k - 1].timestamp;
       if (dt > 0.0) pim.integrateMeasurement(imu[k - 1].accel, imu[k - 1].gyro, dt);
     }
+    // GTSAM arg order is (pose_i, vel_i, pose_j, vel_j, bias_i, bias_j) — NOT
+    // pose,vel,bias grouped per state. Getting it wrong makes GTSAM read V(i) as
+    // a bias ("retrieve vN as ConstantBias"); only fires once IMU is exercised.
     I.pending_graph.add(gtsam::CombinedImuFactor(
-        X(i - 1), V(i - 1), B(i - 1), X(i), V(i), B(i), pim));
+        X(i - 1), V(i - 1), X(i), V(i), B(i - 1), B(i), pim));
+  } else {
+    // Visual-only KF (pre-IMU, or a mid-stream IMU dropout): pose + stereo only.
+    // Break the chain so the next IMU-ready KF re-anchors with fresh priors.
+    I.imu_started = false;
   }
 
   for (const auto& o : obs) {
     if (!o.hasRight() || !I.stereo_cal) continue;  // P1: stereo factors only
     const std::uint64_t id = o.landmark_id;
+    // Only admit a landmark on its min_landmark_obs-th sighting — single-view
+    // births are dropped (cheap + non-singular); the live set is capped so the
+    // per-KF batch solve stays bounded.
+    const int seen = ++I.lm_obs_count[id];
     if (!I.lm_active.count(id)) {
+      if (seen < I.cfg.min_landmark_obs) continue;
+      if (I.cfg.max_landmarks > 0 &&
+          (int)I.lm_active.size() >= I.cfg.max_landmarks) continue;
       I.pending_values.insert(L(id), gtsam::Point3(o.world_init));
+      // Weak prior keeps a freshly-admitted landmark from making the linear
+      // system indeterminant; multi-view stereo dominates it.
+      I.pending_graph.addPrior(
+          L(id), gtsam::Point3(o.world_init),
+          gtsam::noiseModel::Isotropic::Sigma(3, I.cfg.landmark_prior_sigma));
       I.lm_active.insert(id);
     }
     I.pending_stamps[L(id)] = t;  // keep alive while observed
@@ -189,6 +251,7 @@ bool GtsamLocalSmoother::optimize() {
   for (auto it = I.lm_last_seen.begin(); it != I.lm_last_seen.end();) {
     if (I.latest_t - it->second > I.cfg.lag) {
       I.lm_active.erase(it->first);
+      I.lm_obs_count.erase(it->first);  // a re-sight starts its count fresh
       it = I.lm_last_seen.erase(it);
     } else {
       ++it;

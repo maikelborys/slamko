@@ -34,6 +34,23 @@ source "$SLAMKO_ROOT/install/setup.bash"
 echo "=== slamko_vio ATE bench: $SEQ (rate=$RATE) ==="
 echo "log -> $LOG"
 
+# Pre-flight zombie check (CLAUDE.md "check state before you launch"): a stale
+# slamko_vio_node / euroc_player from a crashed prior run is a DUPLICATE publisher
+# on /slamko_vio/odometry + /tf and silently corrupts this run (the recorder locks
+# onto the wrong node, the GPU is contended, the launch dies early). Reap leftover
+# bench processes — these process names are bench-owned, never the user's stack.
+# (Run benches SERIALLY; concurrent runs would reap each other.)
+if pgrep -f 'slamko_vio_node|euroc_player' >/dev/null 2>&1; then
+    echo "WARN: stale bench processes found — reaping before launch:"
+    pgrep -af 'slamko_vio_node|euroc_player'
+    pkill -INT -f 'slamko_vio_node' 2>/dev/null || true
+    pkill -INT -f 'euroc_player'    2>/dev/null || true
+    sleep 2
+    pkill -KILL -f 'slamko_vio_node' 2>/dev/null || true
+    pkill -KILL -f 'euroc_player'    2>/dev/null || true
+    sleep 1
+fi
+
 setsid ros2 launch slamko_vio vio_euroc.launch.py \
     seq:="$SEQ_DIR" rate:="$RATE" timing_csv:="$CSV" \
     ${SLAMKO_EXTRA_ARGS:-} \
@@ -71,6 +88,16 @@ kill -INT  -- "-$LAUNCH_PID" 2>/dev/null || true
 sleep 2
 kill -KILL -- "-$LAUNCH_PID" 2>/dev/null || true
 wait "$LAUNCH_PID" 2>/dev/null || true
+
+# ros2 launch children can escape the process group — reap by name so this run
+# leaves a CLEAN state (no zombies to corrupt the next bench), then verify.
+pkill -KILL -f 'slamko_vio_node' 2>/dev/null || true
+pkill -KILL -f 'euroc_player'    2>/dev/null || true
+sleep 1
+if pgrep -f 'slamko_vio_node|euroc_player' >/dev/null 2>&1; then
+    echo "WARN: bench processes still alive after teardown — investigate:"
+    pgrep -af 'slamko_vio_node|euroc_player'
+fi
 
 ros2 run euroc_publisher odom_to_tum --bag "$BAG_DIR" --out "$EST_TUM" \
     --topic /slamko_vio/odometry >> "$OUT_DIR/bag.log" 2>&1 || true

@@ -28,6 +28,10 @@ struct VioConfig {
   std::string child_frame_id = "slamko_vio_cam";
   bool   publish_tf          = true;
   std::string landmark_dump_path;
+  // Offline trajectory export: if set, the node appends the per-frame world pose
+  // as a TUM line (t tx ty tz qx qy qz qw). Bypasses rosbag2 for ATE eval — the
+  // recorder path is flaky on this box; this is in-process and reliable. Empty=off.
+  std::string pose_dump_path;
 
   // Shi-Tomasi grid
   int    grid_cols  = 8;

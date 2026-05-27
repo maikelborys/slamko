@@ -31,7 +31,11 @@ set(CMAKE_BUILD_RPATH /usr/local/lib)
 set(CMAKE_INSTALL_RPATH /usr/local/lib)
 add_link_options(-Wl,--disable-new-dtags)
 
-add_library(slamko_fusion src/gtsam_local_smoother.cpp)
+# SHARED so GTSAM 4.3 is fully resolved INSIDE libslamko_fusion.so (PIMPL fully
+# encapsulated) — consumers link the .so and never need to find_package(GTSAM) or
+# fight the static-archive link order. The DT_RPATH below travels with the .so so
+# its own gtsam NEEDED resolves to 4.3 at load time.
+add_library(slamko_fusion SHARED src/gtsam_local_smoother.cpp)
 target_include_directories(slamko_fusion PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)

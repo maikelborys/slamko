@@ -10,6 +10,8 @@
 // All algorithm + state lives in VioPipeline (bag/sim/real-portable, testable).
 
 #include <cmath>
+#include <fstream>
+#include <iomanip>
 #include <memory>
 #include <string>
 
@@ -30,8 +32,10 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
 #include "slamko_core/image_view.hpp"
+#include "slamko_core/local_smoother.hpp"
 #include "slamko_vio/vio_pipeline.hpp"
 #include "slamko_vio/types.hpp"
+#include "slamko_fusion/gtsam_local_smoother.hpp"   // node-only (composition root)
 
 using slamko_vio::VioConfig;
 
@@ -52,6 +56,7 @@ class VioNode : public rclcpp::Node {
     cfg.child_frame_id     = P("child_frame_id", cfg.child_frame_id);
     cfg.publish_tf         = P("publish_tf", cfg.publish_tf);
     cfg.landmark_dump_path = P("landmark_dump_path", cfg.landmark_dump_path);
+    cfg.pose_dump_path     = P("pose_dump_path", cfg.pose_dump_path);
     cfg.grid_cols          = P("grid_cols", cfg.grid_cols);
     cfg.grid_rows          = P("grid_rows", cfg.grid_rows);
     cfg.k_per_cell         = P("k_per_cell", cfg.k_per_cell);
@@ -119,18 +124,32 @@ class VioNode : public rclcpp::Node {
     publish_tf_   = cfg.publish_tf;
 
     // Composition root for the Tier-2 backend. "ceres" (default) lets the
-    // pipeline build its own CeresLocalSmoother. "gtsam" — the slamko_fusion
-    // backend — is wired here in P1c (the node gains the slamko_fusion dep so
-    // the pipeline core stays decoupled, Hard Rule #2); for now fall back to
-    // ceres with a clear warning.
+    // pipeline build its own CeresLocalSmoother (klt_vo LocalBA). "gtsam"
+    // injects slamko_fusion's GtsamLocalSmoother — the node is the only place
+    // that knows slamko_fusion, so the pipeline core stays decoupled (Hard
+    // Rule #2). The pipeline drives whichever backend through the
+    // slamko::LocalSmoother contract (setExtrinsics/setImuParams/setStereoCalib/
+    // insertKeyframe).
+    std::unique_ptr<slamko::LocalSmoother> backend;
     if (cfg.backend == "gtsam") {
-      RCLCPP_WARN(get_logger(),
-                  "backend:=gtsam lands in P1c; running ceres for now");
-    } else if (cfg.backend != "ceres") {
-      RCLCPP_WARN(get_logger(), "unknown backend '%s'; using ceres",
-                  cfg.backend.c_str());
+      slamko_fusion::GtsamSmootherConfig gcfg;
+      gcfg.use_imu = cfg.enable_imu;
+      backend = std::make_unique<slamko_fusion::GtsamLocalSmoother>(gcfg);
+      RCLCPP_INFO(get_logger(),
+                  "Tier-2 backend: GTSAM fixed-lag smoother (use_imu=%d)",
+                  (int)cfg.enable_imu);
+    } else {
+      if (cfg.backend != "ceres")
+        RCLCPP_WARN(get_logger(), "unknown backend '%s'; using ceres",
+                    cfg.backend.c_str());
+      RCLCPP_INFO(get_logger(), "Tier-2 backend: ceres LocalBA");
     }
-    pipeline_ = std::make_unique<slamko_vio::VioPipeline>(cfg);
+    pipeline_ = std::make_unique<slamko_vio::VioPipeline>(cfg, std::move(backend));
+
+    if (!cfg.pose_dump_path.empty()) {
+      pose_dump_.open(cfg.pose_dump_path);
+      RCLCPP_INFO(get_logger(), "pose dump (TUM) -> %s", cfg.pose_dump_path.c_str());
+    }
 
     using ImgSub = message_filters::Subscriber<sensor_msgs::msg::Image>;
     using CamSub = message_filters::Subscriber<sensor_msgs::msg::CameraInfo>;
@@ -225,6 +244,15 @@ class VioNode : public rclcpp::Node {
     const Eigen::Vector3f t = T.block<3,1>(0,3);
     const Eigen::Quaternionf q(Eigen::Matrix3f(T.block<3,3>(0,0)));
 
+    // Offline TUM trajectory dump (in-process, bypasses rosbag2).
+    if (pose_dump_.is_open()) {
+      const double ts = (double)hdr.stamp.sec + hdr.stamp.nanosec * 1e-9;
+      pose_dump_ << std::fixed << std::setprecision(9) << ts << ' '
+                 << t.x() << ' ' << t.y() << ' ' << t.z() << ' '
+                 << q.x() << ' ' << q.y() << ' ' << q.z() << ' ' << q.w() << '\n';
+      pose_dump_.flush();  // complete lines stay durable even if the run is killed
+    }
+
     nav_msgs::msg::Odometry odom;
     odom.header.stamp = hdr.stamp;
     odom.header.frame_id = odom_frame_;
@@ -266,6 +294,7 @@ class VioNode : public rclcpp::Node {
   bool extrinsics_set_ = false;
 
   std::unique_ptr<slamko_vio::VioPipeline> pipeline_;
+  std::ofstream pose_dump_;  // optional TUM trajectory export
   std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> sub_left_, sub_right_;
   std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::CameraInfo>> sub_lcam_, sub_rcam_;
   std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;

@@ -26,6 +26,11 @@ add_compile_options(-Wall -Wextra)
 
 find_package(ament_cmake REQUIRED)
 find_package(slamko_core REQUIRED)
+# Node-only: the composition root injects slamko_fusion's GtsamLocalSmoother for
+# backend:=gtsam. slamko_vio_core links ONLY slamko_core (Hard Rule #2). GTSAM is
+# fully encapsulated inside the shared libslamko_fusion.so (PIMPL), so the node
+# links only that — it never finds or links gtsam itself.
+find_package(slamko_fusion REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
@@ -85,8 +90,14 @@ if(SLAMKO_VIO_BUILD_NODE)
   add_executable(slamko_vio_node nodes/vio_node.cpp)
   target_link_libraries(slamko_vio_node slamko_vio_core)
   ament_target_dependencies(slamko_vio_node
-    slamko_core ament_index_cpp rclcpp sensor_msgs nav_msgs geometry_msgs visualization_msgs
+    slamko_core slamko_fusion ament_index_cpp rclcpp sensor_msgs nav_msgs geometry_msgs visualization_msgs
     std_msgs tf2 tf2_ros cv_bridge image_transport message_filters)
+  # libslamko_fusion.so carries its own DT_RPATH to GTSAM 4.3 (/usr/local); add it
+  # here too (+ --disable-new-dtags) so the transitive gtsam load can't fall back
+  # to the 4.2 at /usr (DT_RUNPATH isn't transitive).
+  set_target_properties(slamko_vio_node PROPERTIES
+    BUILD_RPATH /usr/local/lib INSTALL_RPATH /usr/local/lib)
+  target_link_options(slamko_vio_node PRIVATE -Wl,--disable-new-dtags)
   install(TARGETS slamko_vio_node DESTINATION lib/${PROJECT_NAME})
   install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
   install(DIRECTORY models DESTINATION share/${PROJECT_NAME})

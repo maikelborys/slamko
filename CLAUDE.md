@@ -57,6 +57,18 @@ surface trade-offs in one sentence; leave the trail (commands, safety caveats,
 where to look) the next session needs. This mirrors the `~/coding/CLAUDE.md`
 developer+orchestrator role, scoped to slamko.
 
+**Zombie/orphan check (HARD — learned the hard way).** Before AND after every
+SLAM run (`scripts/bench_ate.sh` or a direct `ros2 launch`): verify no stale
+`slamko_vio_node` / `euroc_player` are alive (`pgrep -af 'slamko_vio_node|euroc_player'`).
+A leftover from a crashed/killed prior run is a **duplicate publisher** on
+`/slamko_vio/odometry` + `/tf` that **silently corrupts the next run** — the bag
+recorder locks onto the wrong node (empty bag), the GPU is contended, the launch
+dies early (SIGKILL -9). `ros2 launch` children routinely escape the process group,
+so `kill -- -$PGID` alone is not enough — reap by name (`pkill -KILL -f`) and
+re-verify. `bench_ate.sh` now does this pre-flight + on teardown. **Run benches
+SERIALLY** — concurrent background runs reap each other (global `pkill` races).
+These process names are bench-owned, never the user's stack, so reaping them is safe.
+
 ## Module map (6 packages — pluggable, decoupled)
 
 Hard rule: **a package depends only on `slamko_core` contracts, never on another

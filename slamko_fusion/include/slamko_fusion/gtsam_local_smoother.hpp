@@ -26,6 +26,17 @@ struct GtsamSmootherConfig {
   double prior_pose_sigma     = 0.1;    // first-KF gauge anchor (m / rad)
   double prior_vel_sigma      = 0.1;    // m/s
   double prior_bias_sigma     = 1.0e-2;
+  // Weak prior on each landmark at first sight (m). Regularizes single-
+  // observation / low-parallax points so the Schur marginalization stays
+  // non-singular (LocalBA instead prunes <2-obs landmarks). Soft enough that
+  // multi-view stereo factors dominate — negligible bias on tracked landmarks.
+  double landmark_prior_sigma  = 10.0;
+  // Landmark management — the batch solve cost is dominated by landmark-variable
+  // count. Add a landmark only on its `min_landmark_obs`-th sighting (drops the
+  // ~half that are single-view births) and cap the live set (real-time VIO keeps
+  // ~100-150 features). Keeps the per-KF solve bounded; <=0 disables a knob.
+  int    min_landmark_obs      = 2;
+  int    max_landmarks         = 150;
   double relinearize_threshold = 0.1;
   int    relinearize_skip      = 1;
   bool   use_imu              = true;   // false = visual-only (synthetic tests)
