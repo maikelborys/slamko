@@ -59,6 +59,14 @@ struct XFeatRelocConfig {
   // relocalize() PnP-verify only the top-k BoW candidates instead of every submap
   // (sublinear in map count). Falls back to all-submaps if the vocab is untrained or
   // returns no candidate — so it never lowers recall, only skips hopeless submaps.
+  // Global-descriptor (VPR, e.g. EigenPlaces 512-D) candidate retrieval — the real
+  // recall fix. When the query + submaps carry a `global_descriptor`, rank submaps by
+  // cosine similarity and PnP-verify only the top-N. XFeat local descriptors carry no
+  // place signal (proven), so this REPLACES BoW as the candidate stage; BoW/all-submap
+  // remain the fallback when no global descriptor is present. See docs/PLAN_VPR_RELOC.md.
+  bool   use_vpr          = true;
+  int    vpr_top_n        = 10;    // candidate submaps PnP-verified per query (by VPR cosine)
+
   bool   use_bow          = true;
   int    bow_vocab_size   = 256;   // K visual words
   // Candidate submaps PnP-verified per query. A whole-submap BoW vector aggregates
@@ -90,6 +98,7 @@ class XFeatRelocalizer : public Relocalizer {
     SE3 anchor;
     Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> desc;  // M×D
     std::vector<Eigen::Vector3d> pos;  // M submap-local 3D, aligned with desc rows
+    Eigen::VectorXf global_desc;       // VPR descriptor for this submap (empty if none)
   };
 
   XFeatRelocConfig    cfg_;

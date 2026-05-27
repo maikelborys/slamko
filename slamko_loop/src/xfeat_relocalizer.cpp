@@ -132,6 +132,7 @@ void XFeatRelocalizer::addSubMap(const SubMap& submap) {
   Entry e;
   e.id = submap.id;
   e.anchor = submap.anchor;
+  e.global_desc = submap.global_descriptor;  // VPR retrieval vector (empty if none)
   int m = 0;
   for (const auto& lm : submap.landmarks)
     if (lm.descriptor_row >= 0 && lm.descriptor_row < submap.descriptors.rows()) ++m;
@@ -175,11 +176,31 @@ RelocResult XFeatRelocalizer::relocalize(const Features& query) const {
   RelocResult best;  // found = false
   int best_inliers = 0;
 
-  // P3: BoW candidate pre-selection — PnP-verify only the top-k submaps that share
-  // visual words with the query. Empty = fall back to ALL submaps (untrained vocab
-  // or no shared words), so recall is never reduced, only hopeless submaps skipped.
+  // Candidate pre-selection: PnP-verify only the most promising submaps. Empty =
+  // fall back to ALL submaps, so recall is never reduced, only hopeless submaps skipped.
   std::vector<std::uint64_t> cand;
-  if (cfg_.use_bow && !vocab_.empty() && query.hasDescriptors())
+
+  // VPR (global-descriptor) retrieval — the primary stage. Rank submaps by cosine of the
+  // query's global descriptor against each submap's (both L2-normalized → dot = cosine),
+  // keep the top-N. This is what actually recognizes a revisited place (XFeat local
+  // descriptors cannot — proven). See docs/PLAN_VPR_RELOC.md.
+  if (cfg_.use_vpr && query.hasGlobalDescriptor()) {
+    const int qd = static_cast<int>(query.global_descriptor.size());
+    std::vector<std::pair<float, std::uint64_t>> scored;
+    scored.reserve(db_.size());
+    for (const auto& e : db_)
+      if (e.global_desc.size() == qd)
+        scored.emplace_back(query.global_descriptor.dot(e.global_desc), e.id);
+    if (!scored.empty()) {
+      const int n = std::min<int>(cfg_.vpr_top_n, static_cast<int>(scored.size()));
+      std::partial_sort(scored.begin(), scored.begin() + n, scored.end(),
+                        [](const auto& a, const auto& b) { return a.first > b.first; });
+      for (int i = 0; i < n; ++i) cand.push_back(scored[i].second);
+    }
+  }
+
+  // BoW fallback (legacy) only if VPR produced no candidates (no global descriptors).
+  if (cand.empty() && cfg_.use_bow && !vocab_.empty() && query.hasDescriptors())
     cand = bow_db_.query(vocab_.transform(query.descriptors), cfg_.bow_top_k);
 
   for (const auto& e : db_) {

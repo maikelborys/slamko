@@ -44,6 +44,12 @@
 #include "slamko_vio/types.hpp"
 #include "slamko_vio/vio_config.hpp"
 
+// EigenPlaces TensorRT VPR wrapper (global scope, like XFeat). Forward-declared so the
+// TensorRT/OpenCV headers stay out of this widely-included header (defined in eigenplaces.h,
+// used only in vio_pipeline.cpp). The unique_ptr<EigenPlaces> member is fine with an
+// incomplete type because ~VioPipeline() is defined in the .cpp.
+class EigenPlaces;
+
 namespace slamko_vio {
 
 // Per-frame tracked feature with its stereo 3D + landmark / LMP bookkeeping.
@@ -101,6 +107,9 @@ class VioPipeline {
 
   // Outputs for the node to publish.
   const Eigen::Matrix4f& worldPose() const { return world_pose_; }  // T_world_cam (cam-in-world)
+  // Latest frame's global VPR descriptor (EigenPlaces 512-D, L2-normed); empty unless
+  // cfg.enable_vpr. The node stamps it onto the reloc query + each submap (loop closure).
+  const Eigen::VectorXf& currentGlobalDescriptor() const { return current_global_desc_; }
   const std::vector<StereoTrack>& tracks() const { return tracks_; }
   slamko::HealthSignal health() const { return health_; }
   std::uint32_t frameIdx() const { return frame_idx_; }
@@ -192,6 +201,8 @@ class VioPipeline {
 
   // ---- stages ----
   std::unique_ptr<slamko::FeatureSource> feature_source_;   // swappable detector
+  std::unique_ptr<::EigenPlaces>         vpr_;              // global VPR (loop-closure retrieval)
+  Eigen::VectorXf                        current_global_desc_;  // latest frame's VPR descriptor
   std::unique_ptr<KltTracker>            tracker_;
   std::unique_ptr<StereoMatcher>         matcher_;
   std::unique_ptr<PoseEstimator>         pose_estimator_;

@@ -60,7 +60,7 @@ inline bool saveSubMap(const SubMap& sm, const std::string& path) {
   using namespace submap_io_detail;
   std::ofstream f(path, std::ios::binary);
   if (!f) return false;
-  f.write("SMP1", 4);
+  f.write("SMP2", 4);  // SMP2 adds the trailing global (VPR) descriptor; SMP1 still loads
   wr(f, sm.id);
   wrSE3(f, sm.anchor);
 
@@ -89,6 +89,13 @@ inline bool saveSubMap(const SubMap& sm, const std::string& path) {
   if (rows * cols)
     f.write(reinterpret_cast<const char*>(sm.descriptors.data()),
             sizeof(float) * rows * cols);
+
+  // SMP2: trailing global (VPR) descriptor — gdim · gdim floats (gdim=0 if absent).
+  const std::uint64_t gdim = static_cast<std::uint64_t>(sm.global_descriptor.size());
+  wr(f, gdim);
+  if (gdim)
+    f.write(reinterpret_cast<const char*>(sm.global_descriptor.data()),
+            sizeof(float) * gdim);
   return static_cast<bool>(f);
 }
 
@@ -99,7 +106,8 @@ inline bool loadSubMap(SubMap& sm, const std::string& path) {
   if (!f) return false;
   char magic[4];
   f.read(magic, 4);
-  if (std::string(magic, 4) != "SMP1") return false;
+  const std::string ver(magic, 4);
+  if (ver != "SMP1" && ver != "SMP2") return false;
   rd(f, sm.id);
   sm.anchor = rdSE3(f);
 
@@ -132,6 +140,17 @@ inline bool loadSubMap(SubMap& sm, const std::string& path) {
   if (rows * cols)
     f.read(reinterpret_cast<char*>(sm.descriptors.data()),
            sizeof(float) * rows * cols);
+
+  sm.global_descriptor.resize(0);
+  if (ver == "SMP2") {  // SMP1 maps have no global descriptor → leave empty
+    std::uint64_t gdim = 0;
+    rd(f, gdim);
+    if (gdim) {
+      sm.global_descriptor.resize(gdim);
+      f.read(reinterpret_cast<char*>(sm.global_descriptor.data()),
+             sizeof(float) * gdim);
+    }
+  }
   return static_cast<bool>(f);
 }
 

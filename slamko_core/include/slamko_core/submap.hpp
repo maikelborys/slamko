@@ -44,6 +44,12 @@ struct SubMap {
   // MapLandmark::descriptor_row). Empty for descriptor-less runs.
   Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> descriptors;
 
+  // Global place-recognition (VPR) descriptor — one L2-normalized vector (EigenPlaces,
+  // 512-D) of this submap's appearance, for coarse loop-closure RETRIEVAL (cosine-NN);
+  // the local `descriptors` above then geometrically verify. Empty when no VPR front-end
+  // ran. XFeat local descriptors carry no place signal — see docs/PLAN_VPR_RELOC.md.
+  Eigen::VectorXf global_descriptor;
+
   CustomData custom_data;  // optional dense payload (occupancy slab), etc.
 };
 

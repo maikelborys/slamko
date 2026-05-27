@@ -23,6 +23,7 @@
 #include <algorithm>
 
 #include "slamko_vio/ceres_local_smoother.hpp"
+#include "slamko_vio/feature/eigenplaces.h"
 #include "slamko_vio/feature/shitomasi_source.hpp"
 #include "slamko_vio/feature/xfeat_source.hpp"
 
@@ -73,6 +74,23 @@ VioPipeline::VioPipeline(const VioConfig& cfg,
       feature_source_ = std::make_unique<ShiTomasiSource>(
           image_width_, image_height_, scfg);
       VIO_LOG("feature_source = shitomasi");
+    }
+
+    // Global VPR descriptor (EigenPlaces) for loop-closure RETRIEVAL — built only when
+    // enabled (cost only when relocalizing). XFeat local descriptors can't recognize a
+    // revisited place; this global descriptor can. See docs/PLAN_VPR_RELOC.md.
+    if (cfg.enable_vpr && !cfg.vpr_onnx_path.empty()) {
+      EigenPlacesConfig vc;
+      vc.onnx_file   = cfg.vpr_onnx_path;
+      vc.engine_file = cfg.vpr_engine_path;
+      vpr_ = std::make_unique<EigenPlaces>(vc);
+      if (vpr_->build()) {
+        VIO_LOG("VPR = eigenplaces (onnx=%s)", cfg.vpr_onnx_path.c_str());
+      } else {
+        VIO_LOG("VPR = eigenplaces BUILD FAILED (onnx=%s) — relocalization retrieval off",
+                cfg.vpr_onnx_path.c_str());
+        vpr_.reset();
+      }
     }
 
     slamko_vio::KltTracker::Config kcfg;
@@ -280,6 +298,7 @@ slamko::SubMap VioPipeline::buildSubMap() const {
     }
     sm.landmarks.push_back(lm);
   }
+  sm.global_descriptor = current_global_desc_;  // VPR retrieval vector (empty if no VPR)
   return sm;
 }
 
@@ -375,6 +394,16 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
           slamko::StereoCalib{K.fx, K.fy, K.cx, K.cy, K.baseline_m});
     }
     cudaEventRecord(ev_start_);
+
+    // Global VPR descriptor for this frame (loop-closure retrieval). Wrap the left
+    // ImageView as a cv::Mat (no copy) and run EigenPlaces; the node stamps the result
+    // onto the reloc query + each submap. Computed only when cfg.enable_vpr built vpr_.
+    if (vpr_) {
+      const cv::Mat left_mat(left.height, left.width, CV_8UC1,
+                             const_cast<std::uint8_t*>(left.data), left.step);
+      Eigen::VectorXf g;
+      if (vpr_->infer(left_mat, g)) current_global_desc_ = std::move(g);
+    }
 
     // Upload mono8 stereo pair.
     cudaMemcpy2DAsync(d_left_,  image_width_,

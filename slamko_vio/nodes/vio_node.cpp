@@ -128,6 +128,16 @@ class VioNode : public rclcpp::Node {
       cfg.xfeat_onnx_path =
           ament_index_cpp::get_package_share_directory("slamko_vio") + "/models/xfeat.onnx";
     }
+    // EigenPlaces global VPR descriptor (loop-closure retrieval). Default-enable when the
+    // never-lost relocalizer runs (it's what makes loops actually close); the model ships
+    // in share/models/. reloc_use_vpr can force it off.
+    cfg.enable_vpr      = P("reloc_use_vpr", true);
+    cfg.vpr_onnx_path   = P("vpr_onnx_path", cfg.vpr_onnx_path);
+    cfg.vpr_engine_path = P("vpr_engine_path", cfg.vpr_engine_path);
+    if (cfg.enable_vpr && cfg.vpr_onnx_path.empty()) {
+      cfg.vpr_onnx_path =
+          ament_index_cpp::get_package_share_directory("slamko_vio") + "/models/eigenplaces.onnx";
+    }
 
     image_width_  = cfg.image_width;
     image_height_ = cfg.image_height;
@@ -413,6 +423,9 @@ class VioNode : public rclcpp::Node {
         for (int d = 0; d < 64; ++d) q.descriptors(r, d) = t.desc[d];
         ++r;
       }
+      // VPR global descriptor for coarse candidate retrieval (XFeat local descriptors
+      // can't recognize a revisited place — this is what closes loops).
+      q.global_descriptor = pipeline_->currentGlobalDescriptor();
       supervisor_->submitQueryFeatures(q);
     }
 

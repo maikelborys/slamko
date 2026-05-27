@@ -115,6 +115,14 @@ struct VioConfig {
   std::string xfeat_onnx_path;                                   // node fills from share/
   std::string xfeat_engine_path = "/tmp/slamko_vio_xfeat_752x480.engine";
   double      xfeat_keypoint_threshold = 0.05;
+
+  // EigenPlaces global VPR descriptor (loop-closure retrieval). When enabled, a 512-D
+  // global descriptor is computed per frame and stamped onto each submap + the reloc
+  // query — the fix that lets the never-lost relocalizer recognize a revisited place
+  // (XFeat local descriptors can't). Off by default (cost only when relocalizing).
+  bool        enable_vpr = false;
+  std::string vpr_onnx_path;                                       // node fills from share/
+  std::string vpr_engine_path = "/tmp/slamko_vio_eigenplaces_512.engine";
 };
 
 }  // namespace slamko_vio
