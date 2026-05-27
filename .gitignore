@@ -1,0 +1,22 @@
+# ROS2 / colcon
+build/
+install/
+log/
+# Python / venv
+__pycache__/
+*.pyc
+.venv*/
+# Results & artifacts
+results/*/
+*.html
+# Large binaries / weights / vocab (tracked explicitly where needed)
+*.engine
+*.onnx
+*.pt
+*.bin
+# Editor / agent
+.vscode/
+.idea/
+*.swp
+*~
+.claude/
