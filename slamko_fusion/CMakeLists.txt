@@ -37,7 +37,8 @@ add_link_options(-Wl,--disable-new-dtags)
 # its own gtsam NEEDED resolves to 4.3 at load time.
 add_library(slamko_fusion SHARED
   src/gtsam_local_smoother.cpp
-  src/gtsam_global_smoother.cpp)
+  src/gtsam_global_smoother.cpp
+  src/session_graph.cpp)
 target_include_directories(slamko_fusion PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
