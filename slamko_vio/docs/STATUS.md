@@ -27,6 +27,16 @@ Residual ~0.64 cm is GPU (XFeat-TRT FP16 / KLT-CUDA, not bit-identical) — negl
 VIO confirmed healthy independently: EuRoC MH_05 raw-odom Sim3 scale **1.0127** (metric), ATE
 ~18-22 cm. See memory `slamko-vio-replay-nondeterministic`.
 
+**Follow-up same day — frame drops (reliable QoS).** A second nondeterminism source surfaced in
+the neverlost+reloc path: heavy GPU work (VPR every frame + LighterGlue) stalls the single-threaded
+executor, and the image subs used `rmw_qos_profile_sensor_data` (BEST_EFFORT depth 5) so the rmw
+silently DROPPED stereo frames (V1_03 2147→2134, ~80 cm OFF-vs-ON divergence). euroc_player
+publishes RELIABLE, so the image/caminfo subs are now **RELIABLE + KeepLast(100)** (sync queue
+20→100) → the player back-pressures instead of dropping → lossless replay. After this both OFF/ON
+process all frames and the **loop-closure-CORRECTED ATE is reproducible** (OFF 39.21 vs ON 39.13 cm)
+→ ATE A/B trustworthy; LighterGlue rescue == brute-force on easy revisits (no regression). Residual
+~30 cm RAW-odom divergence on hard seqs is GPU (XFeat/KLT FP16), washes out post loop-closure.
+
 ## 2026-05-27 — B1: faithful port of klt_vo → slamko_vio (baseline guard) ✅
 
 **What:** ported `klt_vo_core` (Shi-Tomasi, KLT, stereo matcher, triangulator,
