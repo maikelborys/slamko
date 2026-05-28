@@ -38,9 +38,19 @@ struct SupervisorConfig {
   // Lazy-anchor weld gate — THE false-relocalization defense (R2). A weld fires
   // only once weld_min_matches candidates agree within these radii (the analog of
   // OKVIS2-X's drift-budget gate that rejects a "100 m jump in a 5 m room").
-  double weld_cluster_radius_m   = 0.10;
-  double weld_cluster_radius_rad = 0.05;
-  int    weld_min_matches    = 3;
+  //
+  // Defaults relaxed for the robust-localization regime (V.3, 2026-05-28): the
+  // pre-cluster floor (weld_min_inliers=15 + LightGlue's geometric verify upstream)
+  // makes 1 verified hit already strong evidence of a true place. Requiring 3-in-10cm
+  // produced 0 welds on a 1500 s replay despite 579 PnP-verified hits (each PnP-RANSAC
+  // call has ~10 cm single-shot translation noise → 3 in 10 cm is over-calibrated).
+  // 2-in-30cm still rejects scattered perceptual-alias singletons (the gate's purpose)
+  // while admitting the dense correct hits on a revisit. The 4 layers of defense are:
+  // (1) PnP-RANSAC inlier consensus, (2) min_inliers floor, (3) this cluster gate,
+  // (4) LightGlue's learned matcher (when on). Tests pin tighter values explicitly.
+  double weld_cluster_radius_m   = 0.30;
+  double weld_cluster_radius_rad = 0.10;
+  int    weld_min_matches    = 2;
   int    weld_min_inliers    = 15;   // RelocResult.num_inliers floor (pre-cluster gate)
   double weld_min_confidence = 0.0;  // RelocResult.confidence floor
 

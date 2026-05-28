@@ -205,9 +205,9 @@ RelocResult XFeatRelocalizer::relocalize(const Features& query) const {
   // per-KF granularity); per-KF lets the right KF inside a submap surface. Falls back to
   // the SubMap-level `global_desc` when per-KF is absent (SMP3 / legacy Atlas). See
   // docs/PLAN_BA_GLOBAL.md "VPR retrieval: change granularity first".
+  std::vector<std::pair<float, std::uint64_t>> scored;  // kept outside for V.2 diag log
   if (cfg_.use_vpr && query.hasGlobalDescriptor()) {
     const int qd = static_cast<int>(query.global_descriptor.size());
-    std::vector<std::pair<float, std::uint64_t>> scored;
     scored.reserve(db_.size());
     for (const auto& e : db_) {
       float best = -2.f;  // cosine in [-1,1]; -2 means "no scoring descriptor present"
@@ -287,6 +287,24 @@ RelocResult XFeatRelocalizer::relocalize(const Features& query) const {
     best.confidence = static_cast<double>(inliers) /
                       static_cast<double>(std::max<int>(1, putative));
     best.num_inliers = inliers;
+  }
+  // V.2 diagnostic: one greppable line per VPR-eligible reloc call. Tells us, on a long
+  // traversal (magistrale return), (a) whether the right submap surfaces in top-N, (b)
+  // the cosine range (low → model OOD; high+wrong-id → granularity still aggregating),
+  // (c) whether geometric verify ever fires for the candidate. Cheap (db_.size() ≤ ~100).
+  if (cfg_.use_vpr && query.hasGlobalDescriptor() && !scored.empty()) {
+    const int n_log = std::min<int>(5, static_cast<int>(scored.size()));
+    char buf[256];
+    int off = std::snprintf(buf, sizeof(buf), "[reloc] top%d:", n_log);
+    for (int i = 0; i < n_log && off < (int)sizeof(buf) - 32; ++i)
+      off += std::snprintf(buf + off, sizeof(buf) - off, " %llu(%.2f)",
+                           static_cast<unsigned long long>(scored[i].second),
+                           scored[i].first);
+    if (best.found)
+      std::fprintf(stderr, "%s -> verified %llu (%d inl)\n", buf,
+                   static_cast<unsigned long long>(best.submap_id), best.num_inliers);
+    else
+      std::fprintf(stderr, "%s -> none\n", buf);
   }
   return best;
 }
