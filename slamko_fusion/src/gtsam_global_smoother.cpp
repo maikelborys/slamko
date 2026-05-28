@@ -53,7 +53,17 @@ slamko::GlobalBAOutput GtsamGlobalSmoother::optimize(const slamko::GlobalBAInput
   auto stereo_cal = std::make_shared<gtsam::Cal3_S2Stereo>(
       in.calib.fx, in.calib.fy, 0.0, in.calib.cx, in.calib.cy, in.calib.baseline);
   const gtsam::Pose3 body_T_cam = to_gtsam(in.T_BS);
-  auto stereo_noise = gtsam::noiseModel::Isotropic::Sigma(3, in.pixel_sigma);
+  // Robust m-estimator on the reprojection residual: Huber with k=1.5σ. Real Atlas
+  // data has outlier observations (bootstrap KFs whose stored pose lagged behind the
+  // fixed-lag smoother's later refinement → stale, wildly-mis-reprojecting uv) that
+  // would otherwise dominate the cost and pull the LM solver off into a bad basin.
+  // Huber downweights residuals beyond 1.5σ linearly instead of quadratically, which
+  // keeps the well-conditioned majority in control. Validated on V1_03 (per-submap BA
+  // initial cost ~10⁵-10⁹ → final 10⁵-10⁶ for healthy submaps; outlier submaps don't
+  // wreck the rest of the trajectory).
+  auto base_noise   = gtsam::noiseModel::Isotropic::Sigma(3, in.pixel_sigma);
+  auto stereo_noise = gtsam::noiseModel::Robust::Create(
+      gtsam::noiseModel::mEstimator::Huber::Create(1.5), base_noise);
   // Tight prior on the anchor KF — removes the global gauge freedom without making
   // the system rank-deficient via Fix(). 1e-6 sigma is effectively a hard pin while
   // still being a normal factor (LM can handle it).

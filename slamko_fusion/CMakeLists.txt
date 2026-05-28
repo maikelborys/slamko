@@ -50,6 +50,14 @@ install(TARGETS slamko_fusion
   LIBRARY DESTINATION lib ARCHIVE DESTINATION lib RUNTIME DESTINATION bin)
 install(DIRECTORY include/ DESTINATION include)
 
+# Offline BA tool — applies GtsamGlobalSmoother to a saved Atlas (per-submap BA;
+# refined geometry written back, anchors preserved). Validates BA on real data
+# without touching the live supervisor wiring (docs/PLAN_BA_GLOBAL.md Phase D).
+add_executable(offline_ba tools/offline_ba.cpp)
+target_link_libraries(offline_ba slamko_fusion Eigen3::Eigen)
+ament_target_dependencies(offline_ba slamko_core)
+install(TARGETS offline_ba DESTINATION lib/${PROJECT_NAME})
+
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   foreach(t test_gtsam_smoother test_global_smoother)

@@ -1,6 +1,6 @@
 # PLAN — Global landmark BA (OKVIS-class alignment, the 1.9 m → cm gap)
 
-<!-- status: design locked · 2026-05-28 (post-determinism fixes). Implementation: TBD. -->
+<!-- status: A+B v1 implemented + tested (synthetic green); D validated on V1_03 (visual-only BA DEGRADES ATE → IMU factors B.2 required) · 2026-05-28 -->
 
 **Read first:** `docs/PLAN_VPR_RELOC.md` (the LighterGlue verifier — landed),
 `slamko_loop/docs/STATUS.md` 2026-05-28 (the verify path + walls),
@@ -135,12 +135,35 @@ clearly distinguishable from run noise.
 
 | Phase | Scope | Deliverable | Status |
 |-------|-------|-------------|--------|
-| A.1   | Schema: per-KF observations in SubMap + submap_io SMP3 + round-trip test | slamko_core change | TBD |
-| A.2   | VIO capture: vio_pipeline populates `kf_obs` from existing `observations` | slamko_vio change + e2e test | TBD |
-| B.1   | GlobalSmoother contract in slamko_core; GtsamGlobalSmoother (visual-only, LM) in slamko_fusion | new class + unit test | TBD |
-| C.1   | Wire into never_lost_supervisor (opt-in flag), async | supervisor change | TBD |
-| D.1   | EuRoC V1_03 + MH_05 corrected-ATE A/B (now reproducible) | numbers in STATUS | TBD |
-| B.2   | IMU factors (schema SMP4 + factor construction) | follow-up | TBD |
+| A.1   | Schema: per-KF observations in SubMap + submap_io SMP3 + round-trip test | slamko_core change | ✅ `9b5ccbd` |
+| A.2   | VIO capture: vio_pipeline populates `kf_obs` from existing `observations` | slamko_vio change + e2e test | ✅ `9b5ccbd` (V1_01 → 1053 obs persisted) |
+| B.1   | GlobalSmoother contract in slamko_core; GtsamGlobalSmoother (visual-only, LM) in slamko_fusion | new class + unit test | ✅ `73889a7` (2 synthetic tests → truth) |
+| C.1 (offline) | Per-submap BA tool `offline_ba` + calib sidecar from VIO | validates BA on real data without supervisor surgery | ✅ this commit (Huber on stereo residuals) |
+| D.1   | EuRoC V1_03 corrected-ATE A/B on the offline tool | **NEGATIVE result — see below** | ✅ measured |
+| B.2   | IMU factors (schema SMP4 + factor construction) — **the actual fix** | per-KF IMU samples + CombinedImuFactor | **NEXT** |
+| C.live | Wire BA into never_lost_supervisor (post-Phase B.2) | supervisor change, async | TBD |
+
+## D.1 result — visual-only BA degrades ATE (= the case for IMU factors)
+
+**V1_03_difficult, per-submap visual-only BA on the saved Atlas (8 submaps):**
+- Original Atlas → TUM → ATE: **Sim3-ATE 36.95 cm, scale 1.0138, SE3-ATE 37.01 cm.**
+- BA-refined Atlas (Huber stereo loss) → ATE: **Sim3-ATE 71.91 cm, scale 0.7817, SE3-ATE 82.09 cm.**
+- BA mechanically converges (total cost 8.8 M → 2.7 M, every submap improves locally).
+
+**Diagnosis (the textbook "VI-BA, not BA" finding):** stereo factors pin metric scale
+in principle (baseline 0.110 m), but on short visual baselines (10 m intra-submap, small
+parallax) the visual-only cost surface has near-degenerate directions for rotation +
+scale. Without IMU regularizing those, LM finds a lower-cost optimum that has WORSE
+metric pose accuracy — the trajectory shrinks by ~25 % (scale 1.01 → 0.78) systematically
+across all submaps. Huber loss handles the bootstrap-submap stale-pose outliers (initial
+cost 165 B → 6 M, no rescue needed) but doesn't fix the structural degeneracy.
+
+**The fix is IMU factors (Phase B.2):** persist per-KF IMU samples (`SubMap` schema bump
+SMP3 → SMP4), construct `CombinedImuFactor` between consecutive KFs (the same factor
+`GtsamLocalSmoother` already uses live), gauge-anchor the first KF + first velocity +
+first bias. IMU constrains: scale (gravity magnitude), rotation about gravity (yaw
+through accel bias), and angular velocity (gyro). With those constraints the visual
+factors land on the metric optimum. OKVIS's 8.6 cm magistrale1 is VI-BA, not visual.
 
 ## Conventions / Hard rules respected
 

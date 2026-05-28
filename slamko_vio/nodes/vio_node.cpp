@@ -283,6 +283,19 @@ class VioNode : public rclcpp::Node {
       else
         RCLCPP_WARN(get_logger(), "[neverlost] FAILED to save Atlas to %s",
                     nl_map_save_dir_.c_str());
+      // Calib + T_BS sidecar — the offline BA tool needs them (the .smap schema
+      // is per-submap and doesn't carry rig calibration). One line, ASCII, stable:
+      //   fx fy cx cy baseline tx ty tz qx qy qz qw
+      // T_BS is cam->body (matches StereoCalib + the GTSAM body_T_cam convention).
+      if (have_K_ && extrinsics_set_) {
+        std::ofstream c(nl_map_save_dir_ + "/calib.txt");
+        const Eigen::Quaterniond q(Eigen::Matrix3d(node_T_BS_.block<3,3>(0,0)));
+        c << std::fixed << std::setprecision(9)
+          << K_.fx << ' ' << K_.fy << ' ' << K_.cx << ' ' << K_.cy << ' '
+          << K_.baseline_m << ' '
+          << node_T_BS_(0,3) << ' ' << node_T_BS_(1,3) << ' ' << node_T_BS_(2,3) << ' '
+          << q.x() << ' ' << q.y() << ' ' << q.z() << ' ' << q.w() << '\n';
+      }
     }
   }
 
