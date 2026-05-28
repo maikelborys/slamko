@@ -88,8 +88,14 @@ struct SessionGraphConfig {
   // can afford a longer history because optimization is async.
   int    relin_window_size = 50;
   // Trigger optimization in the worker thread every N inserted KFs (in addition to
-  // immediate trigger on a loop closure). 0 = only on loop closure.
-  int    optimize_every_n_kfs = 5;
+  // immediate trigger on a loop closure). 0 = only on loop closure (default).
+  // Reason for default 0: without loop closures, the BA on a KF window finds a
+  // local minimum SLIGHTLY different from the local smoother's solution; applied as
+  // a "correction" it produces ~10-30 cm trajectory wiggles per BA pass that aren't
+  // real refinement. With loops, the BA refines bias globally — that's where the
+  // wins live. Mag1 200 s V2 measurement: every-5-KFs triggered 122 cm max jumps
+  // (slewed); 0 keeps pure-VIO smoothness until a real loop fires.
+  int    optimize_every_n_kfs = 0;
 };
 
 // Lightweight pimpl pattern — GTSAM headers stay confined to session_graph.cpp.
@@ -120,12 +126,19 @@ class SessionGraph {
   // True once at least one optimization has produced a refined latest pose.
   bool haveCorrection() const { return have_correction_; }
 
+  // Monotonically incrementing sequence number — increments each time the worker
+  // publishes a new latestCorrection(). vio_node detects a fresh correction by
+  // observing the seq advance and starts a slew-rate-limited interpolation
+  // between the previous and the new correction so the live worldPose never snaps.
+  std::uint64_t correctionSeq() const { return correction_seq_.load(); }
+
   // Snapshot of how many KFs are currently in the graph (for diagnostics).
   std::size_t keyframeCount() const;
 
  private:
   std::unique_ptr<SessionGraphImpl> impl_;
   std::atomic<bool>                 have_correction_{false};
+  std::atomic<std::uint64_t>        correction_seq_{0};
 };
 
 }  // namespace slamko

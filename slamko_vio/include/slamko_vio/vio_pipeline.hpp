@@ -252,6 +252,13 @@ class VioPipeline {
   // 0 on cold start; grows monotonically by 1 each time the pipeline inserts a KF.
   std::size_t keyframeCount() const { return kf_poses_.size(); }
   const EpochKf& keyframe(std::size_t i) const { return kf_poses_[i]; }
+  // V2.2: lookup a KF by its session-wide id (= kf.kf.id, monotonic across the
+  // session). Returns nullptr if the id was never assigned. Linear scan, fine for
+  // the loop-closure path (called once per weld).
+  const EpochKf* keyframeById(std::uint64_t id) const {
+    for (const auto& ek : kf_poses_) if (ek.kf.id == id) return &ek;
+    return nullptr;
+  }
  private:
   std::unordered_map<std::uint32_t, std::array<std::uint8_t, kLmpPatchPx>> landmark_patch_;
   std::unordered_map<std::uint32_t, std::array<float, 64>> landmark_descriptors_;  // reloc map

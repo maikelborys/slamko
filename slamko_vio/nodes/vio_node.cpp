@@ -196,6 +196,7 @@ class VioNode : public rclcpp::Node {
     nl_weld_ba_max_iters_  = declare_parameter("neverlost_weld_ba_max_iters", 20);
     nl_weld_ba_pixel_sigma_= declare_parameter("neverlost_weld_ba_pixel_sigma", 1.0);
     use_session_graph_     = declare_parameter("use_session_graph", false);
+    correction_slew_frames_= declare_parameter("session_graph_slew_frames", 30.0);
     // Relocalizer recall knobs (sweepable; defaults match XFeatRelocConfig).
     reloc_match_ratio_      = declare_parameter("reloc_match_ratio", 0.9);
     reloc_use_bow_          = declare_parameter("reloc_use_bow", true);
@@ -596,6 +597,36 @@ class VioNode : public rclcpp::Node {
                   "[neverlost] WELD to submap %lu%s (inliers-gated); map→odom t=[%.3f %.3f %.3f]",
                   (unsigned long)a.welded_to_id, cross_session ? " [CROSS-SESSION/prior map]" : "",
                   t.x(), t.y(), t.z());
+      // V2.2: feed the verified loop closure into the SessionGraph so it can run
+      // VI-BA with the loop constraint and refine biases globally. The supervisor's
+      // consensus (a.applied_T_active_sealed) encodes the active→sealed body-frame
+      // transform; the SessionGraph loop is between sealed.first_kf and the most
+      // recently inserted KF, with measurement Z = T_VIO_from^-1 · consensus · T_VIO_to.
+      if (session_graph_) {
+        const slamko::SubMap* s = supervisor_->archive().find(a.welded_to_id);
+        if (s && !s->keyframes.empty() && pipeline_->keyframeCount() > 0) {
+          const std::uint64_t from_id = s->keyframes.front().id;
+          const std::uint64_t to_id   = pipeline_->keyframe(pipeline_->keyframeCount() - 1).kf.id;
+          const auto* from_ek = pipeline_->keyframeById(from_id);
+          const auto* to_ek   = pipeline_->keyframeById(to_id);
+          if (from_ek && to_ek) {
+            slamko::SessionLoopClosure lc;
+            lc.kf_from   = from_id;
+            lc.kf_to     = to_id;
+            const Eigen::Matrix4d Z =
+                from_ek->kf.T_WB.matrix().inverse() *
+                a.applied_T_active_sealed.matrix() *
+                to_ek->kf.T_WB.matrix();
+            lc.T_from_to = slamko::SE3(Z);
+            lc.sigma_t   = 0.1;   // m
+            lc.sigma_r   = 0.05;  // rad
+            session_graph_->insertLoopClosure(std::move(lc));
+            RCLCPP_INFO(get_logger(),
+                        "[session_graph] loop closure inserted: kf %lu → %lu",
+                        (unsigned long)from_id, (unsigned long)to_id);
+          }
+        }
+      }
     }
     if (supervisor_->state() != nl_last_state_) {
       RCLCPP_INFO(get_logger(), "[neverlost] state %d → %d",
@@ -605,15 +636,32 @@ class VioNode : public rclcpp::Node {
   }
 
   void publish(const std_msgs::msg::Header& hdr) {
-    const Eigen::Matrix4f T = pipeline_->worldPose();
-    // C V1.1: SessionGraph runs in background but its `latestCorrection()` is NOT
-    // composed onto the live worldPose. V1.0 attempted to apply it directly and
-    // produced 35-m frame-to-frame jumps when async BA finished updates — the
-    // correction is an instantaneous SE3 delta valid only at the LATEST KF's
-    // timestamp, but applying it to every subsequent frame creates a step at each
-    // update boundary. V2 will add a slew-rate-limited / interpolated application.
-    // For now: SessionGraph collects substrate (KFs + IMU + observations) async,
-    // future commits use it for loop-closure VI-BA.
+    Eigen::Matrix4f T = pipeline_->worldPose();
+    // C V2: slewed SessionGraph correction. The async BA publishes a new SE3
+    // correction at each optimization pass (~every 5 KFs or on loop closure). To
+    // avoid the V1.0 frame-to-frame jumps (max 35 m measured), we linearly blend
+    // the previous correction toward the new one over `correction_slew_frames`
+    // frames after each seq advance — both rotation (SLERP via unit quaternion)
+    // and translation. Pure VIO output when no correction yet (cold start).
+    if (session_graph_ && session_graph_->haveCorrection()) {
+      const std::uint64_t seq = session_graph_->correctionSeq();
+      if (seq != last_correction_seq_) {
+        prev_correction_   = effective_correction_;
+        target_correction_ = session_graph_->latestCorrection();
+        slew_alpha_        = 0.0;
+        last_correction_seq_ = seq;
+      }
+      slew_alpha_ = std::min(1.0, slew_alpha_ + 1.0 / correction_slew_frames_);
+      // SE3 interpolate prev → target: SLERP on rotation, lerp on translation.
+      const Eigen::Quaterniond qp(prev_correction_.so3().unit_quaternion());
+      const Eigen::Quaterniond qt(target_correction_.so3().unit_quaternion());
+      const Eigen::Quaterniond qe = qp.slerp(slew_alpha_, qt);
+      const Eigen::Vector3d tp = prev_correction_.translation();
+      const Eigen::Vector3d tt = target_correction_.translation();
+      const Eigen::Vector3d te = tp + slew_alpha_ * (tt - tp);
+      effective_correction_ = slamko::SE3(slamko::SO3(qe), te);
+      T = (effective_correction_.matrix().cast<float>() * T);
+    }
     const Eigen::Vector3f t = T.block<3,1>(0,3);
     const Eigen::Quaternionf q(Eigen::Matrix3f(T.block<3,3>(0,0)));
 
@@ -694,6 +742,13 @@ class VioNode : public rclcpp::Node {
   bool   use_session_graph_ = false;
   std::unique_ptr<slamko::SessionGraph> session_graph_;
   std::size_t last_session_kf_idx_ = 0;
+  // V2 slewed-correction state (live worldPose composition).
+  double      correction_slew_frames_ = 30.0;  // ~0.6 s at 50 fps
+  std::uint64_t last_correction_seq_ = 0;
+  slamko::SE3 prev_correction_;
+  slamko::SE3 target_correction_;
+  slamko::SE3 effective_correction_;
+  double      slew_alpha_ = 1.0;  // 1.0 = fully transitioned to target
   double reloc_match_ratio_ = 0.9, reloc_min_inlier_ratio_ = 0.0;
   bool reloc_use_bow_ = true, reloc_mutual_check_ = false;
   int reloc_bow_top_k_ = 25, reloc_min_inliers_ = 15;

@@ -57,8 +57,10 @@ SE3 fromGtsam(const gtsam::Pose3& p) {
 class SessionGraphImpl {
  public:
   explicit SessionGraphImpl(const SessionGraphConfig& cfg,
-                            std::atomic<bool>* have_correction_flag)
-      : cfg_(cfg), have_correction_flag_(have_correction_flag) {
+                            std::atomic<bool>* have_correction_flag,
+                            std::atomic<std::uint64_t>* correction_seq)
+      : cfg_(cfg), have_correction_flag_(have_correction_flag),
+        correction_seq_(correction_seq) {
     stop_ = false;
     worker_ = std::thread([this] { workerLoop(); });
   }
@@ -272,10 +274,12 @@ class SessionGraphImpl {
       latest_correction_ = correction;
     }
     have_correction_flag_->store(true);
+    correction_seq_->fetch_add(1, std::memory_order_release);
   }
 
   SessionGraphConfig cfg_;
   std::atomic<bool>* have_correction_flag_;
+  std::atomic<std::uint64_t>* correction_seq_;
 
   // Producer-thread state (locked by mu_).
   mutable std::mutex mu_;
@@ -297,7 +301,8 @@ class SessionGraphImpl {
 // --- public class --------------------------------------------------------
 
 SessionGraph::SessionGraph(const SessionGraphConfig& cfg)
-    : impl_(std::make_unique<SessionGraphImpl>(cfg, &have_correction_)) {}
+    : impl_(std::make_unique<SessionGraphImpl>(cfg, &have_correction_,
+                                                &correction_seq_)) {}
 
 SessionGraph::~SessionGraph() = default;
 
