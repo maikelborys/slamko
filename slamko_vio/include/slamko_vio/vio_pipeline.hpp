@@ -230,10 +230,17 @@ class VioPipeline {
   std::unordered_map<std::uint32_t, int> landmark_obs_count_;
   std::unordered_map<std::uint32_t, int> landmark_epoch_;  // submap epoch at creation
   int submap_epoch_ = 0;                                   // bumped by beginSubmap()
-  // Per-keyframe body pose (VIO world frame ≡ submap-local at seal), tagged by epoch.
-  // buildSubMap attaches the current epoch's poses to SubMap.keyframes so the
-  // LighterGlue relocalizer can project landmarks into them to synthesize train views.
-  struct EpochKf { int epoch; slamko::KeyframePose kf; };
+  // Per-keyframe body pose + 2D landmark observations (VIO world ≡ submap-local at
+  // seal), tagged by epoch. buildSubMap emits the current epoch's records into
+  // SubMap.keyframes + SubMap.kf_obs (aligned 1:1). Two purposes (docs/PLAN_BA_GLOBAL):
+  // (1) global landmark BA — each `(kf, landmark, uv)` becomes one reprojection factor;
+  // (2) real two-image LighterGlue matching (query frame ↔ stored keyframe), the
+  // in-distribution way to use LightGlue (vs the synthetic projected-cloud train view).
+  struct EpochKf {
+    int                         epoch;
+    slamko::KeyframePose        kf;
+    slamko::KeyframeObservations obs;
+  };
   std::vector<EpochKf> kf_poses_;
   std::unordered_map<std::uint32_t, std::array<std::uint8_t, kLmpPatchPx>> landmark_patch_;
   std::unordered_map<std::uint32_t, std::array<float, 64>> landmark_descriptors_;  // reloc map

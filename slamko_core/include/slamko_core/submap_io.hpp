@@ -8,11 +8,21 @@
 // submaps are CONNECTED via their anchors, never fused into one cloud (Hard Rule #4,
 // the disposable global graph), so each one round-trips independently.
 //
-// Format (binary, little-endian, "SMP1"): id · anchor(quat+t) · keyframes
-// (id,ts,pose) · landmarks (id,xyz,descriptor_row) · descriptor block (N×D float,
-// row-major). Same-architecture assumption (x86 robot + dev box); a portable
-// fixed-width codec is a later refinement. CustomData (dense payloads) is NOT
-// serialized here — that is a per-payload concern (TSDF slab, etc.), opt-in later.
+// Format (binary, little-endian). Magic versions:
+//   SMP1: id · anchor(quat+t) · keyframes (id,ts,pose) ·
+//         landmarks (id,xyz,descriptor_row) · descriptor block (N×D float, row-major).
+//   SMP2 (additive): + trailing global (VPR) descriptor — gdim · gdim floats.
+//   SMP3 (additive): + per-keyframe observations block — nk per-KF entries each as
+//         N · landmark_ids[N] (uint64) · uv[N×2] (float) · have_right (uint8) ·
+//         uv_right[N×2] (float, only when have_right). Empty (N=0) when the KF
+//         carries no observations. Enables global landmark BA + real two-image
+//         LightGlue (see docs/PLAN_BA_GLOBAL.md).
+//
+// Loads accept all three versions; older formats leave the newer fields empty (the
+// downstream backends gate on .empty()). Same-architecture assumption (x86 robot +
+// dev box); a portable fixed-width codec is a later refinement. CustomData (dense
+// payloads) is NOT serialized here — that is a per-payload concern (TSDF slab,
+// etc.), opt-in later.
 //
 // Header-only to match the rest of slamko_core (INTERFACE lib). Eigen + std only.
 
@@ -60,7 +70,8 @@ inline bool saveSubMap(const SubMap& sm, const std::string& path) {
   using namespace submap_io_detail;
   std::ofstream f(path, std::ios::binary);
   if (!f) return false;
-  f.write("SMP2", 4);  // SMP2 adds the trailing global (VPR) descriptor; SMP1 still loads
+  // SMP3 adds per-keyframe 2D observations (BA substrate); SMP1/SMP2 still load.
+  f.write("SMP3", 4);
   wr(f, sm.id);
   wrSE3(f, sm.anchor);
 
@@ -96,6 +107,27 @@ inline bool saveSubMap(const SubMap& sm, const std::string& path) {
   if (gdim)
     f.write(reinterpret_cast<const char*>(sm.global_descriptor.data()),
             sizeof(float) * gdim);
+
+  // SMP3: per-keyframe 2D observations. nk_obs blocks; nk_obs may be 0 (legacy) or
+  // == sm.keyframes.size() (aligned 1:1). Each block: N · landmark_ids[N] (uint64) ·
+  // uv[N×2] (float, row-major) · have_right (uint8) · uv_right[N×2] (only when set).
+  const std::uint64_t nk_obs = static_cast<std::uint64_t>(sm.kf_obs.size());
+  wr(f, nk_obs);
+  for (const auto& ko : sm.kf_obs) {
+    const std::uint64_t N = static_cast<std::uint64_t>(ko.landmark_ids.size());
+    wr(f, N);
+    if (N) {
+      f.write(reinterpret_cast<const char*>(ko.landmark_ids.data()),
+              sizeof(std::uint64_t) * N);
+      f.write(reinterpret_cast<const char*>(ko.uv.data()),
+              sizeof(float) * N * 2);
+    }
+    const std::uint8_t have_right = ko.hasStereo() ? 1 : 0;
+    wr(f, have_right);
+    if (have_right && N)
+      f.write(reinterpret_cast<const char*>(ko.uv_right.data()),
+              sizeof(float) * N * 2);
+  }
   return static_cast<bool>(f);
 }
 
@@ -107,7 +139,7 @@ inline bool loadSubMap(SubMap& sm, const std::string& path) {
   char magic[4];
   f.read(magic, 4);
   const std::string ver(magic, 4);
-  if (ver != "SMP1" && ver != "SMP2") return false;
+  if (ver != "SMP1" && ver != "SMP2" && ver != "SMP3") return false;
   rd(f, sm.id);
   sm.anchor = rdSE3(f);
 
@@ -142,13 +174,37 @@ inline bool loadSubMap(SubMap& sm, const std::string& path) {
            sizeof(float) * rows * cols);
 
   sm.global_descriptor.resize(0);
-  if (ver == "SMP2") {  // SMP1 maps have no global descriptor → leave empty
+  sm.kf_obs.clear();
+  if (ver == "SMP2" || ver == "SMP3") {  // SMP1 leaves global_descriptor empty
     std::uint64_t gdim = 0;
     rd(f, gdim);
     if (gdim) {
       sm.global_descriptor.resize(gdim);
       f.read(reinterpret_cast<char*>(sm.global_descriptor.data()),
              sizeof(float) * gdim);
+    }
+  }
+  if (ver == "SMP3") {  // SMP1/SMP2 leave kf_obs empty (BA substrate absent)
+    std::uint64_t nk_obs = 0;
+    rd(f, nk_obs);
+    sm.kf_obs.resize(nk_obs);
+    for (auto& ko : sm.kf_obs) {
+      std::uint64_t N = 0;
+      rd(f, N);
+      ko.landmark_ids.resize(N);
+      ko.uv.resize(N, 2);
+      if (N) {
+        f.read(reinterpret_cast<char*>(ko.landmark_ids.data()),
+               sizeof(std::uint64_t) * N);
+        f.read(reinterpret_cast<char*>(ko.uv.data()), sizeof(float) * N * 2);
+      }
+      std::uint8_t have_right = 0;
+      rd(f, have_right);
+      if (have_right && N) {
+        ko.uv_right.resize(N, 2);
+        f.read(reinterpret_cast<char*>(ko.uv_right.data()),
+               sizeof(float) * N * 2);
+      }
     }
   }
   return static_cast<bool>(f);

@@ -33,6 +33,30 @@ struct MapLandmark {
   int descriptor_row = -1;  // index into the submap descriptor block, or -1
 };
 
+// Per-keyframe 2D OBSERVATIONS of landmarks (left image, optional right). One block
+// per entry in `SubMap.keyframes` (aligned 1:1). Each row k refers to landmark
+// `landmark_ids[k]` (id must exist in `SubMap.landmarks`) observed at pixel `uv.row(k)`
+// in this keyframe's left image (and `uv_right.row(k)` for stereo, when present).
+//
+// Why this exists (docs/PLAN_BA_GLOBAL.md): the OKVIS-class loop closure (cm-aligned)
+// is global BA over reprojection factors — each (KF, landmark, uv) is one factor. The
+// flat `landmarks[]` cloud + KF poses alone cannot reconstruct the factors. The same
+// data also enables real two-image LightGlue matching (query frame ↔ a stored keyframe's
+// real 2D features, in-distribution) — the hard-revisit recall fix. Stored, not
+// recomputed, so the cross-session map carries the BA substrate.
+struct KeyframeObservations {
+  std::vector<std::uint64_t> landmark_ids;  // N
+  // N×2 left-image pixel coordinates (row k matches landmark_ids[k]).
+  Eigen::Matrix<float, Eigen::Dynamic, 2, Eigen::RowMajor> uv;
+  // N×2 right-image pixel coordinates for stereo observations; empty (rows()==0) when
+  // the observation is monocular only — that's a legal Features, the BA backend then
+  // builds a mono reprojection factor instead of a stereo one.
+  Eigen::Matrix<float, Eigen::Dynamic, 2, Eigen::RowMajor> uv_right;
+
+  int size() const { return static_cast<int>(landmark_ids.size()); }
+  bool hasStereo() const { return uv_right.rows() == uv.rows() && uv_right.rows() > 0; }
+};
+
 struct SubMap {
   std::uint64_t id = 0;
   SE3 anchor;  // submap-local -> global; the only cross-submap coupling
@@ -43,6 +67,11 @@ struct SubMap {
   // Compact descriptor index for relocalization (N×D, rows referenced by
   // MapLandmark::descriptor_row). Empty for descriptor-less runs.
   Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> descriptors;
+
+  // Per-keyframe 2D landmark observations, aligned 1:1 with `keyframes` when present.
+  // Empty (size()==0) for legacy / non-BA-capable maps; SMP1/SMP2 loads leave it empty.
+  // See KeyframeObservations + docs/PLAN_BA_GLOBAL.md.
+  std::vector<KeyframeObservations> kf_obs;
 
   // Global place-recognition (VPR) descriptor — one L2-normalized vector (EigenPlaces,
   // 512-D) of this submap's appearance, for coarse loop-closure RETRIEVAL (cosine-NN);

@@ -70,6 +70,19 @@ void expectEqual(const SubMap& a, const SubMap& b) {
   ASSERT_EQ(a.descriptors.cols(), b.descriptors.cols());
   if (a.descriptors.size())
     EXPECT_EQ((a.descriptors - b.descriptors).cwiseAbs().maxCoeff(), 0.0f);  // binary-exact
+  ASSERT_EQ(a.global_descriptor.size(), b.global_descriptor.size());
+  if (a.global_descriptor.size())
+    EXPECT_EQ((a.global_descriptor - b.global_descriptor).cwiseAbs().maxCoeff(), 0.0f);
+  ASSERT_EQ(a.kf_obs.size(), b.kf_obs.size());
+  for (size_t k = 0; k < a.kf_obs.size(); ++k) {
+    ASSERT_EQ(a.kf_obs[k].landmark_ids, b.kf_obs[k].landmark_ids);
+    ASSERT_EQ(a.kf_obs[k].uv.rows(), b.kf_obs[k].uv.rows());
+    if (a.kf_obs[k].uv.size())
+      EXPECT_EQ((a.kf_obs[k].uv - b.kf_obs[k].uv).cwiseAbs().maxCoeff(), 0.0f);
+    ASSERT_EQ(a.kf_obs[k].uv_right.rows(), b.kf_obs[k].uv_right.rows());
+    if (a.kf_obs[k].uv_right.size())
+      EXPECT_EQ((a.kf_obs[k].uv_right - b.kf_obs[k].uv_right).cwiseAbs().maxCoeff(), 0.0f);
+  }
 }
 
 std::string tmpdir() {
@@ -117,4 +130,40 @@ TEST(SubMapIO, MissingFileFails) {
   EXPECT_FALSE(loadSubMap(sm, tmpdir() + "_does_not_exist.smap"));
   std::vector<SubMap> v;
   EXPECT_FALSE(loadSubMaps(v, tmpdir() + "_no_such_dir"));
+}
+
+// SMP3 per-keyframe observations: stereo + mono entries round-trip bit-exact, the
+// have_right flag survives, and empty entries (KF with no obs) load back empty. This
+// is the BA substrate (per docs/PLAN_BA_GLOBAL.md) — a wrong codec here corrupts every
+// reprojection factor downstream.
+TEST(SubMapIO, KeyframeObservationsRoundTrip) {
+  SubMap sm = synthetic(11, /*n_lm=*/8, /*n_kf=*/3);
+  sm.global_descriptor.resize(5);
+  for (int i = 0; i < 5; ++i) sm.global_descriptor[i] = 0.1f * (i + 1);
+  sm.kf_obs.resize(sm.keyframes.size());
+  // KF 0: 4 stereo observations.
+  sm.kf_obs[0].landmark_ids = {1000, 1001, 1003, 1005};
+  sm.kf_obs[0].uv.resize(4, 2);
+  sm.kf_obs[0].uv_right.resize(4, 2);
+  for (int i = 0; i < 4; ++i) {
+    sm.kf_obs[0].uv(i, 0) = 100.f + 7.f * i;
+    sm.kf_obs[0].uv(i, 1) = 220.f - 3.f * i;
+    sm.kf_obs[0].uv_right(i, 0) = sm.kf_obs[0].uv(i, 0) - 12.f;  // disparity
+    sm.kf_obs[0].uv_right(i, 1) = sm.kf_obs[0].uv(i, 1);
+  }
+  // KF 1: 2 monocular observations (have_right=0 path).
+  sm.kf_obs[1].landmark_ids = {1002, 1004};
+  sm.kf_obs[1].uv.resize(2, 2);
+  sm.kf_obs[1].uv << 40.f, 50.f, 60.f, 70.f;
+  // KF 2: empty (legal — keyframe inserted but landmark observations cleared).
+
+  const std::string path = tmpdir() + "_kfobs.smap";
+  std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+  ASSERT_TRUE(saveSubMap(sm, path));
+  SubMap got;
+  ASSERT_TRUE(loadSubMap(got, path));
+  expectEqual(sm, got);
+  EXPECT_TRUE(got.kf_obs[0].hasStereo());
+  EXPECT_FALSE(got.kf_obs[1].hasStereo());
+  EXPECT_EQ(got.kf_obs[2].size(), 0);
 }

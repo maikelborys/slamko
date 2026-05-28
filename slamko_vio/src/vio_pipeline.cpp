@@ -298,9 +298,13 @@ slamko::SubMap VioPipeline::buildSubMap() const {
     }
     sm.landmarks.push_back(lm);
   }
-  // Attach this epoch's keyframe poses (LighterGlue projects landmarks into them).
+  // Attach this epoch's keyframe poses + per-KF 2D observations (BA substrate +
+  // real-LightGlue input). `kf_obs` is aligned 1:1 with `keyframes` by construction.
   for (const auto& ek : kf_poses_)
-    if (ek.epoch == submap_epoch_) sm.keyframes.push_back(ek.kf);
+    if (ek.epoch == submap_epoch_) {
+      sm.keyframes.push_back(ek.kf);
+      sm.kf_obs.push_back(ek.obs);
+    }
   sm.global_descriptor = current_global_desc_;  // VPR retrieval vector (empty if no VPR)
   return sm;
 }
@@ -1196,15 +1200,42 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
         }
       }
       last_kf_ts_ = ts_now;
-      // Record this KF's body pose for the current submap epoch (T_w_c_ is the
-      // refined cam pose post-optimize; T_WB = (T_BS·T_w_c)⁻¹). The LighterGlue
-      // relocalizer projects the submap's landmarks into these poses (train views).
+      // Record this KF's body pose + 2D landmark observations for the current submap
+      // epoch (T_w_c_ is the refined cam pose post-optimize; T_WB = (T_BS·T_w_c)⁻¹).
+      // The observations are the BA substrate (each (kf, lid, uv) is one reprojection
+      // factor — docs/PLAN_BA_GLOBAL.md) and the input for real two-image LightGlue.
+      // Stereo block uses StereoObservation's NaN-x convention per-row when the KF
+      // mixes stereo and mono observations (`hasStereo()` then means "uv_right is
+      // populated; individual rows may be mono — check isfinite(uv_right(k,0))").
       {
         slamko::KeyframePose kfp;
         kfp.id = static_cast<std::uint64_t>(kf_poses_.size());
         kfp.timestamp = ts_now;
         kfp.T_WB = slamko::SE3(Eigen::Matrix4d((T_BS_ * T_w_c_).inverse()));
-        kf_poses_.push_back({submap_epoch_, kfp});
+
+        slamko::KeyframeObservations ko;
+        const int N = static_cast<int>(observations.size());
+        ko.landmark_ids.reserve(N);
+        ko.uv.resize(N, 2);
+        bool any_stereo = false;
+        for (const auto& o : observations) if (o.hasRight()) { any_stereo = true; break; }
+        if (any_stereo) ko.uv_right.resize(N, 2);
+        for (int k = 0; k < N; ++k) {
+          const auto& o = observations[k];
+          ko.landmark_ids.push_back(o.landmark_id);
+          ko.uv(k, 0) = static_cast<float>(o.uv_left.x());
+          ko.uv(k, 1) = static_cast<float>(o.uv_left.y());
+          if (any_stereo) {
+            if (o.hasRight()) {
+              ko.uv_right(k, 0) = static_cast<float>(o.uv_right.x());
+              ko.uv_right(k, 1) = static_cast<float>(o.uv_right.y());
+            } else {  // NaN-x marks the mono-only row (matches StereoObservation)
+              ko.uv_right(k, 0) = std::numeric_limits<float>::quiet_NaN();
+              ko.uv_right(k, 1) = 0.f;
+            }
+          }
+        }
+        kf_poses_.push_back({submap_epoch_, std::move(kfp), std::move(ko)});
       }
       // n_ba_landmarks: live landmarks observed this KF (LocalBA's total-window
       // landmark_count isn't in the LocalSmoother contract). Debug CSV only —
