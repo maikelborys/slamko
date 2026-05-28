@@ -21,8 +21,14 @@
 //         kf_gdim (uint64) · kf_gdim floats (L2-normalized, 0 if absent). Finer-grain
 //         VPR retrieval (each KF, not just one per submap) for hard revisits — the
 //         magistrale-return fix.
+//   SMP5 (additive): per-keyframe block gains a trailing IMU window —
+//         nimu (uint64) · nimu × (ts:double, ax,ay,az:double, gx,gy,gz:double) — the
+//         IMU samples between the previous KF and this KF. Substrate for global BA
+//         with CombinedImuFactor (Phase B.2, see docs/PLAN_BA_GLOBAL.md). First KF
+//         of a submap stores nimu=0 (no previous KF in this submap). Legacy maps
+//         (SMP1–SMP4) load with imu_since_prev empty.
 //
-// Loads accept all four versions; older formats leave the newer fields empty (the
+// Loads accept all five versions; older formats leave the newer fields empty (the
 // downstream backends gate on .empty()). Same-architecture assumption (x86 robot +
 // dev box); a portable fixed-width codec is a later refinement. CustomData (dense
 // payloads) is NOT serialized here — that is a per-payload concern (TSDF slab,
@@ -74,9 +80,10 @@ inline bool saveSubMap(const SubMap& sm, const std::string& path) {
   using namespace submap_io_detail;
   std::ofstream f(path, std::ios::binary);
   if (!f) return false;
-  // SMP4 adds per-keyframe VPR descriptor inside each kf_obs block (finer-grain
-  // retrieval); SMP1/SMP2/SMP3 still load (newer fields stay empty).
-  f.write("SMP4", 4);
+  // SMP5 adds per-keyframe IMU window inside each kf_obs block (the BA substrate for
+  // CombinedImuFactor in the global smoother); SMP1–SMP4 still load (newer fields
+  // stay empty).
+  f.write("SMP5", 4);
   wr(f, sm.id);
   wrSE3(f, sm.anchor);
 
@@ -140,6 +147,18 @@ inline bool saveSubMap(const SubMap& sm, const std::string& path) {
     if (kf_gdim)
       f.write(reinterpret_cast<const char*>(ko.global_descriptor.data()),
               sizeof(float) * kf_gdim);
+    // SMP5: per-KF IMU window (nimu samples between prev KF and this KF). Each sample
+    // is 7 doubles: ts, accel(x,y,z), gyro(x,y,z). The first KF of a submap stores 0
+    // (no previous KF in this submap). The codec is structurally independent of the
+    // IMU dt rate.
+    const std::uint64_t nimu = static_cast<std::uint64_t>(ko.imu_since_prev.size());
+    wr(f, nimu);
+    for (const auto& s : ko.imu_since_prev) {
+      double rec[7] = {s.timestamp,
+                       s.accel.x(), s.accel.y(), s.accel.z(),
+                       s.gyro.x(),  s.gyro.y(),  s.gyro.z()};
+      f.write(reinterpret_cast<const char*>(rec), sizeof(rec));
+    }
   }
   return static_cast<bool>(f);
 }
@@ -152,7 +171,7 @@ inline bool loadSubMap(SubMap& sm, const std::string& path) {
   char magic[4];
   f.read(magic, 4);
   const std::string ver(magic, 4);
-  if (ver != "SMP1" && ver != "SMP2" && ver != "SMP3" && ver != "SMP4") return false;
+  if (ver != "SMP1" && ver != "SMP2" && ver != "SMP3" && ver != "SMP4" && ver != "SMP5") return false;
   rd(f, sm.id);
   sm.anchor = rdSE3(f);
 
@@ -188,7 +207,7 @@ inline bool loadSubMap(SubMap& sm, const std::string& path) {
 
   sm.global_descriptor.resize(0);
   sm.kf_obs.clear();
-  if (ver == "SMP2" || ver == "SMP3" || ver == "SMP4") {  // SMP1 leaves global_descriptor empty
+  if (ver == "SMP2" || ver == "SMP3" || ver == "SMP4" || ver == "SMP5") {  // SMP1 leaves global_descriptor empty
     std::uint64_t gdim = 0;
     rd(f, gdim);
     if (gdim) {
@@ -197,7 +216,7 @@ inline bool loadSubMap(SubMap& sm, const std::string& path) {
              sizeof(float) * gdim);
     }
   }
-  if (ver == "SMP3" || ver == "SMP4") {  // SMP1/SMP2 leave kf_obs empty (BA substrate absent)
+  if (ver == "SMP3" || ver == "SMP4" || ver == "SMP5") {  // SMP1/SMP2 leave kf_obs empty (BA substrate absent)
     std::uint64_t nk_obs = 0;
     rd(f, nk_obs);
     sm.kf_obs.resize(nk_obs);
@@ -218,13 +237,25 @@ inline bool loadSubMap(SubMap& sm, const std::string& path) {
         f.read(reinterpret_cast<char*>(ko.uv_right.data()),
                sizeof(float) * N * 2);
       }
-      if (ver == "SMP4") {  // SMP3 leaves per-KF VPR descriptor empty
+      if (ver == "SMP4" || ver == "SMP5") {  // SMP3 leaves per-KF VPR descriptor empty
         std::uint64_t kf_gdim = 0;
         rd(f, kf_gdim);
         if (kf_gdim) {
           ko.global_descriptor.resize(kf_gdim);
           f.read(reinterpret_cast<char*>(ko.global_descriptor.data()),
                  sizeof(float) * kf_gdim);
+        }
+      }
+      if (ver == "SMP5") {  // SMP1–SMP4 leave per-KF IMU window empty
+        std::uint64_t nimu = 0;
+        rd(f, nimu);
+        ko.imu_since_prev.resize(nimu);
+        for (auto& s : ko.imu_since_prev) {
+          double rec[7];
+          f.read(reinterpret_cast<char*>(rec), sizeof(rec));
+          s.timestamp = rec[0];
+          s.accel = Eigen::Vector3d(rec[1], rec[2], rec[3]);
+          s.gyro  = Eigen::Vector3d(rec[4], rec[5], rec[6]);
         }
       }
     }

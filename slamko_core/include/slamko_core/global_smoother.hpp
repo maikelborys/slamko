@@ -28,6 +28,7 @@
 
 #include <Eigen/Core>
 
+#include "slamko_core/imu_sample.hpp"
 #include "slamko_core/se3.hpp"
 #include "slamko_core/stereo_observation.hpp"
 
@@ -47,12 +48,40 @@ struct GlobalBAObservation {
   bool hasRight() const { return std::isfinite(uv_right.x()); }
 };
 
+// One IMU integration window between two CONSECUTIVE keyframes. The backend
+// re-runs preintegration in its own measurement type (GTSAM's
+// PreintegratedCombinedMeasurements). Empty samples skip this constraint.
+struct GlobalBAImuWindow {
+  std::uint64_t kf_from = 0;
+  std::uint64_t kf_to   = 0;
+  std::vector<ImuSample> samples;  // body-frame, ordered by timestamp
+};
+
 struct GlobalBAInput {
   // Initial estimates in the GLOBAL frame. Maps from id → value so the smoother
   // can look variables up by the observation tags without assuming any ordering.
   std::vector<std::pair<std::uint64_t, SE3>>           keyframes;   // (kf_id, T_W_body)
   std::vector<std::pair<std::uint64_t, Eigen::Vector3d>> landmarks; // (lm_id, p_world)
   std::vector<GlobalBAObservation> observations;
+
+  // OPTIONAL IMU factors (Phase B.2): when populated, the smoother adds a
+  // CombinedImuFactor between each pair of consecutive KFs in `imu_windows`. IMU
+  // factors lock metric scale + gravity-aligned rotation + bias drift that visual-
+  // only BA can't constrain (see docs/PLAN_BA_GLOBAL.md D.1 — visual-only on V1_03
+  // degrades ATE 37cm→82cm; IMU is the structural fix). Empty windows ⇒ visual-only,
+  // bit-identical to the V.1 baseline.
+  std::vector<GlobalBAImuWindow>                       imu_windows;
+  // Initial velocity (world frame, m/s) per KF id. Required for every KF that is an
+  // endpoint of an `imu_windows` entry. From the local smoother's `latestVelocity()`.
+  std::vector<std::pair<std::uint64_t, Eigen::Vector3d>> velocities;
+  // Initial bias per KF id. Same coverage requirement as velocities.
+  std::vector<std::pair<std::uint64_t, ImuBias>>         biases;
+  // Continuous-time IMU noise + gravity (world). Used when imu_windows is non-empty.
+  ImuParams                                            imu_params;
+  // Gauge anchor sigmas for the IMU-coupled variables (the `anchor_kf` below):
+  // tight prior on (pose, velocity, bias) removes the 15-DOF VI gauge.
+  double                                               anchor_vel_sigma  = 1e-3;  // m/s
+  double                                               anchor_bias_sigma = 1e-3;  // m/s² / rad/s
 
   // Optional loop-closure relative-pose constraint (BetweenFactor): T_from→to body.
   // Used when the two submaps share NO landmarks (slamko's epoch-disjoint default —
@@ -90,6 +119,9 @@ struct GlobalBAOutput {
   // Refined values in the GLOBAL frame, same ids/order as the input.
   std::vector<std::pair<std::uint64_t, SE3>>           keyframes;
   std::vector<std::pair<std::uint64_t, Eigen::Vector3d>> landmarks;
+  // Refined per-KF velocities and biases (populated only when IMU factors were used).
+  std::vector<std::pair<std::uint64_t, Eigen::Vector3d>> velocities;
+  std::vector<std::pair<std::uint64_t, ImuBias>>         biases;
 };
 
 class GlobalSmoother {

@@ -1241,6 +1241,12 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
         // the relocalizer score each KF independently (max-cosine over a submap's
         // KFs). See docs/PLAN_BA_GLOBAL.md "VPR retrieval: change granularity first".
         if (current_global_desc_.size() > 0) ko.global_descriptor = current_global_desc_;
+        // Capture the IMU window [last_kf_ts_, ts_now] used by the local smoother for
+        // this KF — it's the EXACT integration window the global BA's CombinedImuFactor
+        // will re-integrate between consecutive KFs (Phase B.2 substrate, SMP5). Empty
+        // at the first KF of a submap (no previous KF to span). Stored AT this KF as
+        // `imu_since_prev` so each kf_obs[k] carries the IMU spanning kf[k-1]→kf[k].
+        if (!imu_for_kf.empty()) ko.imu_since_prev = imu_for_kf;
         kf_poses_.push_back({submap_epoch_, std::move(kfp), std::move(ko)});
       }
       // n_ba_landmarks: live landmarks observed this KF (LocalBA's total-window

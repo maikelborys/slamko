@@ -193,3 +193,105 @@ TEST(GtsamGlobalSmoother, LoopClosureBetweenFactorBridgesDisjointSets) {
     max_dt = std::max(max_dt, (T.translation() - truth_kfs[id].translation()).norm());
   EXPECT_LT(max_dt, 0.05) << "max KF trans err " << max_dt << " m";
 }
+
+// Phase B.2 IMU-coupled BA: 5 KFs translating along +x at constant velocity, separated
+// 1 s; between each pair, synthesize 11 IMU samples (10 × 0.1 s intervals) carrying
+// accel=(0,0,|g|) body and gyro=0 (the body stays level, so IMU sees gravity along
+// +z_body). Initial poses + velocity perturbed, biases=0. The CombinedImuFactor must
+// pin velocity, lock the gravity-aligned axes, and refine the trajectory back to truth.
+TEST(GtsamGlobalSmoother, ImuFactorRecoversVelocityAndPose) {
+  StereoCalib K{200.0, 200.0, 320.0, 240.0, 0.10};
+  const SE3 T_BS(Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
+
+  // Truth: KFs at t=0,1,2,3,4 s, x = 0, 0.5, 1.0, 1.5, 2.0 m. Velocity = (0.5,0,0).
+  std::vector<SE3> truth_kfs(5);
+  for (int i = 0; i < 5; ++i)
+    truth_kfs[i] = SE3(Eigen::Matrix3d::Identity(),
+                       Eigen::Vector3d(0.5 * i, 0.0, 0.0));
+  const Eigen::Vector3d truth_v(0.5, 0.0, 0.0);
+
+  // Landmarks visible from all KFs (in front).
+  std::mt19937 rng(101);
+  std::uniform_real_distribution<double> ux(-0.5, 2.5), uy(-1.0, 1.0), uz(4.0, 6.0);
+  std::vector<Eigen::Vector3d> truth_lms(30);
+  for (auto& l : truth_lms) l = Eigen::Vector3d(ux(rng), uy(rng), uz(rng));
+
+  std::vector<GlobalBAObservation> obs;
+  for (size_t k = 0; k < truth_kfs.size(); ++k) {
+    for (size_t l = 0; l < truth_lms.size(); ++l) {
+      double uL, uR, v;
+      if (!project(truth_kfs[k], T_BS, K, truth_lms[l], uL, uR, v)) continue;
+      GlobalBAObservation o;
+      o.kf_id = static_cast<std::uint64_t>(k);
+      o.landmark_id = static_cast<std::uint64_t>(l);
+      o.uv_left  = Eigen::Vector2f((float)uL, (float)v);
+      o.uv_right = Eigen::Vector2f((float)uR, (float)v);
+      obs.push_back(o);
+    }
+  }
+  ASSERT_GT(obs.size(), 50u);
+
+  // Synthetic IMU windows. Body stays level → R_WB = I, so accel_body = R⁻¹(a_world − g)
+  // with a_world = 0 (constant velocity) → accel_body = (0,0,+9.81). gyro_body = 0.
+  const double g_mag = 9.81;
+  std::vector<slamko::GlobalBAImuWindow> windows;
+  for (size_t k = 1; k < truth_kfs.size(); ++k) {
+    slamko::GlobalBAImuWindow w;
+    w.kf_from = static_cast<std::uint64_t>(k - 1);
+    w.kf_to   = static_cast<std::uint64_t>(k);
+    // 11 samples over 1 s (10 × 0.1 s intervals).
+    const double t0 = static_cast<double>(k - 1);
+    for (int i = 0; i <= 10; ++i) {
+      slamko::ImuSample s;
+      s.timestamp = t0 + 0.1 * i;
+      s.accel = Eigen::Vector3d(0.0, 0.0, g_mag);
+      s.gyro  = Eigen::Vector3d::Zero();
+      w.samples.push_back(s);
+    }
+    windows.push_back(w);
+  }
+
+  // Build input: perturbed poses, perturbed initial velocity, zero biases.
+  std::normal_distribution<double> nt(0.0, 0.05), nv(0.0, 0.10);
+  GlobalBAInput in;
+  in.calib = K; in.T_BS = T_BS; in.anchor_kf = 0; in.pixel_sigma = 1.0;
+  in.max_iters = 100;
+  in.imu_params.gravity = Eigen::Vector3d(0.0, 0.0, -g_mag);
+  for (size_t k = 0; k < truth_kfs.size(); ++k) {
+    Eigen::Vector3d t = truth_kfs[k].translation();
+    if (k != 0) t += Eigen::Vector3d(nt(rng), nt(rng), nt(rng));
+    in.keyframes.emplace_back(static_cast<std::uint64_t>(k),
+                              SE3(Eigen::Matrix3d::Identity(), t));
+    Eigen::Vector3d v_init = truth_v;
+    if (k != 0) v_init += Eigen::Vector3d(nv(rng), nv(rng), nv(rng));
+    in.velocities.emplace_back(static_cast<std::uint64_t>(k), v_init);
+    slamko::ImuBias b;  // zero bias
+    in.biases.emplace_back(static_cast<std::uint64_t>(k), b);
+  }
+  for (size_t l = 0; l < truth_lms.size(); ++l)
+    in.landmarks.emplace_back(static_cast<std::uint64_t>(l),
+        truth_lms[l] + Eigen::Vector3d(0.05, 0.0, -0.05));
+  in.observations = obs;
+  in.imu_windows  = windows;
+
+  GtsamGlobalSmoother smoother;
+  const auto out = smoother.optimize(in);
+  EXPECT_TRUE(out.converged) << "init=" << out.initial_cost << " final=" << out.final_cost;
+
+  // Poses recover to within ~2 cm (IMU + visual together).
+  double max_t_err = 0.0;
+  for (size_t k = 0; k < truth_kfs.size(); ++k)
+    max_t_err = std::max(max_t_err,
+        (out.keyframes[k].second.translation() - truth_kfs[k].translation()).norm());
+  EXPECT_LT(max_t_err, 0.02) << "max KF trans err " << max_t_err << " m";
+
+  // Velocities snap toward truth (anchored at KF 0; others within ~5 cm/s).
+  ASSERT_EQ(out.velocities.size(), in.velocities.size());
+  double max_v_err = 0.0;
+  for (const auto& [id, vv] : out.velocities)
+    max_v_err = std::max(max_v_err, (vv - truth_v).norm());
+  EXPECT_LT(max_v_err, 0.05) << "max KF velocity err " << max_v_err << " m/s";
+
+  // Bias outputs populated (the cardinal back-compat signal: empty when IMU off).
+  ASSERT_EQ(out.biases.size(), in.biases.size());
+}

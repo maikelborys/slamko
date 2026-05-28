@@ -89,6 +89,14 @@ void expectEqual(const SubMap& a, const SubMap& b) {
               .cwiseAbs()
               .maxCoeff(),
           0.0f);
+    ASSERT_EQ(a.kf_obs[k].imu_since_prev.size(), b.kf_obs[k].imu_since_prev.size());
+    for (size_t i = 0; i < a.kf_obs[k].imu_since_prev.size(); ++i) {
+      const auto& sa = a.kf_obs[k].imu_since_prev[i];
+      const auto& sb = b.kf_obs[k].imu_since_prev[i];
+      EXPECT_DOUBLE_EQ(sa.timestamp, sb.timestamp);
+      EXPECT_LT((sa.accel - sb.accel).norm(), 1e-15);
+      EXPECT_LT((sa.gyro  - sb.gyro ).norm(), 1e-15);
+    }
   }
 }
 
@@ -203,4 +211,42 @@ TEST(SubMapIO, PerKeyframeVprRoundTrip) {
   // Spot-check distinct values survived (catches a copy-paste swap across KFs).
   EXPECT_FLOAT_EQ(got.kf_obs[0].global_descriptor[0], 0.01f);
   EXPECT_FLOAT_EQ(got.kf_obs[1].global_descriptor[0], -0.02f);
+}
+
+// SMP5 per-keyframe IMU window round-trip. Per-KF IMU samples are the substrate for
+// the global BA's CombinedImuFactor (Phase B.2, docs/PLAN_BA_GLOBAL.md). Different
+// sample counts + non-zero values per KF make a wrong-block swap or truncation visible;
+// the first KF must legally hold an empty window (no previous KF in this submap).
+TEST(SubMapIO, PerKeyframeImuRoundTrip) {
+  SubMap sm = synthetic(17, /*n_lm=*/4, /*n_kf=*/3);
+  sm.kf_obs.resize(sm.keyframes.size());
+  // KF 0: empty IMU (first KF of the submap has no prev → no integration window).
+  // KF 1: 5 samples (distinct values per axis).
+  sm.kf_obs[1].imu_since_prev.resize(5);
+  for (int i = 0; i < 5; ++i) {
+    auto& s = sm.kf_obs[1].imu_since_prev[i];
+    s.timestamp = 100.0 + 0.005 * i;       // 5 ms apart
+    s.accel = Eigen::Vector3d(0.01 * i, -0.02 * i, 9.81);
+    s.gyro  = Eigen::Vector3d(-0.03 * i, 0.04 * i, 0.001 * i);
+  }
+  // KF 2: 7 samples (different size proves codec isn't aliasing block sizes).
+  sm.kf_obs[2].imu_since_prev.resize(7);
+  for (int i = 0; i < 7; ++i) {
+    auto& s = sm.kf_obs[2].imu_since_prev[i];
+    s.timestamp = 200.0 + 0.005 * i;
+    s.accel = Eigen::Vector3d(0.5 + 0.1 * i, 0.7, -0.3);
+    s.gyro  = Eigen::Vector3d(0.0, 0.001 * i, -0.002 * i);
+  }
+
+  const std::string path = tmpdir() + "_kfimu.smap";
+  std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+  ASSERT_TRUE(saveSubMap(sm, path));
+  SubMap got;
+  ASSERT_TRUE(loadSubMap(got, path));
+  expectEqual(sm, got);
+  EXPECT_FALSE(got.kf_obs[0].hasImu());
+  EXPECT_TRUE(got.kf_obs[1].hasImu());
+  EXPECT_TRUE(got.kf_obs[2].hasImu());
+  EXPECT_EQ(got.kf_obs[1].imu_since_prev.size(), 5u);
+  EXPECT_EQ(got.kf_obs[2].imu_since_prev.size(), 7u);
 }

@@ -17,6 +17,7 @@
 
 #include "slamko_core/custom_data.hpp"
 #include "slamko_core/features.hpp"
+#include "slamko_core/imu_sample.hpp"
 #include "slamko_core/se3.hpp"
 
 namespace slamko {
@@ -61,9 +62,18 @@ struct KeyframeObservations {
   // docs/PLAN_BA_GLOBAL.md "VPR retrieval: keep EigenPlaces, change granularity first".
   Eigen::VectorXf global_descriptor;
 
+  // Raw IMU samples between the PREVIOUS keyframe and THIS keyframe (the integration
+  // window for a global BA's IMU factor). First KF of a submap stores []. Empty also
+  // for legacy maps (SMP1–SMP4). The global smoother re-runs preintegration in its
+  // own measurement type (gtsam::PreintegratedCombinedMeasurements) — we ship RAW
+  // samples to keep the contract noise-model-agnostic (the smoother owns its preint).
+  // Schema SMP5; see docs/PLAN_BA_GLOBAL.md Phase B.2.
+  std::vector<ImuSample> imu_since_prev;
+
   int size() const { return static_cast<int>(landmark_ids.size()); }
   bool hasStereo() const { return uv_right.rows() == uv.rows() && uv_right.rows() > 0; }
   bool hasGlobalDescriptor() const { return global_descriptor.size() > 0; }
+  bool hasImu() const { return !imu_since_prev.empty(); }
 };
 
 struct SubMap {
