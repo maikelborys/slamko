@@ -204,6 +204,10 @@ class VioNode : public rclcpp::Node {
     reloc_use_lightglue_     = declare_parameter("reloc_use_lightglue", false);
     reloc_lightglue_model_   = declare_parameter("reloc_lightglue_model", std::string());
     reloc_lg_max_views_      = declare_parameter("reloc_lg_max_views", 4);
+    // VPR candidate breadth — higher = more submaps verified per query (more recall,
+    // more LightGlue compute). With real-KF LightGlue now strong, can push this past
+    // the default 10 to surface submaps that VPR ranks below the top-10 on hard revisits.
+    reloc_vpr_top_n_         = declare_parameter("reloc_vpr_top_n", 10);
     // P4: cross-session map persistence. prior_map_dir → load a prior Atlas at startup
     // (seed archive + reloc DB) so the live session localizes into it; map_save_dir →
     // dump the sealed Atlas at shutdown for the next session.
@@ -425,6 +429,7 @@ class VioNode : public rclcpp::Node {
       // LighterGlue verifier (loads lighterglue.pt from share/models/ by default).
       rc.use_lightglue    = reloc_use_lightglue_;
       rc.lg_max_views     = reloc_lg_max_views_;
+      rc.vpr_top_n        = reloc_vpr_top_n_;
       if (reloc_use_lightglue_) {
         rc.lightglue_model_path = reloc_lightglue_model_.empty()
             ? ament_index_cpp::get_package_share_directory("slamko_vio") +
@@ -606,6 +611,7 @@ class VioNode : public rclcpp::Node {
   bool reloc_use_lightglue_ = false;
   std::string reloc_lightglue_model_;
   int reloc_lg_max_views_ = 4;
+  int reloc_vpr_top_n_     = 10;
   std::string nl_landmark_dump_path_, nl_pose_dump_path_;
   std::string nl_prior_map_dir_, nl_map_save_dir_;  // P4 cross-session map I/O
   std::uint64_t nl_first_live_id_ = 0;              // submap ids < this are prior-session
