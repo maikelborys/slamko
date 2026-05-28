@@ -23,12 +23,15 @@
 
 #include <Eigen/Core>
 
+#include <memory>
+
 #include "slamko_core/features.hpp"
 #include "slamko_core/relocalizer.hpp"
 #include "slamko_core/se3.hpp"
 #include "slamko_core/submap.hpp"
 
 #include "slamko_loop/bow.hpp"
+#include "slamko_loop/lightglue_matcher.hpp"
 
 namespace slamko {
 
@@ -75,11 +78,38 @@ struct XFeatRelocConfig {
   // PnP fallback stays cheap at this map scale. (Per-keyframe BoW is the deeper fix.)
   int    bow_top_k        = 25;
   int    bow_train_sample = 6000;  // max descriptors used to train the vocabulary
+
+  // LighterGlue verification — the viewpoint-robust matcher that REPLACES brute-force
+  // NN in the verify stage (VPR retrieves the candidate; this confirms the geometry on
+  // a hard revisit that XFeat-NN can't, per the recall study). The submap has no stored
+  // 2D keypoints, so a candidate's landmarks are projected into each of up to
+  // `lg_max_views` keyframe poses to synthesize a train view; LighterGlue matches the
+  // live query against each view → matched 3D feeds the UNCHANGED PnP-RANSAC. Falls back
+  // to brute-force NN when the matcher can't load (no libtorch / no model). See
+  // docs/PLAN_VPR_RELOC.md. Requires the build with -DSLAMKO_LOOP_WITH_TORCH.
+  bool   use_lightglue        = false;
+  std::string lightglue_model_path;     // TorchScript lighterglue.pt
+  int    lg_trace_n           = 512;    // keypoint count baked into the export
+  float  lg_score_thresh      = 0.10f;  // mscores0 cut
+  int    lg_max_views         = 4;      // keyframe poses projected per candidate submap
+  int    lg_min_view_landmarks = 12;    // skip a view with fewer in-FOV landmarks
 };
 
 class XFeatRelocalizer : public Relocalizer {
  public:
-  explicit XFeatRelocalizer(const XFeatRelocConfig& cfg) : cfg_(cfg) {}
+  explicit XFeatRelocalizer(const XFeatRelocConfig& cfg) : cfg_(cfg) {
+    // Build the LighterGlue verifier once (loads + deserializes the .pt). If it
+    // can't (no libtorch / missing model), lg_ is left null and the verify stage
+    // uses brute-force NN — never a hard failure, just no learned matching.
+    if (cfg_.use_lightglue && !cfg_.lightglue_model_path.empty()) {
+      LightGlueConfig lc;
+      lc.model_path = cfg_.lightglue_model_path;
+      lc.trace_n = cfg_.lg_trace_n;
+      lc.score_thresh = cfg_.lg_score_thresh;
+      auto lg = std::make_unique<LightGlueMatcher>(lc);
+      if (lg->build()) lg_ = std::move(lg);
+    }
+  }
 
   std::string name() const override { return "xfeat"; }
 
@@ -99,12 +129,20 @@ class XFeatRelocalizer : public Relocalizer {
     Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> desc;  // M×D
     std::vector<Eigen::Vector3d> pos;  // M submap-local 3D, aligned with desc rows
     Eigen::VectorXf global_desc;       // VPR descriptor for this submap (empty if none)
+    std::vector<KeyframePose> keyframes;  // submap-local poses (LighterGlue train views)
   };
+
+  // LighterGlue verify of one candidate submap: project its landmarks into up to
+  // lg_max_views keyframe poses to synthesize train views, match the query against
+  // each, run PnP-RANSAC on the best, return inliers (0 on no usable result).
+  bool lightGlueVerify(const Features& query, const Entry& e, SE3& T_sl_cam_out,
+                       int& inliers_out, int& putative_out) const;
 
   XFeatRelocConfig    cfg_;
   std::vector<Entry>  db_;
   BowVocabulary       vocab_;   // P3: trained on the first submap, fixed thereafter
   BowDatabase         bow_db_;  // P3: inverted index for candidate pre-selection
+  mutable std::unique_ptr<LightGlueMatcher> lg_;  // null = brute-force fallback
 };
 
 }  // namespace slamko

@@ -1,6 +1,6 @@
 # PLAN — Global VPR front-end for loop-closure relocalization (EigenPlaces)
 
-<!-- status: ONNX exported+validated (GO); C++ integration in progress · 2026-05-28 -->
+<!-- status: VPR + LighterGlue rescue verifier INTEGRATED (49 gtests); hard-revisit recall blocked by magistrale-GT + VIO nondeterminism, needs per-keyframe features · 2026-05-28 -->
 
 **Read first:** `slamko_loop/docs/STATUS.md` (the recall study) +
 `~/.claude/.../memory/slamko-loopclosure-recall-bottleneck.md`. This plan is
@@ -77,7 +77,24 @@ Re-run TUM VI magistrale1. Target: welds fire on the **return** to the start roo
 **8.6 cm** (vs the current ~8–24 m no-close). Then the magistrale1↔magistrale2 cross-session
 fuse (the original goal).
 
-## NEXT (verification fix) — LighterGlue matcher (the start-room return needs this)
+## ✅ DONE — LighterGlue matcher integrated as a RESCUE verifier (2026-05-28)
+
+`LightGlueMatcher` (slamko_loop, optional `-DSLAMKO_LOOP_WITH_TORCH=ON`) is built + tested and
+wired into `XFeatRelocalizer`: **brute-force NN verifies first; LighterGlue fires only when
+brute-force fails a candidate** (the hard revisit) → guaranteed ≥ brute-force baseline by
+construction. SubMap keyframe poses are now populated (`vio_pipeline kf_poses_`) and a candidate's
+landmarks are projected into them to synthesize train views. Node params `reloc_use_lightglue`/
+`reloc_lightglue_model`/`reloc_lg_max_views`. **49 gtests 0 fail** + 2 guarded LighterGlue tests.
+
+**BUT it did NOT close the hard magistrale return** (0 late welds; the synthetic projected-cloud
+train view is too sparse — ~5–20 matches vs hundreds for a real two-image match). And **two
+methodology walls block measuring it** (see slamko_loop/docs/STATUS.md 2026-05-28):
+(1) magistrale GT is room-only → ATE meaningless (memory `slamko-tumvi-magistrale-gt-roomonly`);
+(2) VIO replay is non-deterministic (~40–80% run-to-run ATE variance on V1_03) → A/B swamped.
+VIO confirmed healthy (EuRoC MH_05 scale 1.01). **The correct recall fix is per-keyframe real 2D
+features** (below), not the projected cloud — but it needs (1)+(2) fixed to validate.
+
+## (superseded approach) — LighterGlue matcher (the start-room return needs this)
 
 VPR retrieval works (ATE 24m→1.9m) but the start-room return doesn't re-close: the
 geometric VERIFICATION (brute-force XFeat-NN + Lowe ratio) can't match the same place

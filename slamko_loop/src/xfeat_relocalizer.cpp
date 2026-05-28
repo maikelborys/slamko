@@ -6,6 +6,8 @@
 #include "slamko_loop/xfeat_relocalizer.hpp"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <random>
 
 #include "slamko_core/p3p_solver.hpp"
@@ -133,6 +135,7 @@ void XFeatRelocalizer::addSubMap(const SubMap& submap) {
   e.id = submap.id;
   e.anchor = submap.anchor;
   e.global_desc = submap.global_descriptor;  // VPR retrieval vector (empty if none)
+  e.keyframes = submap.keyframes;             // LighterGlue train-view projection poses
   int m = 0;
   for (const auto& lm : submap.landmarks)
     if (lm.descriptor_row >= 0 && lm.descriptor_row < submap.descriptors.rows()) ++m;
@@ -207,18 +210,44 @@ RelocResult XFeatRelocalizer::relocalize(const Features& query) const {
     if (!cand.empty() &&
         std::find(cand.begin(), cand.end(), e.id) == cand.end())
       continue;  // not a BoW candidate this query
-    std::vector<Eigen::Vector2d> uv;
-    std::vector<Eigen::Vector3d> X;
-    matchDescriptors(query, e.desc, e.pos, cfg_.match_ratio, cfg_.mutual_check, uv, X);
-    if (static_cast<int>(X.size()) < cfg_.min_inliers) continue;
 
     SE3 T_sl_cam;
     int inliers = 0;
-    if (!pnpRansac(X, uv, cfg_, T_sl_cam, inliers)) continue;
-    // Precision gate (OKVIS-style): the inlier RATIO, not just the count, separates a
-    // true place from a coincidental descriptor match once the Lowe ratio is permissive.
-    if (cfg_.min_inlier_ratio > 0.0 &&
-        inliers < cfg_.min_inlier_ratio * static_cast<double>(X.size())) continue;
+    int putative = 0;  // # correspondences fed to PnP (for the confidence ratio)
+
+    // Brute-force NN verify FIRST. When it works (easy revisit, small viewpoint gap) it
+    // matches the query against the whole landmark cloud → hundreds of correspondences →
+    // a well-constrained PnP, MORE accurate than LighterGlue's sparse synthetic-view
+    // matches. So it stays the default; LighterGlue is the RESCUE below.
+    {
+      std::vector<Eigen::Vector2d> uv;
+      std::vector<Eigen::Vector3d> X;
+      matchDescriptors(query, e.desc, e.pos, cfg_.match_ratio, cfg_.mutual_check, uv, X);
+      if (static_cast<int>(X.size()) >= cfg_.min_inliers &&
+          pnpRansac(X, uv, cfg_, T_sl_cam, inliers) &&
+          // Precision gate (OKVIS-style): inlier RATIO separates a true place from a
+          // coincidental match once the Lowe ratio is permissive.
+          !(cfg_.min_inlier_ratio > 0.0 &&
+            inliers < cfg_.min_inlier_ratio * static_cast<double>(X.size())))
+        putative = static_cast<int>(X.size());
+      else
+        inliers = 0;  // brute-force could not verify this candidate
+    }
+
+    // LighterGlue RESCUE: only when brute-force failed this candidate — the hard revisit
+    // (large viewpoint/time gap) where XFeat-NN gives <1% inliers but the learned matcher
+    // can still find the geometry. Never overrides a good brute-force weld, so the build
+    // is guaranteed ≥ the brute-force baseline (it only ADDS closures NN missed).
+    if (inliers == 0 && lg_) {
+      int lg_inl = 0, lg_put = 0;
+      SE3 lg_T;
+      if (lightGlueVerify(query, e, lg_T, lg_inl, lg_put)) {
+        T_sl_cam = lg_T;
+        inliers = lg_inl;
+        putative = lg_put;
+      }
+    }
+    if (inliers == 0) continue;          // neither path verified this candidate
     if (inliers <= best_inliers) continue;
 
     best_inliers = inliers;
@@ -228,10 +257,92 @@ RelocResult XFeatRelocalizer::relocalize(const Features& query) const {
     // body in cam = body_T_cam⁻¹ (body_T_cam == T_BS, cam→body).
     best.T_query_match = T_sl_cam * cfg_.body_T_cam.inverse();
     best.confidence = static_cast<double>(inliers) /
-                      static_cast<double>(std::max<int>(1, (int)X.size()));
+                      static_cast<double>(std::max<int>(1, putative));
     best.num_inliers = inliers;
   }
   return best;
+}
+
+bool XFeatRelocalizer::lightGlueVerify(const Features& query, const Entry& e,
+                                       SE3& T_sl_cam_out, int& inliers_out,
+                                       int& putative_out) const {
+  if (!lg_ || e.keyframes.empty() || e.pos.empty() || !query.hasDescriptors())
+    return false;
+  const int M = static_cast<int>(e.pos.size());
+  // The submap stores no 2D keypoints, so a train view is the landmark cloud
+  // projected into one keyframe's camera. Image bounds come from the principal
+  // point (rectified pinhole: cx≈w/2, cy≈h/2) so we keep only landmarks that
+  // land in a real image (the model's positional encoding assumes in-image px).
+  const double img_w = 2.0 * cfg_.cx;
+  const double img_h = 2.0 * cfg_.cy;
+  const int nkf = static_cast<int>(e.keyframes.size());
+  const int views = std::min(cfg_.lg_max_views, nkf);
+
+  int best_inl = 0, best_putative = 0;
+  SE3 best_T;
+  bool have = false;
+  for (int v = 0; v < views; ++v) {
+    // Evenly-spaced keyframes so the views together cover the whole submap span.
+    const int kfi = (views == 1) ? nkf / 2 : (v * (nkf - 1)) / (views - 1);
+    const SE3& T_WB = e.keyframes[kfi].T_WB;                  // body-in-world (local)
+    const SE3 T_cam_sl = (T_WB * cfg_.body_T_cam).inverse();  // world(local)→cam
+
+    Features train;
+    train.keypoints.resize(M, 3);
+    train.descriptors.resize(M, e.desc.cols());
+    std::vector<Eigen::Vector3d> pos_view;
+    pos_view.reserve(M);
+    int row = 0;
+    for (int k = 0; k < M; ++k) {
+      const Eigen::Vector3d Xc = T_cam_sl * e.pos[k];
+      if (Xc.z() < 1e-3) continue;                            // behind the camera
+      const double u = cfg_.fx * Xc.x() / Xc.z() + cfg_.cx;
+      const double w = cfg_.fy * Xc.y() / Xc.z() + cfg_.cy;
+      if (u < 0 || u >= img_w || w < 0 || w >= img_h) continue;  // out of FOV
+      train.keypoints(row, 0) = static_cast<float>(u);
+      train.keypoints(row, 1) = static_cast<float>(w);
+      train.keypoints(row, 2) = static_cast<float>(1.0 / (1.0 + Xc.z()));  // near→high
+      train.descriptors.row(row) = e.desc.row(k);
+      pos_view.push_back(e.pos[k]);
+      ++row;
+    }
+    if (row < cfg_.lg_min_view_landmarks) continue;
+    train.keypoints.conservativeResize(row, 3);
+    train.descriptors.conservativeResize(row, e.desc.cols());
+
+    const auto matches = lg_->match(query, train);
+    if (std::getenv("SLAMKO_LG_DEBUG"))
+      std::fprintf(stderr, "[LG] submap %llu view %d/%d: %d train-lm, %zu matches\n",
+                   (unsigned long long)e.id, v, views, row, matches.size());
+    if (static_cast<int>(matches.size()) < cfg_.min_inliers) continue;
+    std::vector<Eigen::Vector2d> uv;
+    std::vector<Eigen::Vector3d> X;
+    uv.reserve(matches.size());
+    X.reserve(matches.size());
+    for (const auto& m : matches) {
+      uv.emplace_back(query.keypoints(m.query_idx, 0), query.keypoints(m.query_idx, 1));
+      X.push_back(pos_view[m.train_idx]);
+    }
+    SE3 T_sl_cam;
+    int inl = 0;
+    if (!pnpRansac(X, uv, cfg_, T_sl_cam, inl)) continue;
+    if (cfg_.min_inlier_ratio > 0.0 &&
+        inl < cfg_.min_inlier_ratio * static_cast<double>(X.size())) continue;
+    if (inl > best_inl) {
+      best_inl = inl;
+      best_putative = static_cast<int>(matches.size());
+      best_T = T_sl_cam;
+      have = true;
+    }
+  }
+  if (!have) return false;
+  if (std::getenv("SLAMKO_LG_DEBUG"))
+    std::fprintf(stderr, "[LG] VERIFIED submap %llu: %d inliers / %d matches\n",
+                 (unsigned long long)e.id, best_inl, best_putative);
+  T_sl_cam_out = best_T;
+  inliers_out = best_inl;
+  putative_out = best_putative;
+  return true;
 }
 
 }  // namespace slamko

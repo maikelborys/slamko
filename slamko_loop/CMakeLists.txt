@@ -16,6 +16,14 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 add_compile_options(-Wall -Wextra)
 
+# LighterGlue verifier (TorchScript via libtorch). OFF by default so the core
+# build + the gtest suite stay torch-free; turn ON for the relocalization stack:
+#   colcon build --packages-select slamko_loop \
+#     --cmake-args -DSLAMKO_LOOP_WITH_TORCH=ON
+# The .cpp is always compiled — without the macro it is a working no-op so the
+# relocalizer transparently falls back to brute-force NN.
+option(SLAMKO_LOOP_WITH_TORCH "Build the LighterGlue libtorch matcher" OFF)
+
 find_package(ament_cmake REQUIRED)
 find_package(slamko_core REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
@@ -27,13 +35,22 @@ add_library(slamko_loop SHARED
   src/never_lost_supervisor.cpp
   src/pose_graph.cpp
   src/bow.cpp
-  src/xfeat_relocalizer.cpp)
+  src/xfeat_relocalizer.cpp
+  src/lightglue_matcher.cpp)
 target_include_directories(slamko_loop PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 target_link_libraries(slamko_loop Eigen3::Eigen)
 ament_target_dependencies(slamko_loop slamko_core)
 target_compile_features(slamko_loop PUBLIC cxx_std_17)
+
+if(SLAMKO_LOOP_WITH_TORCH)
+  find_package(Torch REQUIRED HINTS /home/maikel/libtorch $ENV{HOME}/libtorch)
+  target_compile_definitions(slamko_loop PRIVATE SLAMKO_HAVE_TORCH)
+  target_link_libraries(slamko_loop ${TORCH_LIBRARIES})
+  target_include_directories(slamko_loop PRIVATE ${TORCH_INCLUDE_DIRS})
+  message(STATUS "slamko_loop: LighterGlue matcher ENABLED (libtorch ${Torch_VERSION})")
+endif()
 
 install(TARGETS slamko_loop
   EXPORT slamko_loopTargets
@@ -47,6 +64,11 @@ if(BUILD_TESTING)
     target_link_libraries(${t} slamko_loop Eigen3::Eigen)
     ament_target_dependencies(${t} slamko_core)
   endforeach()
+  if(SLAMKO_LOOP_WITH_TORCH)
+    ament_add_gtest(test_lightglue test/test_lightglue.cpp)
+    target_link_libraries(test_lightglue slamko_loop Eigen3::Eigen)
+    ament_target_dependencies(test_lightglue slamko_core)
+  endif()
 endif()
 
 ament_export_dependencies(slamko_core Eigen3)

@@ -194,6 +194,13 @@ class VioNode : public rclcpp::Node {
     reloc_mutual_check_     = declare_parameter("reloc_mutual_check", false);
     reloc_min_inlier_ratio_ = declare_parameter("reloc_min_inlier_ratio", 0.0);
     reloc_min_inliers_      = declare_parameter("reloc_min_inliers", 15);
+    // LighterGlue verification: the viewpoint-robust matcher that replaces brute-force
+    // NN in the verify stage (what closes a hard revisit XFeat-NN can't). Needs
+    // slamko_loop built with -DSLAMKO_LOOP_WITH_TORCH; if the model can't load the
+    // relocalizer silently falls back to brute force. Model ships in share/models/.
+    reloc_use_lightglue_     = declare_parameter("reloc_use_lightglue", false);
+    reloc_lightglue_model_   = declare_parameter("reloc_lightglue_model", std::string());
+    reloc_lg_max_views_      = declare_parameter("reloc_lg_max_views", 4);
     // P4: cross-session map persistence. prior_map_dir → load a prior Atlas at startup
     // (seed archive + reloc DB) so the live session localizes into it; map_save_dir →
     // dump the sealed Atlas at shutdown for the next session.
@@ -369,6 +376,17 @@ class VioNode : public rclcpp::Node {
       rc.mutual_check     = reloc_mutual_check_;
       rc.min_inlier_ratio = reloc_min_inlier_ratio_;
       rc.min_inliers      = reloc_min_inliers_;
+      // LighterGlue verifier (loads lighterglue.pt from share/models/ by default).
+      rc.use_lightglue    = reloc_use_lightglue_;
+      rc.lg_max_views     = reloc_lg_max_views_;
+      if (reloc_use_lightglue_) {
+        rc.lightglue_model_path = reloc_lightglue_model_.empty()
+            ? ament_index_cpp::get_package_share_directory("slamko_vio") +
+                  "/models/lighterglue.pt"
+            : reloc_lightglue_model_;
+        RCLCPP_INFO(get_logger(), "[neverlost] LighterGlue verify ON (model=%s, views=%d)",
+                    rc.lightglue_model_path.c_str(), reloc_lg_max_views_);
+      }
       reloc_ = std::make_unique<slamko::XFeatRelocalizer>(rc);
       slamko::SupervisorConfig sc;
       sc.use_pose_graph       = nl_use_pose_graph_;
@@ -539,6 +557,9 @@ class VioNode : public rclcpp::Node {
   double reloc_match_ratio_ = 0.9, reloc_min_inlier_ratio_ = 0.0;
   bool reloc_use_bow_ = true, reloc_mutual_check_ = false;
   int reloc_bow_top_k_ = 25, reloc_min_inliers_ = 15;
+  bool reloc_use_lightglue_ = false;
+  std::string reloc_lightglue_model_;
+  int reloc_lg_max_views_ = 4;
   std::string nl_landmark_dump_path_, nl_pose_dump_path_;
   std::string nl_prior_map_dir_, nl_map_save_dir_;  // P4 cross-session map I/O
   std::uint64_t nl_first_live_id_ = 0;              // submap ids < this are prior-session

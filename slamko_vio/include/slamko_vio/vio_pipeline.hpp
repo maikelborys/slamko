@@ -230,6 +230,11 @@ class VioPipeline {
   std::unordered_map<std::uint32_t, int> landmark_obs_count_;
   std::unordered_map<std::uint32_t, int> landmark_epoch_;  // submap epoch at creation
   int submap_epoch_ = 0;                                   // bumped by beginSubmap()
+  // Per-keyframe body pose (VIO world frame ≡ submap-local at seal), tagged by epoch.
+  // buildSubMap attaches the current epoch's poses to SubMap.keyframes so the
+  // LighterGlue relocalizer can project landmarks into them to synthesize train views.
+  struct EpochKf { int epoch; slamko::KeyframePose kf; };
+  std::vector<EpochKf> kf_poses_;
   std::unordered_map<std::uint32_t, std::array<std::uint8_t, kLmpPatchPx>> landmark_patch_;
   std::unordered_map<std::uint32_t, std::array<float, 64>> landmark_descriptors_;  // reloc map
   int            mature_obs_thr_ = 1000;

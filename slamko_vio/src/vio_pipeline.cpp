@@ -298,6 +298,9 @@ slamko::SubMap VioPipeline::buildSubMap() const {
     }
     sm.landmarks.push_back(lm);
   }
+  // Attach this epoch's keyframe poses (LighterGlue projects landmarks into them).
+  for (const auto& ek : kf_poses_)
+    if (ek.epoch == submap_epoch_) sm.keyframes.push_back(ek.kf);
   sm.global_descriptor = current_global_desc_;  // VPR retrieval vector (empty if no VPR)
   return sm;
 }
@@ -1193,6 +1196,16 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
         }
       }
       last_kf_ts_ = ts_now;
+      // Record this KF's body pose for the current submap epoch (T_w_c_ is the
+      // refined cam pose post-optimize; T_WB = (T_BS·T_w_c)⁻¹). The LighterGlue
+      // relocalizer projects the submap's landmarks into these poses (train views).
+      {
+        slamko::KeyframePose kfp;
+        kfp.id = static_cast<std::uint64_t>(kf_poses_.size());
+        kfp.timestamp = ts_now;
+        kfp.T_WB = slamko::SE3(Eigen::Matrix4d((T_BS_ * T_w_c_).inverse()));
+        kf_poses_.push_back({submap_epoch_, kfp});
+      }
       // n_ba_landmarks: live landmarks observed this KF (LocalBA's total-window
       // landmark_count isn't in the LocalSmoother contract). Debug CSV only —
       // not part of any gate.

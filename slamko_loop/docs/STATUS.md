@@ -2,6 +2,53 @@
 
 Living, dated progress + numbers log. Plan: [`PLAN_P2_loop.md`](PLAN_P2_loop.md).
 
+## 2026-05-28 — LighterGlue verify (rescue mode) + two methodology walls found
+
+**Built (the verification fix from PLAN_VPR_RELOC.md):** `LightGlueMatcher` (slamko_loop) — the
+verlab XFeat-64 LightGlue (`lighterglue.pt`) via libtorch TorchScript, implementing
+`slamko::Matcher`. Optional target `-DSLAMKO_LOOP_WITH_TORCH=ON` (default OFF → no-op fallback,
+header torch-free via pimpl, default build + gtests stay torch-free). Adapts the AirSLAM_XFEAT
+`lighter_glue.cc` port to the slamko Features layout (N×3 kpts, N×64 desc), top-K to N=512 with
+index mapping back to original rows. **Tests: 49 gtests 0 fail** (torch-free) + 2 guarded
+LighterGlue tests (load `.pt`, identity-view match, top-K validity) when torch ON.
+
+**Wired into `XFeatRelocalizer` as a RESCUE verifier (not the default):** the SubMap had no 2D
+keypoints, so a candidate's landmarks are projected into its keyframe poses (now populated by
+`vio_pipeline::buildSubMap` — `kf_poses_` tagged by epoch) to synthesize train views, matched
+against the live query. **Order matters and was the key fix:** brute-force NN runs FIRST (matches
+the whole cloud → hundreds of correspondences → accurate PnP); LighterGlue fires ONLY when
+brute-force can't verify a candidate (the hard revisit). This guarantees the build is **≥ the
+brute-force baseline by construction** (it only ADDs closures NN missed, never overrides a good
+weld). A first verify-FIRST attempt regressed (suppressed a good brute-force weld + sparse
+synthetic-view matches) — corrected. Node params `reloc_use_lightglue`/`reloc_lightglue_model`/
+`reloc_lg_max_views` + launch args; model ships in `slamko_vio/models/` (gitignored `.pt`).
+
+**Two walls found that block ATE-gated loop-closure work (both bigger than LighterGlue):**
+
+1. **TUM VI magistrale GT is room-only** (see memory `slamko-tumvi-magistrale-gt-roomonly`). The
+   `gt.tum` covers ONLY the start/end mocap room (~2 m box, path 97.8 m — identical extent to
+   room1) even though the walk is ~822 m. Naive full-traj ATE compares a ~50 m estimate to a 2 m
+   GT → **absurd scale 0.006–0.20**, SE3-ATE 1.9–22 m = pure GT artifact. **The "magistrale1
+   baseline 1.9 m" in the prior entries is therefore meaningless**; the OKVIS 8.6 cm must have used
+   valid-segment-only eval. → use EuRoC (full GT) or build a valid-segment GT mask.
+
+2. **VIO replay is non-deterministic** — on EuRoC V1_03_difficult, the SAME code+config gives
+   raw-odom SE3-ATE **52.9 cm vs 74.7 cm vs 95.3 cm** across runs (~40–80% variance; ~all frames
+   processed, so not frame drops — GPU XFeat/KLT + solver nondeterminism, amplified on a hard
+   sequence near the tracking limit). This **swamps any loop-closure A/B** (can't tell a 38 vs
+   54 cm difference from run noise). Determinism/stability is a prerequisite for "precise".
+
+**VIO confirmed HEALTHY though:** EuRoC MH_05 raw-odom Sim3 **scale 1.0127** (metric), SE3-ATE
+~18–22 cm. So slamko_vio is sound; magistrale's scale weirdness was 100% the GT. On V1_03 the
+welds DO help (raw→corrected 74.7→38.5, 95.3→48.4) — loop closure works, just unmeasurably-A/B'd.
+
+**Next (ranked):** (a) **VIO determinism/stability** (the real "stable" blocker — deterministic
+GPU + solver, robustness on hard seq); (b) **measurable hard-revisit GT** (mask magistrale to
+in-room segments, or a synthetic hard-revisit bag); (c) **per-keyframe real 2D features** in SubMap
+(store each KF's keypoints+descriptors+landmark links → real two-image LightGlue, in-distribution)
+— the synthetic projected-cloud train view is too sparse to rescue the hard magistrale return
+(0 late welds), and per-keyframe matching is the correct LightGlue usage. Then #1 global landmark BA.
+
 ## 2026-05-28 — Loop-closure recall: XFeat carries NO place signal (config exhausted → need global VPR)
 
 **Finding (definitive, proven offline + 3 live magistrale1 runs):** the loop-closure bottleneck is
