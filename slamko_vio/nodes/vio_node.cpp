@@ -44,6 +44,7 @@
 #include "slamko_vio/types.hpp"
 #include "slamko_fusion/gtsam_local_smoother.hpp"        // node-only (composition root)
 #include "slamko_fusion/gtsam_global_smoother.hpp"       // C.live: BA on weld
+#include "slamko_fusion/session_graph.hpp"                // Refactor P2: async full-graph thread
 #include "slamko_loop/never_lost_supervisor.hpp"          // node-only (P2c)
 #include "slamko_loop/xfeat_relocalizer.hpp"
 #include "slamko_core/submap_io.hpp"                       // P4: cross-session map I/O
@@ -194,6 +195,7 @@ class VioNode : public rclcpp::Node {
     nl_weld_ba_            = declare_parameter("neverlost_weld_ba", false);
     nl_weld_ba_max_iters_  = declare_parameter("neverlost_weld_ba_max_iters", 20);
     nl_weld_ba_pixel_sigma_= declare_parameter("neverlost_weld_ba_pixel_sigma", 1.0);
+    use_session_graph_     = declare_parameter("use_session_graph", false);
     // Relocalizer recall knobs (sweepable; defaults match XFeatRelocConfig).
     reloc_match_ratio_      = declare_parameter("reloc_match_ratio", 0.9);
     reloc_use_bow_          = declare_parameter("reloc_use_bow", true);
@@ -399,8 +401,41 @@ class VioNode : public rclcpp::Node {
       const slamko::ImageView left(f.l->data.data(), (int)f.l->width, (int)f.l->height, (int)f.l->step);
       const slamko::ImageView right(f.r->data.data(), (int)f.r->width, (int)f.r->height, (int)f.r->step);
       pipeline_->processStereo(left, right, f.ts, K_);
+      if (use_session_graph_) drainKfsToSessionGraph();
       publish(f.l->header);
       if (neverlost_enabled_) driveSupervisor(f.ts);
+    }
+  }
+
+  // Refactor P2: drain NEW KFs inserted in this frame into the SessionGraph. The
+  // worker thread runs VI-BA asynchronously; we never block here. SessionGraph is
+  // built lazily on first KF so calibration + extrinsic are resolved by then.
+  void drainKfsToSessionGraph() {
+    if (!have_K_ || !extrinsics_set_) return;
+    if (!session_graph_) {
+      slamko::SessionGraphConfig sc;
+      sc.calib.fx       = K_.fx;
+      sc.calib.fy       = K_.fy;
+      sc.calib.cx       = K_.cx;
+      sc.calib.cy       = K_.cy;
+      sc.calib.baseline = K_.baseline_m;
+      sc.T_BS            = slamko::SE3(node_T_BS_);
+      session_graph_     = std::make_unique<slamko::SessionGraph>(sc);
+      RCLCPP_INFO(get_logger(), "[session_graph] up (relin_window=%d, optimize_every=%d)",
+                  sc.relin_window_size, sc.optimize_every_n_kfs);
+    }
+    const std::size_t n = pipeline_->keyframeCount();
+    for (; last_session_kf_idx_ < n; ++last_session_kf_idx_) {
+      const auto& ek = pipeline_->keyframe(last_session_kf_idx_);
+      slamko::SessionKeyframe skf;
+      skf.id            = ek.kf.id;
+      skf.timestamp     = ek.kf.timestamp;
+      skf.T_WB          = ek.kf.T_WB;
+      skf.velocity_w    = ek.velocity_w;
+      skf.bias          = ek.bias;
+      skf.obs           = ek.obs;
+      skf.imu_since_prev = ek.obs.imu_since_prev;
+      session_graph_->insertKeyframe(std::move(skf));
     }
   }
 
@@ -571,6 +606,14 @@ class VioNode : public rclcpp::Node {
 
   void publish(const std_msgs::msg::Header& hdr) {
     const Eigen::Matrix4f T = pipeline_->worldPose();
+    // C V1.1: SessionGraph runs in background but its `latestCorrection()` is NOT
+    // composed onto the live worldPose. V1.0 attempted to apply it directly and
+    // produced 35-m frame-to-frame jumps when async BA finished updates — the
+    // correction is an instantaneous SE3 delta valid only at the LATEST KF's
+    // timestamp, but applying it to every subsequent frame creates a step at each
+    // update boundary. V2 will add a slew-rate-limited / interpolated application.
+    // For now: SessionGraph collects substrate (KFs + IMU + observations) async,
+    // future commits use it for loop-closure VI-BA.
     const Eigen::Vector3f t = T.block<3,1>(0,3);
     const Eigen::Quaternionf q(Eigen::Matrix3f(T.block<3,3>(0,0)));
 
@@ -644,6 +687,13 @@ class VioNode : public rclcpp::Node {
   int    nl_weld_ba_max_iters_   = 20;
   double nl_weld_ba_pixel_sigma_ = 1.0;
   std::unique_ptr<slamko::GlobalSmoother> global_smoother_;
+  // Refactor P2: SessionGraph (async full-graph thread). Consumes KFs from the
+  // pipeline as they're inserted, runs VI-BA over the recent window in the
+  // background, publishes the SE3 correction applied SMOOTHLY to the live
+  // worldPose (no retroactive jumps to past frames in run.tum).
+  bool   use_session_graph_ = false;
+  std::unique_ptr<slamko::SessionGraph> session_graph_;
+  std::size_t last_session_kf_idx_ = 0;
   double reloc_match_ratio_ = 0.9, reloc_min_inlier_ratio_ = 0.0;
   bool reloc_use_bow_ = true, reloc_mutual_check_ = false;
   int reloc_bow_top_k_ = 25, reloc_min_inliers_ = 15;

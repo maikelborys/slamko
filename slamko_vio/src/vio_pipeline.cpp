@@ -1247,7 +1247,11 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
         // at the first KF of a submap (no previous KF to span). Stored AT this KF as
         // `imu_since_prev` so each kf_obs[k] carries the IMU spanning kf[k-1]→kf[k].
         if (!imu_for_kf.empty()) ko.imu_since_prev = imu_for_kf;
-        kf_poses_.push_back({submap_epoch_, std::move(kfp), std::move(ko)});
+        EpochKf ek{submap_epoch_, std::move(kfp), std::move(ko),
+                   velocity_w_, slamko::ImuBias{}};
+        ek.bias.gyro  = bias_lin_.bg;
+        ek.bias.accel = bias_lin_.ba;
+        kf_poses_.push_back(std::move(ek));
       }
       // n_ba_landmarks: live landmarks observed this KF (LocalBA's total-window
       // landmark_count isn't in the LocalSmoother contract). Debug CSV only —

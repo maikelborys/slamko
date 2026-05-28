@@ -240,8 +240,19 @@ class VioPipeline {
     int                         epoch;
     slamko::KeyframePose        kf;
     slamko::KeyframeObservations obs;
+    // Captured at insertion AFTER the local smoother's optimize so velocity+bias are
+    // the refined estimates the SessionGraph (Phase C) can seed its global BA with.
+    Eigen::Vector3d             velocity_w = Eigen::Vector3d::Zero();
+    slamko::ImuBias             bias;
   };
   std::vector<EpochKf> kf_poses_;
+
+ public:
+  // Phase C wiring: the SessionGraph consumer drains new KFs each frame. Returns
+  // 0 on cold start; grows monotonically by 1 each time the pipeline inserts a KF.
+  std::size_t keyframeCount() const { return kf_poses_.size(); }
+  const EpochKf& keyframe(std::size_t i) const { return kf_poses_[i]; }
+ private:
   std::unordered_map<std::uint32_t, std::array<std::uint8_t, kLmpPatchPx>> landmark_patch_;
   std::unordered_map<std::uint32_t, std::array<float, 64>> landmark_descriptors_;  // reloc map
   int            mature_obs_thr_ = 1000;
