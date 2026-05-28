@@ -143,6 +143,36 @@ clearly distinguishable from run noise.
 | B.2   | IMU factors (schema SMP4 + factor construction) — **the actual fix** | per-KF IMU samples + CombinedImuFactor | **NEXT** |
 | C.live | Wire BA into never_lost_supervisor (post-Phase B.2) | supervisor change, async | TBD |
 
+## VPR retrieval: keep EigenPlaces, change GRANULARITY first
+
+A natural question after the b07b484 finding ("real-KF LightGlue is dense but submap 0 never
+enters the VPR top-30 at the magistrale return") is: should we swap EigenPlaces for a stronger
+VPR model (AnyLoc / SALAD / MixVPR — all Apache-licensed, DINOv2-based, SOTA on indoor)?
+
+**The data says NO — change granularity first, model only if that's insufficient:**
+
+- The offline validation in memory `slamko-loopclosure-recall-bottleneck` proved
+  **EigenPlaces Recall@5 = 1.0 / 0-of-30 false matches** on real magistrale1 return frames.
+  The model CAN distinguish places on this data when given clean per-frame queries.
+- What's wrong in the live pipeline: slamko stores **ONE aggregated EigenPlaces descriptor
+  per submap** (a single signature over 10 m of trajectory, mixing room + corridor + hallway).
+  Per-keyframe retrieval (each KF its own descriptor) gives ~10× finer granularity AND matches
+  the offline-validated usage pattern. Phase A already persists per-KF observations; per-KF VPR
+  is the natural sibling (a SubMap field `kf_global_descriptor` aligned 1:1 with `keyframes`).
+- Cost: per-KF VPR adds a single EigenPlaces forward per KF (already running per frame for the
+  aggregate — switch the aggregation point). DB grows ~10× (88 submaps × ~10 KFs each ≈ 880
+  vectors of 512 floats ≈ 1.8 MB). Cosine retrieval over 880 is still a single GEMM, sub-ms.
+
+**Only after per-KF EigenPlaces still falls short:** swap the model. Top candidates ranked by
+indoor robustness + license + ONNX-exportability:
+1. **AnyLoc** (DINOv2 ViT-L/14, Apache-2.0) — generalist foundation model, no fine-tune needed.
+2. **SALAD** (DINOv2 + SALAD aggregator, Apache) — SOTA on most indoor benchmarks.
+3. **MixVPR** (Apache) — strong + smaller than DINOv2-based options.
+
+EigenPlaces is trained on outdoor city scenes (SF, Tokyo) so it IS technically out-of-distribution
+on TUM VI indoor, but the offline data shows the OOD gap isn't a blocker when granularity is right.
+Swap is the bigger commit (new ONNX export pipeline, new model param). Keep it on the back burner.
+
 ## D.1 result — visual-only BA degrades ATE (= the case for IMU factors)
 
 **V1_03_difficult, per-submap visual-only BA on the saved Atlas (8 submaps):**
