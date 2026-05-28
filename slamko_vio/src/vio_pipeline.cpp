@@ -1235,6 +1235,12 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
             }
           }
         }
+        // Capture this KF's VPR descriptor (the current frame's EigenPlaces vector).
+        // Per-KF retrieval is the magistrale-return fix: one descriptor per submap
+        // aggregates 10 m of trajectory and loses the start-room signal; per-KF lets
+        // the relocalizer score each KF independently (max-cosine over a submap's
+        // KFs). See docs/PLAN_BA_GLOBAL.md "VPR retrieval: change granularity first".
+        if (current_global_desc_.size() > 0) ko.global_descriptor = current_global_desc_;
         kf_poses_.push_back({submap_epoch_, std::move(kfp), std::move(ko)});
       }
       // n_ba_landmarks: live landmarks observed this KF (LocalBA's total-window

@@ -2,6 +2,36 @@
 
 Living, dated progress + numbers log. Plan: [`PLAN_P2_loop.md`](PLAN_P2_loop.md).
 
+## 2026-05-28 (night) — Phase V.1: per-KF VPR granularity (SMP4)
+
+**Shipped:** `XFeatRelocalizer` now ranks VPR candidates by **per-keyframe** cosine, not per-submap.
+Each Entry caches a `kf_global_desc[]` aligned 1:1 with the submap's `keyframes`; the candidate
+score is `max_k cosine(query.global_descriptor, kf_global_desc[k])`. Per-submap `global_desc`
+remains as the SMP3-fallback path so legacy Atlases keep relocalizing after the schema bump.
+
+**Schema:** `slamko_core` codec SMP3 → **SMP4** — additive trailer on each `kf_obs` block carries
+`kf_gdim · floats` (the per-KF EigenPlaces vector). Codec accepts SMP1/SMP2/SMP3/SMP4; older
+versions load with per-KF descriptors empty (graceful).
+
+**Tests:** 3 new gtests pass:
+- `SubMapIO.PerKeyframeVprRoundTrip` — distinct per-KF descriptors round-trip bit-exact.
+- `XFeatRelocalizer.VprPerKfTopNRanking` — with `vpr_top_n=1`, the correct submap surfaces by
+  per-KF cosine (registered AFTER two distractors, so order doesn't help). The magistrale-return
+  regression guard.
+- `XFeatRelocalizer.VprPerSubmapFallback` — SMP3-style legacy maps (per-submap descriptor only)
+  still rank correctly.
+
+**EuRoC V1_01→V1_02 cross-session smoke:** PASS, corrected ATE 27.1 cm (no regression vs the
+prior per-submap path).
+
+**magistrale1 (1500 s replay, 88 submaps sealed):** 5 welds — **all in the first 90 s** (start-
+room re-visits at submap 0/1/3), **0 on the return**. Same shape as the pre-V.1 baseline (6
+welds, 0 returns). Per-KF VPR is now the substrate (architecture done, finer granularity
+available) but **didn't move the magistrale needle on its own**. Next step (V.2): diagnostic
+dump of per-KF cosine scores + reloc-attempt counts during the return to decide whether
+granularity is insufficient (→ swap model: AnyLoc / SALAD / MixVPR) or the relocalizer never
+gets asked (supervisor throttle / state issue). See `docs/PLAN_BA_GLOBAL.md` V.1 + V.2.
+
 ## 2026-05-28 — LighterGlue verify (rescue mode) + two methodology walls found
 
 **Built (the verification fix from PLAN_VPR_RELOC.md):** `LightGlueMatcher` (slamko_loop) — the

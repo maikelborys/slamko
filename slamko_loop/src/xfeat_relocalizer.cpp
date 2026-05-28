@@ -140,6 +140,12 @@ void XFeatRelocalizer::addSubMap(const SubMap& submap) {
   // verifier (lightGlueVerify). The descriptor block is COPIED unsubsampled so the
   // index resolves directly into `e.full_desc.row(drow)`.
   e.kf_obs = submap.kf_obs;
+  // Per-KF VPR descriptors (SMP4). Cache aligned 1:1 with `keyframes`; ranker scores
+  // by max_k cosine(query, kf_global_desc[k]) (see relocalize() below). Empty rows
+  // when SMP4 data is absent are skipped — the legacy SubMap-level `global_desc` then
+  // carries the per-submap fallback so older Atlases keep working.
+  e.kf_global_desc.reserve(submap.kf_obs.size());
+  for (const auto& ko : submap.kf_obs) e.kf_global_desc.push_back(ko.global_descriptor);
   e.full_desc = submap.descriptors;
   for (const auto& lm : submap.landmarks)
     if (lm.descriptor_row >= 0 && lm.descriptor_row < submap.descriptors.rows())
@@ -192,16 +198,30 @@ RelocResult XFeatRelocalizer::relocalize(const Features& query) const {
   std::vector<std::uint64_t> cand;
 
   // VPR (global-descriptor) retrieval — the primary stage. Rank submaps by cosine of the
-  // query's global descriptor against each submap's (both L2-normalized → dot = cosine),
-  // keep the top-N. This is what actually recognizes a revisited place (XFeat local
-  // descriptors cannot — proven). See docs/PLAN_VPR_RELOC.md.
+  // query's global descriptor against each submap's per-KF descriptors (both L2-norm →
+  // dot = cosine), score = max_k cos(query, kf_global_desc[k]). This is the granularity
+  // fix: a per-submap aggregate averages over 10 m of trajectory and loses the start-
+  // room signal on a long revisit (magistrale1, offline data showed Recall@5=1.0 only at
+  // per-KF granularity); per-KF lets the right KF inside a submap surface. Falls back to
+  // the SubMap-level `global_desc` when per-KF is absent (SMP3 / legacy Atlas). See
+  // docs/PLAN_BA_GLOBAL.md "VPR retrieval: change granularity first".
   if (cfg_.use_vpr && query.hasGlobalDescriptor()) {
     const int qd = static_cast<int>(query.global_descriptor.size());
     std::vector<std::pair<float, std::uint64_t>> scored;
     scored.reserve(db_.size());
-    for (const auto& e : db_)
-      if (e.global_desc.size() == qd)
-        scored.emplace_back(query.global_descriptor.dot(e.global_desc), e.id);
+    for (const auto& e : db_) {
+      float best = -2.f;  // cosine in [-1,1]; -2 means "no scoring descriptor present"
+      // Per-KF max — the discriminative path.
+      for (const auto& g : e.kf_global_desc)
+        if (g.size() == qd) {
+          const float c = query.global_descriptor.dot(g);
+          if (c > best) best = c;
+        }
+      // Per-submap fallback (legacy / SMP3 maps without per-KF VPR).
+      if (best == -2.f && e.global_desc.size() == qd)
+        best = query.global_descriptor.dot(e.global_desc);
+      if (best > -2.f) scored.emplace_back(best, e.id);
+    }
     if (!scored.empty()) {
       const int n = std::min<int>(cfg_.vpr_top_n, static_cast<int>(scored.size()));
       std::partial_sort(scored.begin(), scored.begin() + n, scored.end(),

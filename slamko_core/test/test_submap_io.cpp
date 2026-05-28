@@ -82,6 +82,13 @@ void expectEqual(const SubMap& a, const SubMap& b) {
     ASSERT_EQ(a.kf_obs[k].uv_right.rows(), b.kf_obs[k].uv_right.rows());
     if (a.kf_obs[k].uv_right.size())
       EXPECT_EQ((a.kf_obs[k].uv_right - b.kf_obs[k].uv_right).cwiseAbs().maxCoeff(), 0.0f);
+    ASSERT_EQ(a.kf_obs[k].global_descriptor.size(), b.kf_obs[k].global_descriptor.size());
+    if (a.kf_obs[k].global_descriptor.size())
+      EXPECT_EQ(
+          (a.kf_obs[k].global_descriptor - b.kf_obs[k].global_descriptor)
+              .cwiseAbs()
+              .maxCoeff(),
+          0.0f);
   }
 }
 
@@ -166,4 +173,34 @@ TEST(SubMapIO, KeyframeObservationsRoundTrip) {
   EXPECT_TRUE(got.kf_obs[0].hasStereo());
   EXPECT_FALSE(got.kf_obs[1].hasStereo());
   EXPECT_EQ(got.kf_obs[2].size(), 0);
+}
+
+// SMP4 per-keyframe VPR descriptor round-trip. Each KF carries its OWN 512-D global
+// descriptor (the granularity fix — per-submap aggregation loses the place signal on
+// long revisits, per docs/PLAN_BA_GLOBAL.md). Distinct values per KF make a swap or
+// truncation visible; an empty KF must load back empty (the back-compat path for
+// VPR-less KFs in an otherwise SMP4 archive).
+TEST(SubMapIO, PerKeyframeVprRoundTrip) {
+  SubMap sm = synthetic(13, /*n_lm=*/8, /*n_kf=*/3);
+  sm.kf_obs.resize(sm.keyframes.size());
+  // KF 0: a real 8-D per-KF descriptor (the synthetic dim — codec is dim-agnostic).
+  sm.kf_obs[0].global_descriptor.resize(8);
+  for (int i = 0; i < 8; ++i) sm.kf_obs[0].global_descriptor[i] = 0.01f * (i + 1);
+  // KF 1: distinct 8-D descriptor (different values prove no aliasing across KFs).
+  sm.kf_obs[1].global_descriptor.resize(8);
+  for (int i = 0; i < 8; ++i) sm.kf_obs[1].global_descriptor[i] = -0.02f * (i + 1);
+  // KF 2: empty per-KF descriptor (legal — codec writes kf_gdim=0).
+
+  const std::string path = tmpdir() + "_kfvpr.smap";
+  std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+  ASSERT_TRUE(saveSubMap(sm, path));
+  SubMap got;
+  ASSERT_TRUE(loadSubMap(got, path));
+  expectEqual(sm, got);
+  EXPECT_TRUE(got.kf_obs[0].hasGlobalDescriptor());
+  EXPECT_TRUE(got.kf_obs[1].hasGlobalDescriptor());
+  EXPECT_FALSE(got.kf_obs[2].hasGlobalDescriptor());
+  // Spot-check distinct values survived (catches a copy-paste swap across KFs).
+  EXPECT_FLOAT_EQ(got.kf_obs[0].global_descriptor[0], 0.01f);
+  EXPECT_FLOAT_EQ(got.kf_obs[1].global_descriptor[0], -0.02f);
 }

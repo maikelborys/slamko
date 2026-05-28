@@ -179,3 +179,101 @@ TEST(XFeatRelocalizer, NoMatchReturnsNotFound) {
   reloc2.addSubMap(tiny.submap);
   EXPECT_FALSE(reloc2.relocalize(tiny.query).found);
 }
+
+namespace {
+
+// Attach a per-KF VPR descriptor to `submap` (one KF entry that carries `vpr`). The
+// relocalizer ranks by max_k cosine(query.global_descriptor, kf_global_desc[k]); a
+// single matching KF inside an otherwise-VPR-less submap is enough for top-N.
+void attachPerKfVpr(SubMap& submap, const Eigen::VectorXf& vpr) {
+  if (submap.keyframes.empty()) {
+    slamko::KeyframePose kf;
+    kf.id = 0;
+    kf.timestamp = 0.0;
+    submap.keyframes.push_back(kf);
+  }
+  submap.kf_obs.resize(submap.keyframes.size());
+  submap.kf_obs[0].global_descriptor = vpr;
+}
+
+Eigen::VectorXf unitVec(int dim, unsigned seed) {
+  Eigen::VectorXf v(dim);
+  std::mt19937 rng(seed);
+  std::normal_distribution<float> nd(0.f, 1.f);
+  for (int i = 0; i < dim; ++i) v[i] = nd(rng);
+  v.normalize();
+  return v;
+}
+
+}  // namespace
+
+// Per-KF VPR ranking is the candidate stage: the right submap must surface in the top-N
+// even when other submaps are present in the DB. With `vpr_top_n=1` only the top-ranked
+// submap is PnP-verified — if ranking is wrong, geometry doesn't match the distractor's
+// landmarks and r.found=false. This is the magistrale-return regression guard: a single
+// KF inside a 10-m submap carries the place signal that a per-submap aggregate loses.
+TEST(XFeatRelocalizer, VprPerKfTopNRanking) {
+  const SE3 T_BS;
+  const SE3 T_sl_cam = makeSE3(0.35, -0.1, 0.05, 0.3, {0.0, 1.0, 0.0});
+
+  // Geometrically valid scene → id 7. Two distractors → ids 8, 9 (different scenes,
+  // unrelated VPR vectors).
+  Scene match    = buildScene(T_sl_cam, T_BS, /*n=*/30, /*seed=*/61);
+  Scene distA    = buildScene(T_sl_cam, T_BS, /*n=*/30, /*seed=*/62);
+  Scene distB    = buildScene(T_sl_cam, T_BS, /*n=*/30, /*seed=*/63);
+  distA.submap.id = 8;
+  distB.submap.id = 9;
+
+  // VPR setup: the "match" submap's one KF carries a vector that equals the query's
+  // global descriptor (cosine = 1.0). Distractor KFs carry unit-random unrelated
+  // vectors (cosine ≈ 0 in expectation). With top_n=1 the right one MUST surface.
+  const Eigen::VectorXf place_vec = unitVec(/*dim=*/8, /*seed=*/100);
+  attachPerKfVpr(match.submap, place_vec);
+  attachPerKfVpr(distA.submap, unitVec(8, 101));
+  attachPerKfVpr(distB.submap, unitVec(8, 102));
+  match.query.global_descriptor = place_vec;  // exact-match query
+
+  XFeatRelocConfig c = rcfg(T_BS);
+  c.use_vpr = true;
+  c.vpr_top_n = 1;        // single candidate → top-1 ranking is the only chance
+  c.use_bow = false;      // disable BoW so we can isolate the VPR ranker path
+  XFeatRelocalizer reloc(c);
+  // Register the distractors FIRST so the correct id has to win on score, not order.
+  reloc.addSubMap(distA.submap);
+  reloc.addSubMap(distB.submap);
+  reloc.addSubMap(match.submap);
+
+  const RelocResult r = reloc.relocalize(match.query);
+  ASSERT_TRUE(r.found);
+  EXPECT_EQ(r.submap_id, match.submap.id) << "VPR per-KF ranking picked wrong submap";
+}
+
+// Legacy fallback: when the SubMap-level `global_descriptor` is set but per-KF is
+// absent (SMP3 archive), the ranker still works (cosine vs the per-submap aggregate).
+// Guards back-compat — older Atlases on disk must keep relocalizing after the SMP4 bump.
+TEST(XFeatRelocalizer, VprPerSubmapFallback) {
+  const SE3 T_BS;
+  const SE3 T_sl_cam = makeSE3(0.2, 0.05, -0.1, 0.15, {0.0, 0.0, 1.0});
+
+  Scene match = buildScene(T_sl_cam, T_BS, 30, 71);
+  Scene distA = buildScene(T_sl_cam, T_BS, 30, 72);
+  distA.submap.id = 22;
+
+  const Eigen::VectorXf place_vec = unitVec(8, 200);
+  // Per-submap descriptors only (SMP3-style). NO kf_obs / kf_global_desc on either.
+  match.submap.global_descriptor = place_vec;
+  distA.submap.global_descriptor = unitVec(8, 201);
+  match.query.global_descriptor = place_vec;
+
+  XFeatRelocConfig c = rcfg(T_BS);
+  c.use_vpr = true;
+  c.vpr_top_n = 1;
+  c.use_bow = false;
+  XFeatRelocalizer reloc(c);
+  reloc.addSubMap(distA.submap);
+  reloc.addSubMap(match.submap);
+
+  const RelocResult r = reloc.relocalize(match.query);
+  ASSERT_TRUE(r.found);
+  EXPECT_EQ(r.submap_id, match.submap.id) << "VPR per-submap fallback ranked wrong";
+}

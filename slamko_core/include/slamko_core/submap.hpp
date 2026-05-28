@@ -53,8 +53,17 @@ struct KeyframeObservations {
   // builds a mono reprojection factor instead of a stereo one.
   Eigen::Matrix<float, Eigen::Dynamic, 2, Eigen::RowMajor> uv_right;
 
+  // Per-keyframe global place-recognition (VPR) descriptor (EigenPlaces, 512-D,
+  // L2-normalized). Empty (size()==0) when no VPR front-end ran for this KF. SubMap-
+  // level `global_descriptor` stays as the submap's representative; this gives the
+  // relocalizer FINER-GRAIN retrieval — on hard revisits the right KF inside a 10-m
+  // submap is what carries the place signal, not a single aggregated vector. See
+  // docs/PLAN_BA_GLOBAL.md "VPR retrieval: keep EigenPlaces, change granularity first".
+  Eigen::VectorXf global_descriptor;
+
   int size() const { return static_cast<int>(landmark_ids.size()); }
   bool hasStereo() const { return uv_right.rows() == uv.rows() && uv_right.rows() > 0; }
+  bool hasGlobalDescriptor() const { return global_descriptor.size() > 0; }
 };
 
 struct SubMap {

@@ -130,6 +130,13 @@ class XFeatRelocalizer : public Relocalizer {
     Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> desc;  // M×D
     std::vector<Eigen::Vector3d> pos;  // M submap-local 3D, aligned with desc rows
     Eigen::VectorXf global_desc;       // VPR descriptor for this submap (empty if none)
+    // Per-keyframe VPR descriptors (SMP4), aligned 1:1 with `keyframes`. The ranking
+    // uses max_k cosine(query, kf_global_desc[k]) — a per-submap aggregate descriptor
+    // averages over 10 m of trajectory and loses the start-room signal on a long
+    // revisit (magistrale1); per-KF retrieval is the recall fix that keeps EigenPlaces
+    // and just changes granularity. Empty rows are skipped; if every row is empty, the
+    // ranker falls back to the per-submap `global_desc`. See docs/PLAN_BA_GLOBAL.md.
+    std::vector<Eigen::VectorXf> kf_global_desc;
     std::vector<KeyframePose> keyframes;  // submap-local poses
     // The per-keyframe 2D observation lists (slamko_core SubMap.kf_obs), aligned 1:1
     // with `keyframes`. The REAL-keyframe LighterGlue verifier (lightGlueVerify) uses

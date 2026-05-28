@@ -88,8 +88,8 @@ GTSAM graph (visual-only first; IMU factors deferred to Phase B2):
   from the refined first-KF poses of each submap.
 
 Phase B2 (later): IMU factors between consecutive KFs. Needs per-KF IMU samples stored
-in SubMap (schema bump SMP3→SMP4) + bias variables. Visual-only BA already improves
-geometry; IMU factors close the scale/bias drift.
+in SubMap (schema bump SMP4→SMP5; SMP4 is per-KF VPR, see V.1 below) + bias variables.
+Visual-only BA already improves geometry; IMU factors close the scale/bias drift.
 
 ## Phase C — Wiring (never_lost_supervisor)
 
@@ -140,38 +140,56 @@ clearly distinguishable from run noise.
 | B.1   | GlobalSmoother contract in slamko_core; GtsamGlobalSmoother (visual-only, LM) in slamko_fusion | new class + unit test | ✅ `73889a7` (2 synthetic tests → truth) |
 | C.1 (offline) | Per-submap BA tool `offline_ba` + calib sidecar from VIO | validates BA on real data without supervisor surgery | ✅ this commit (Huber on stereo residuals) |
 | D.1   | EuRoC V1_03 corrected-ATE A/B on the offline tool | **NEGATIVE result — see below** | ✅ measured |
-| B.2   | IMU factors (schema SMP4 + factor construction) — **the actual fix** | per-KF IMU samples + CombinedImuFactor | **NEXT** |
+| V.1   | **Per-KF VPR retrieval** — SMP4 (per-KF EigenPlaces descriptor) + relocalizer max-cosine ranking | granularity fix for hard revisits | ✅ this commit (3 new tests; EuRoC V1_01→V1_02 cross-session PASS 27.1 cm; magistrale1: 5 welds early, 0 return — same as baseline → V.2) |
+| V.2   | Diagnose per-KF VPR on magistrale return: dump cosine scores + reloc-attempt counts during the return | data to decide model swap vs supervisor fix | NEXT |
+| B.2   | IMU factors (schema SMP5 + factor construction) — **the actual ATE fix** | per-KF IMU samples + CombinedImuFactor | parallel |
 | C.live | Wire BA into never_lost_supervisor (post-Phase B.2) | supervisor change, async | TBD |
 
-## VPR retrieval: keep EigenPlaces, change GRANULARITY first
+## V.1 — Per-KF VPR (granularity fix, IMPLEMENTED this commit)
 
-A natural question after the b07b484 finding ("real-KF LightGlue is dense but submap 0 never
-enters the VPR top-30 at the magistrale return") is: should we swap EigenPlaces for a stronger
-VPR model (AnyLoc / SALAD / MixVPR — all Apache-licensed, DINOv2-based, SOTA on indoor)?
+The b07b484 finding ("real-KF LightGlue is dense but submap 0 never enters the VPR top-30 at the
+magistrale return") had two interpretations: (a) swap EigenPlaces for a stronger model, or (b)
+keep EigenPlaces but change retrieval granularity. **The data said (b) first** — and that's what
+this phase landed:
 
-**The data says NO — change granularity first, model only if that's insufficient:**
-
+**Why granularity, not the model:**
 - The offline validation in memory `slamko-loopclosure-recall-bottleneck` proved
   **EigenPlaces Recall@5 = 1.0 / 0-of-30 false matches** on real magistrale1 return frames.
   The model CAN distinguish places on this data when given clean per-frame queries.
-- What's wrong in the live pipeline: slamko stores **ONE aggregated EigenPlaces descriptor
-  per submap** (a single signature over 10 m of trajectory, mixing room + corridor + hallway).
-  Per-keyframe retrieval (each KF its own descriptor) gives ~10× finer granularity AND matches
-  the offline-validated usage pattern. Phase A already persists per-KF observations; per-KF VPR
-  is the natural sibling (a SubMap field `kf_global_descriptor` aligned 1:1 with `keyframes`).
-- Cost: per-KF VPR adds a single EigenPlaces forward per KF (already running per frame for the
-  aggregate — switch the aggregation point). DB grows ~10× (88 submaps × ~10 KFs each ≈ 880
-  vectors of 512 floats ≈ 1.8 MB). Cosine retrieval over 880 is still a single GEMM, sub-ms.
+- The live pipeline was storing **ONE aggregated EigenPlaces descriptor per submap** (a single
+  signature over 10 m of trajectory, mixing room + corridor + hallway). Per-keyframe retrieval
+  (each KF its own descriptor) gives ~10× finer granularity AND matches the offline-validated
+  usage pattern.
 
-**Only after per-KF EigenPlaces still falls short:** swap the model. Top candidates ranked by
-indoor robustness + license + ONNX-exportability:
+**What landed (this commit):**
+- `slamko_core` SMP3 → **SMP4** (additive). `KeyframeObservations` gains
+  `Eigen::VectorXf global_descriptor` (per-KF VPR vector, L2-normalized). Codec writes
+  `kf_gdim · floats` at the end of each kf_obs block; old SMP3 reads still work (per-KF empty).
+- `slamko_vio` `vio_pipeline.cpp` captures `current_global_desc_` into the EpochKf at KF
+  insertion. `buildSubMap` already copies `kf_obs`, so per-KF descriptors flow into the saved
+  Atlas via the existing path.
+- `slamko_loop` `xfeat_relocalizer` caches `kf_global_desc` per Entry; the VPR ranker scores
+  `score(submap) = max_k cosine(query, kf_global_desc[k])`. Per-submap `global_descriptor`
+  stays as the SMP3-fallback for legacy Atlases.
+- 3 new gtests (SMP4 round-trip + per-KF top-N ranking + per-submap fallback) pass.
+- **EuRoC V1_01→V1_02 cross-session smoke**: PASS, corrected ATE 27.1 cm (no regression).
+- **magistrale1 (1500 s replay, 88 submaps sealed)**: 5 welds — **all in the first 90 s**
+  (start-room re-visits at submap 0/1/3), **0 on the return**. Same shape as the baseline
+  (6 welds, 0 returns). Per-KF VPR is now the substrate but **doesn't move the magistrale
+  needle on its own**: the next-step diagnosis (V.2) instruments the per-KF cosine scores
+  during the return to decide whether granularity alone is insufficient (→ swap model) or
+  the relocalizer never even gets asked (supervisor throttle / state issue).
+
+**If per-KF EigenPlaces still falls short on hard revisits:** swap the model. Top candidates
+ranked by indoor robustness + license + ONNX-exportability:
 1. **AnyLoc** (DINOv2 ViT-L/14, Apache-2.0) — generalist foundation model, no fine-tune needed.
 2. **SALAD** (DINOv2 + SALAD aggregator, Apache) — SOTA on most indoor benchmarks.
 3. **MixVPR** (Apache) — strong + smaller than DINOv2-based options.
 
 EigenPlaces is trained on outdoor city scenes (SF, Tokyo) so it IS technically out-of-distribution
 on TUM VI indoor, but the offline data shows the OOD gap isn't a blocker when granularity is right.
-Swap is the bigger commit (new ONNX export pipeline, new model param). Keep it on the back burner.
+Swap is the bigger commit (new ONNX export pipeline, new model param). Keep it on the back burner
+until per-KF EigenPlaces is benched on the magistrale return.
 
 ## D.1 result — visual-only BA degrades ATE (= the case for IMU factors)
 
@@ -189,7 +207,7 @@ across all submaps. Huber loss handles the bootstrap-submap stale-pose outliers 
 cost 165 B → 6 M, no rescue needed) but doesn't fix the structural degeneracy.
 
 **The fix is IMU factors (Phase B.2):** persist per-KF IMU samples (`SubMap` schema bump
-SMP3 → SMP4), construct `CombinedImuFactor` between consecutive KFs (the same factor
+SMP4 → SMP5), construct `CombinedImuFactor` between consecutive KFs (the same factor
 `GtsamLocalSmoother` already uses live), gauge-anchor the first KF + first velocity +
 first bias. IMU constrains: scale (gravity magnitude), rotation about gravity (yaw
 through accel bias), and angular velocity (gyro). With those constraints the visual
