@@ -18,28 +18,19 @@ NeverLostSupervisor::NeverLostSupervisor(const SupervisorConfig& cfg,
     : cfg_(cfg), reloc_(reloc), gate_(cfg) {}
 
 namespace {
-// C.live V0: BA over the ACTIVE submap (intra-submap) using its stored kf_obs +
-// imu_since_prev. Anchor stays IDENTITY (active-local origin = first KF); the
-// supervisor's weld machinery owns the cross-submap anchor algebra unchanged. This
-// is the safest first slice — it sharpens the geometry that the NEXT weld's
-// AnchorGate will cluster, without touching the anchor convention or breaking the
-// pose-graph chain. Returns the refined SubMap (with refined KF poses + landmark
-// positions), or std::nullopt if BA is not configured / no observations to refine.
-bool refineActiveSubmap(const SubMap& sm,
-                        const SupervisorConfig& cfg,
-                        SubMap& out_refined) {
-  if (!cfg.global_smoother) return false;
-  if (sm.keyframes.empty() || sm.kf_obs.empty() ||
-      sm.keyframes.size() != sm.kf_obs.size()) return false;
-
-  GlobalBAInput in;
-  in.calib = cfg.ba_calib;
-  in.T_BS  = cfg.ba_T_BS;
-  in.pixel_sigma = cfg.ba_pixel_sigma;
-  in.max_iters   = cfg.ba_max_iters;
-  for (const auto& kf : sm.keyframes) in.keyframes.emplace_back(kf.id, kf.T_WB);
-  for (const auto& l  : sm.landmarks) in.landmarks.emplace_back(l.id, l.position);
-  for (std::size_t k = 0; k < sm.keyframes.size(); ++k) {
+// Append a SubMap's KFs/landmarks/observations/IMU windows into a GlobalBAInput, with
+// optional rigid pre-transform from submap-local → BA frame. Used by the pair-BA
+// builder below: sealed submap is appended as-is (BA frame == sealed-local),
+// active submap is appended with the weld-consensus transform applied so its KFs
+// land in sealed-local frame. IMU samples stay body-frame (no transform needed —
+// they're intrinsic to the body's motion, the BA preintegration uses them raw).
+void appendSubmapToBA(const SubMap& sm, const SE3& T_BAframe_local,
+                      GlobalBAInput& in) {
+  for (const auto& kf : sm.keyframes)
+    in.keyframes.emplace_back(kf.id, SE3(T_BAframe_local.matrix() * kf.T_WB.matrix()));
+  for (const auto& l : sm.landmarks)
+    in.landmarks.emplace_back(l.id, T_BAframe_local * l.position);
+  for (std::size_t k = 0; k < sm.keyframes.size() && k < sm.kf_obs.size(); ++k) {
     const auto& ko = sm.kf_obs[k];
     const bool stereo = ko.hasStereo();
     for (int i = 0; i < ko.size(); ++i) {
@@ -52,55 +43,134 @@ bool refineActiveSubmap(const SubMap& sm,
       in.observations.push_back(o);
     }
   }
-  if (in.observations.empty()) return false;
-  in.anchor_kf = sm.keyframes.front().id;
+}
 
-  // IMU windows (SMP5) — drives the metric-scale + gravity-rotation lock the visual
-  // factors leave ambiguous. Velocities bootstrapped from finite-diff (LM refines).
+// IMU windows + bootstrap velocity/bias for a submap. KF poses are taken from the
+// BA-frame KF estimates already inserted (so finite-diff is in BA frame for sanity,
+// though IMU samples are body-frame so the transform doesn't affect them).
+void appendImuToBA(const SubMap& sm, GlobalBAInput& in) {
   bool any_imu = false;
   for (const auto& ko : sm.kf_obs) if (ko.hasImu()) { any_imu = true; break; }
-  if (any_imu && sm.keyframes.size() >= 2) {
-    in.imu_params = ImuParams{};
-    for (std::size_t k = 0; k < sm.keyframes.size(); ++k) {
-      Eigen::Vector3d v(0, 0, 0);
-      const std::size_t kp = (k + 1 < sm.keyframes.size()) ? k + 1 : k;
-      const std::size_t km = (k == 0) ? 0 : k - 1;
-      if (kp != km) {
-        const double dt = sm.keyframes[kp].timestamp - sm.keyframes[km].timestamp;
-        if (dt > 1e-6)
-          v = (sm.keyframes[kp].T_WB.translation() -
-               sm.keyframes[km].T_WB.translation()) / dt;
-      }
-      in.velocities.emplace_back(sm.keyframes[k].id, v);
-      in.biases.emplace_back(sm.keyframes[k].id, ImuBias{});
+  if (!any_imu || sm.keyframes.size() < 2) return;
+  // Bootstrap velocity from KF translation finite-diff. Use BA-frame poses if they're
+  // already in `in.keyframes`; otherwise fall back to the submap-local KF poses.
+  std::unordered_map<std::uint64_t, Eigen::Vector3d> kf_t;
+  for (const auto& kv : in.keyframes) kf_t[kv.first] = kv.second.translation();
+  for (std::size_t k = 0; k < sm.keyframes.size(); ++k) {
+    const auto id = sm.keyframes[k].id;
+    Eigen::Vector3d v(0, 0, 0);
+    const std::size_t kp = (k + 1 < sm.keyframes.size()) ? k + 1 : k;
+    const std::size_t km = (k == 0) ? 0 : k - 1;
+    if (kp != km) {
+      const double dt = sm.keyframes[kp].timestamp - sm.keyframes[km].timestamp;
+      auto itp = kf_t.find(sm.keyframes[kp].id);
+      auto itm = kf_t.find(sm.keyframes[km].id);
+      if (dt > 1e-6 && itp != kf_t.end() && itm != kf_t.end())
+        v = (itp->second - itm->second) / dt;
     }
-    for (std::size_t k = 1; k < sm.keyframes.size(); ++k) {
-      if (!sm.kf_obs[k].hasImu()) continue;
-      GlobalBAImuWindow w;
-      w.kf_from = sm.keyframes[k - 1].id;
-      w.kf_to   = sm.keyframes[k].id;
-      w.samples = sm.kf_obs[k].imu_since_prev;
-      in.imu_windows.push_back(w);
-    }
+    in.velocities.emplace_back(id, v);
+    in.biases.emplace_back(id, ImuBias{});
   }
+  for (std::size_t k = 1; k < sm.keyframes.size() && k < sm.kf_obs.size(); ++k) {
+    if (!sm.kf_obs[k].hasImu()) continue;
+    GlobalBAImuWindow w;
+    w.kf_from = sm.keyframes[k - 1].id;
+    w.kf_to   = sm.keyframes[k].id;
+    w.samples = sm.kf_obs[k].imu_since_prev;
+    in.imu_windows.push_back(w);
+  }
+}
+
+// C.live V1: pair-BA on weld + ANCHOR refinement. Builds a 2-submap (sealed + active)
+// BA in SEALED-LOCAL frame with:
+//   - sealed KFs/landmarks as-is (anchor_kf = sealed.keyframes.front()  → gauge)
+//   - active KFs/landmarks pre-transformed by the weld consensus (active-local →
+//     sealed-local), so the two halves co-exist in one frame.
+//   - BetweenFactor on (sealed.last_kf, active.first_kf) derived from consensus —
+//     the loop-closure constraint (the only link between the two halves; epoch-
+//     disjoint submaps share no landmarks).
+//   - IMU windows from both submaps (intra-submap each; no cross-submap window
+//     stored — the BetweenFactor bridges the gap).
+// On convergence, the refined T_WB of active.first_kf in sealed-local is the refined
+// "consensus" — return refined_anchor = sealed.anchor * refined_consensus_origin,
+// where refined_consensus_origin is the active-submap-LOCAL-ORIGIN pose in sealed-
+// local frame (derived from refined active.first_kf and its original local pose).
+//
+// The refined ANCHOR is what we write back — it PERSISTS across VIO's next
+// setActiveContent (which overwrites KFs/landmarks but NOT the archive-owned anchor).
+// That's the V0 → V1 fix: V0 refined intra-submap KFs that got immediately
+// overwritten; V1 refines the cross-submap anchor that survives.
+bool refineWeldPair(const SubMap& sealed, const SubMap& active,
+                    const SE3& consensus, const SupervisorConfig& cfg,
+                    SE3& refined_anchor_out) {
+  if (!cfg.global_smoother) return false;
+  if (sealed.keyframes.empty() || active.keyframes.empty()) return false;
+  if (sealed.kf_obs.size() != sealed.keyframes.size() ||
+      active.kf_obs.size() != active.keyframes.size()) return false;
+
+  GlobalBAInput in;
+  in.calib = cfg.ba_calib;
+  in.T_BS  = cfg.ba_T_BS;
+  in.pixel_sigma = cfg.ba_pixel_sigma;
+  in.max_iters   = cfg.ba_max_iters;
+  in.imu_params  = ImuParams{};
+
+  // Sealed: BA frame == sealed-local. No pre-transform.
+  appendSubmapToBA(sealed, SE3(), in);
+  // Active: T_BAframe_local = consensus (active-local → sealed-local).
+  appendSubmapToBA(active, consensus, in);
+
+  if (in.observations.empty()) return false;
+  in.anchor_kf = sealed.keyframes.front().id;
+
+  // IMU windows + velocity/bias per submap (intra-submap; the bridge is the loop
+  // factor). Append after keyframes so finite-diff sees BA-frame translations.
+  appendImuToBA(sealed, in);
+  appendImuToBA(active, in);
+
+  // Loop-closure BetweenFactor: the cross-submap link. measurement = T_a^-1 * T_b
+  // (relative pose of `to` in `from`'s body frame), where `from` = last sealed KF
+  // and `to` = first active KF, both initial poses in sealed-local.
+  const auto& sealed_kf_last = sealed.keyframes.back();
+  const auto& active_kf_first = active.keyframes.front();
+  const SE3 T_sealed_last_in_BAframe = sealed_kf_last.T_WB;  // already in sealed-local
+  const SE3 T_active_first_in_BAframe(consensus.matrix() * active_kf_first.T_WB.matrix());
+  in.has_loop     = true;
+  in.loop_kf_from = sealed_kf_last.id;
+  in.loop_kf_to   = active_kf_first.id;
+  in.T_from_to    = SE3(T_sealed_last_in_BAframe.matrix().inverse() *
+                        T_active_first_in_BAframe.matrix());
+  in.loop_sigma_t = cfg.ba_loop_sigma_t;
+  in.loop_sigma_r = cfg.ba_loop_sigma_r;
 
   const GlobalBAOutput out = cfg.global_smoother->optimize(in);
+  std::fprintf(stderr, "[ba] pair sealed=%lu active=%lu obs=%zu imu=%zu kfs=(%zu,%zu)"
+                       " conv=%d init=%.1f final=%.1f iters=%d\n",
+               (unsigned long)sealed.id, (unsigned long)active.id,
+               in.observations.size(), in.imu_windows.size(),
+               sealed.keyframes.size(), active.keyframes.size(),
+               (int)out.converged, out.initial_cost, out.final_cost, out.iterations);
   if (!out.converged) return false;
 
-  // Write refined poses/landmarks back. Anchor + id NOT touched (caller preserves).
-  out_refined = sm;
-  std::unordered_map<std::uint64_t, SE3> kf_ref;
-  for (const auto& kv : out.keyframes) kf_ref[kv.first] = kv.second;
-  std::unordered_map<std::uint64_t, Eigen::Vector3d> lm_ref;
-  for (const auto& kv : out.landmarks) lm_ref[kv.first] = kv.second;
-  for (auto& kf : out_refined.keyframes) {
-    auto it = kf_ref.find(kf.id);
-    if (it != kf_ref.end()) kf.T_WB = it->second;
+  // Extract refined active.first_kf pose (in sealed-local). Convert to the active
+  // submap's anchor: anchor_active (in world) = sealed.anchor * T_consensus_refined,
+  // where T_consensus_refined is the active-LOCAL-ORIGIN pose in sealed-local.
+  // If active.kf[0].T_WB = T_origin_first (the first KF's pose in active-local),
+  // then T_consensus_refined = T_refined_first_in_sealed_local * T_origin_first^-1.
+  SE3 refined_first_kf_in_sealed_local;
+  bool found = false;
+  for (const auto& kv : out.keyframes) {
+    if (kv.first == active_kf_first.id) {
+      refined_first_kf_in_sealed_local = kv.second;
+      found = true;
+      break;
+    }
   }
-  for (auto& lm : out_refined.landmarks) {
-    auto it = lm_ref.find(lm.id);
-    if (it != lm_ref.end()) lm.position = it->second;
-  }
+  if (!found) return false;
+  const SE3 T_consensus_refined(
+      refined_first_kf_in_sealed_local.matrix() *
+      active_kf_first.T_WB.matrix().inverse());
+  refined_anchor_out = SE3(sealed.anchor.matrix() * T_consensus_refined.matrix());
   return true;
 }
 }  // namespace
@@ -133,6 +203,21 @@ bool NeverLostSupervisor::attemptWeld(RecoveryAction& act) {
   if (cfg_.weld_once_per_target) {
     for (const auto id : episode_welded_ids_)
       if (id == sealed_id) return false;
+  }
+
+  // C.live V1: refine the consensus via pair-BA in sealed-local frame BEFORE the
+  // mode-specific anchor application. The BA's BetweenFactor is seeded with the
+  // AnchorGate consensus; the visual + IMU residuals then pull both halves of the
+  // weld pair into a metric-consistent geometry. The output is the refined ACTIVE
+  // anchor (in world), from which we derive refined_consensus to feed all three
+  // weld modes uniformly. Silent fallback to the AnchorGate consensus on failure
+  // (BA unset / unconverged / no obs / id-mismatch). Off-by-default — back-compat.
+  if (cfg_.global_smoother) {
+    SE3 refined_anchor;
+    if (refineWeldPair(*s, archive_.active(), consensus, cfg_, refined_anchor)) {
+      // anchor_active = s.anchor * consensus  ⇒  consensus = s.anchor^-1 * anchor_active
+      consensus = SE3(s->anchor.matrix().inverse() * refined_anchor.matrix());
+    }
   }
 
   if (!cfg_.use_pose_graph) {
@@ -203,17 +288,6 @@ bool NeverLostSupervisor::attemptWeld(RecoveryAction& act) {
   act.welded = true;
   act.welded_to_id = sealed_id;
   act.applied_T_active_sealed = consensus;
-
-  // C.live V0: intra-active BA on weld. Sharpens the active submap's geometry using
-  // visual reprojection + (when SMP5 available) IMU factors, so the NEXT weld's
-  // AnchorGate clusters a tighter consensus. Anchor stays as set above — Hard Rule
-  // #4 disposable-graph + the seal/branch/weld machinery are untouched. Failure
-  // (smoother unset / unconverged / no obs) is silent and the weld still applies.
-  if (cfg_.global_smoother) {
-    SubMap refined;
-    if (refineActiveSubmap(archive_.active(), cfg_, refined))
-      archive_.setActiveContent(std::move(refined));
-  }
   return true;
 }
 
