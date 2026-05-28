@@ -35,7 +35,9 @@ add_link_options(-Wl,--disable-new-dtags)
 # encapsulated) — consumers link the .so and never need to find_package(GTSAM) or
 # fight the static-archive link order. The DT_RPATH below travels with the .so so
 # its own gtsam NEEDED resolves to 4.3 at load time.
-add_library(slamko_fusion SHARED src/gtsam_local_smoother.cpp)
+add_library(slamko_fusion SHARED
+  src/gtsam_local_smoother.cpp
+  src/gtsam_global_smoother.cpp)
 target_include_directories(slamko_fusion PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -50,9 +52,11 @@ install(DIRECTORY include/ DESTINATION include)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-  ament_add_gtest(test_gtsam_smoother test/test_gtsam_smoother.cpp)
-  target_link_libraries(test_gtsam_smoother slamko_fusion Eigen3::Eigen gtsam)
-  ament_target_dependencies(test_gtsam_smoother slamko_core)
+  foreach(t test_gtsam_smoother test_global_smoother)
+    ament_add_gtest(${t} test/${t}.cpp)
+    target_link_libraries(${t} slamko_fusion Eigen3::Eigen gtsam)
+    ament_target_dependencies(${t} slamko_core)
+  endforeach()
 endif()
 
 ament_export_dependencies(slamko_core Eigen3)
