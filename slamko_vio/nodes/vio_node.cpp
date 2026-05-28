@@ -43,6 +43,7 @@
 #include "slamko_vio/vio_pipeline.hpp"
 #include "slamko_vio/types.hpp"
 #include "slamko_fusion/gtsam_local_smoother.hpp"        // node-only (composition root)
+#include "slamko_fusion/gtsam_global_smoother.hpp"       // C.live: BA on weld
 #include "slamko_loop/never_lost_supervisor.hpp"          // node-only (P2c)
 #include "slamko_loop/xfeat_relocalizer.hpp"
 #include "slamko_core/submap_io.hpp"                       // P4: cross-session map I/O
@@ -190,6 +191,9 @@ class VioNode : public rclcpp::Node {
     nl_weld_once_      = declare_parameter("neverlost_weld_once", true);
     nl_continuous_reloc_ = declare_parameter("neverlost_continuous_reloc", false);
     nl_auto_seal_dist_m_ = declare_parameter("neverlost_auto_seal_distance_m", 0.0);
+    nl_weld_ba_            = declare_parameter("neverlost_weld_ba", false);
+    nl_weld_ba_max_iters_  = declare_parameter("neverlost_weld_ba_max_iters", 20);
+    nl_weld_ba_pixel_sigma_= declare_parameter("neverlost_weld_ba_pixel_sigma", 1.0);
     // Relocalizer recall knobs (sweepable; defaults match XFeatRelocConfig).
     reloc_match_ratio_      = declare_parameter("reloc_match_ratio", 0.9);
     reloc_use_bow_          = declare_parameter("reloc_use_bow", true);
@@ -444,6 +448,29 @@ class VioNode : public rclcpp::Node {
       sc.weld_once_per_target = nl_weld_once_;
       sc.continuous_reloc     = nl_continuous_reloc_;
       sc.auto_seal_distance_m = nl_auto_seal_dist_m_;
+      // C.live V0: BA on weld over the active submap (intra-submap, refines KFs +
+      // landmarks using visual + IMU factors when SMP5 windows are present). The
+      // composition root injects the concrete GTSAM-backed smoother; slamko_loop
+      // holds only the abstract slamko::GlobalSmoother* (Hard Rule #2 clean). The
+      // supervisor silently skips BA when this is null — back-compat preserved.
+      if (nl_weld_ba_) {
+        global_smoother_ = std::make_unique<slamko_fusion::GtsamGlobalSmoother>();
+        sc.global_smoother = global_smoother_.get();
+        // slamko_vio::StereoIntrinsics → slamko::StereoCalib (float→double, baseline_m
+        // → baseline). The two types coexist for legacy reasons (the audit flagged
+        // it); for now bridge here.
+        sc.ba_calib.fx       = K_.fx;
+        sc.ba_calib.fy       = K_.fy;
+        sc.ba_calib.cx       = K_.cx;
+        sc.ba_calib.cy       = K_.cy;
+        sc.ba_calib.baseline = K_.baseline_m;
+        sc.ba_T_BS  = slamko::SE3(node_T_BS_);
+        sc.ba_pixel_sigma = nl_weld_ba_pixel_sigma_;
+        sc.ba_max_iters   = nl_weld_ba_max_iters_;
+        RCLCPP_INFO(get_logger(),
+                    "[neverlost] BA-on-weld ON (max_iters=%d pixel_sigma=%.2f)",
+                    nl_weld_ba_max_iters_, nl_weld_ba_pixel_sigma_);
+      }
       supervisor_ = std::make_unique<slamko::NeverLostSupervisor>(sc, reloc_.get());
       RCLCPP_INFO(get_logger(),
                   "[neverlost] supervisor + XFeat relocalizer up (pose_graph=%d weld_once=%d)",
@@ -605,6 +632,11 @@ class VioNode : public rclcpp::Node {
   bool nl_weld_once_      = true;
   bool nl_continuous_reloc_ = false;
   double nl_auto_seal_dist_m_ = 0.0;
+  // C.live V0: BA-on-weld
+  bool   nl_weld_ba_ = false;
+  int    nl_weld_ba_max_iters_   = 20;
+  double nl_weld_ba_pixel_sigma_ = 1.0;
+  std::unique_ptr<slamko::GlobalSmoother> global_smoother_;
   double reloc_match_ratio_ = 0.9, reloc_min_inlier_ratio_ = 0.0;
   bool reloc_use_bow_ = true, reloc_mutual_check_ = false;
   int reloc_bow_top_k_ = 25, reloc_min_inliers_ = 15;

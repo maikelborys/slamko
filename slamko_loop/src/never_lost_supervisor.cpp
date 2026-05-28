@@ -7,12 +7,103 @@
 #include "slamko_loop/never_lost_supervisor.hpp"
 
 #include <algorithm>
+#include <unordered_map>
+
+#include "slamko_core/global_smoother.hpp"
 
 namespace slamko {
 
 NeverLostSupervisor::NeverLostSupervisor(const SupervisorConfig& cfg,
                                          Relocalizer* reloc)
     : cfg_(cfg), reloc_(reloc), gate_(cfg) {}
+
+namespace {
+// C.live V0: BA over the ACTIVE submap (intra-submap) using its stored kf_obs +
+// imu_since_prev. Anchor stays IDENTITY (active-local origin = first KF); the
+// supervisor's weld machinery owns the cross-submap anchor algebra unchanged. This
+// is the safest first slice — it sharpens the geometry that the NEXT weld's
+// AnchorGate will cluster, without touching the anchor convention or breaking the
+// pose-graph chain. Returns the refined SubMap (with refined KF poses + landmark
+// positions), or std::nullopt if BA is not configured / no observations to refine.
+bool refineActiveSubmap(const SubMap& sm,
+                        const SupervisorConfig& cfg,
+                        SubMap& out_refined) {
+  if (!cfg.global_smoother) return false;
+  if (sm.keyframes.empty() || sm.kf_obs.empty() ||
+      sm.keyframes.size() != sm.kf_obs.size()) return false;
+
+  GlobalBAInput in;
+  in.calib = cfg.ba_calib;
+  in.T_BS  = cfg.ba_T_BS;
+  in.pixel_sigma = cfg.ba_pixel_sigma;
+  in.max_iters   = cfg.ba_max_iters;
+  for (const auto& kf : sm.keyframes) in.keyframes.emplace_back(kf.id, kf.T_WB);
+  for (const auto& l  : sm.landmarks) in.landmarks.emplace_back(l.id, l.position);
+  for (std::size_t k = 0; k < sm.keyframes.size(); ++k) {
+    const auto& ko = sm.kf_obs[k];
+    const bool stereo = ko.hasStereo();
+    for (int i = 0; i < ko.size(); ++i) {
+      GlobalBAObservation o;
+      o.kf_id = sm.keyframes[k].id;
+      o.landmark_id = ko.landmark_ids[i];
+      o.uv_left = ko.uv.row(i).transpose();
+      if (stereo && std::isfinite(ko.uv_right(i, 0)))
+        o.uv_right = ko.uv_right.row(i).transpose();
+      in.observations.push_back(o);
+    }
+  }
+  if (in.observations.empty()) return false;
+  in.anchor_kf = sm.keyframes.front().id;
+
+  // IMU windows (SMP5) — drives the metric-scale + gravity-rotation lock the visual
+  // factors leave ambiguous. Velocities bootstrapped from finite-diff (LM refines).
+  bool any_imu = false;
+  for (const auto& ko : sm.kf_obs) if (ko.hasImu()) { any_imu = true; break; }
+  if (any_imu && sm.keyframes.size() >= 2) {
+    in.imu_params = ImuParams{};
+    for (std::size_t k = 0; k < sm.keyframes.size(); ++k) {
+      Eigen::Vector3d v(0, 0, 0);
+      const std::size_t kp = (k + 1 < sm.keyframes.size()) ? k + 1 : k;
+      const std::size_t km = (k == 0) ? 0 : k - 1;
+      if (kp != km) {
+        const double dt = sm.keyframes[kp].timestamp - sm.keyframes[km].timestamp;
+        if (dt > 1e-6)
+          v = (sm.keyframes[kp].T_WB.translation() -
+               sm.keyframes[km].T_WB.translation()) / dt;
+      }
+      in.velocities.emplace_back(sm.keyframes[k].id, v);
+      in.biases.emplace_back(sm.keyframes[k].id, ImuBias{});
+    }
+    for (std::size_t k = 1; k < sm.keyframes.size(); ++k) {
+      if (!sm.kf_obs[k].hasImu()) continue;
+      GlobalBAImuWindow w;
+      w.kf_from = sm.keyframes[k - 1].id;
+      w.kf_to   = sm.keyframes[k].id;
+      w.samples = sm.kf_obs[k].imu_since_prev;
+      in.imu_windows.push_back(w);
+    }
+  }
+
+  const GlobalBAOutput out = cfg.global_smoother->optimize(in);
+  if (!out.converged) return false;
+
+  // Write refined poses/landmarks back. Anchor + id NOT touched (caller preserves).
+  out_refined = sm;
+  std::unordered_map<std::uint64_t, SE3> kf_ref;
+  for (const auto& kv : out.keyframes) kf_ref[kv.first] = kv.second;
+  std::unordered_map<std::uint64_t, Eigen::Vector3d> lm_ref;
+  for (const auto& kv : out.landmarks) lm_ref[kv.first] = kv.second;
+  for (auto& kf : out_refined.keyframes) {
+    auto it = kf_ref.find(kf.id);
+    if (it != kf_ref.end()) kf.T_WB = it->second;
+  }
+  for (auto& lm : out_refined.landmarks) {
+    auto it = lm_ref.find(lm.id);
+    if (it != lm_ref.end()) lm.position = it->second;
+  }
+  return true;
+}
+}  // namespace
 
 bool NeverLostSupervisor::attemptWeld(RecoveryAction& act) {
   if (!reloc_ || !have_query_) return false;
@@ -112,6 +203,17 @@ bool NeverLostSupervisor::attemptWeld(RecoveryAction& act) {
   act.welded = true;
   act.welded_to_id = sealed_id;
   act.applied_T_active_sealed = consensus;
+
+  // C.live V0: intra-active BA on weld. Sharpens the active submap's geometry using
+  // visual reprojection + (when SMP5 available) IMU factors, so the NEXT weld's
+  // AnchorGate clusters a tighter consensus. Anchor stays as set above — Hard Rule
+  // #4 disposable-graph + the seal/branch/weld machinery are untouched. Failure
+  // (smoother unset / unconverged / no obs) is silent and the weld still applies.
+  if (cfg_.global_smoother) {
+    SubMap refined;
+    if (refineActiveSubmap(archive_.active(), cfg_, refined))
+      archive_.setActiveContent(std::move(refined));
+  }
   return true;
 }
 

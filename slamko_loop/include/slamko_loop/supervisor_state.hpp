@@ -10,7 +10,9 @@
 
 #pragma once
 
+#include "slamko_core/global_smoother.hpp"
 #include "slamko_core/health.hpp"
+#include "slamko_core/stereo_observation.hpp"
 
 namespace slamko {
 
@@ -91,6 +93,26 @@ struct SupervisorConfig {
   // average, so one weld per target carries the same correction. Welding to a DIFFERENT
   // sealed map in the same episode is still allowed. false = legacy refine-every-cycle.
   bool   weld_once_per_target = true;
+
+  // C.live: visual+IMU bundle-adjustment on weld. When non-null, after each weld the
+  // supervisor builds a 2-submap (active + sealed) BA over their KFs + landmarks +
+  // observations + IMU windows, with a BetweenFactor loop-closure constraint from the
+  // weld consensus. The refined active KFs/landmarks are written back into the archive
+  // so the next welds compound on a sharper geometry. The smoother is owned by the
+  // caller (composition root — vio_node), the supervisor never frees it; null = legacy
+  // closed-form / chain pose-graph behaviour, bit-identical to pre-C.live runs.
+  // Hard Rule #2: this is the slamko_core abstract type, so slamko_loop stays free
+  // of slamko_fusion (the concrete GtsamGlobalSmoother lives in fusion).
+  GlobalSmoother* global_smoother = nullptr;
+  StereoCalib     ba_calib;            // intrinsics + baseline for the reprojection factors
+  SE3             ba_T_BS;             // cam→body (same convention as the relocalizer)
+  double          ba_pixel_sigma = 1.0;
+  int             ba_max_iters   = 20;
+  // Loop-closure factor sigmas (the BetweenFactor between sealed_last_KF & active_first_KF
+  // derived from the weld consensus). Tight enough to anchor; not so tight it overrides
+  // the visual reprojection evidence.
+  double          ba_loop_sigma_t = 0.05;  // m
+  double          ba_loop_sigma_r = 0.02;  // rad
 };
 
 // Boundary projection to the core health vocabulary.
