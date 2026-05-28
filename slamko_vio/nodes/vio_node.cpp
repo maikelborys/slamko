@@ -10,8 +10,10 @@
 // All algorithm + state lives in VioPipeline (bag/sim/real-portable, testable).
 
 #include <cmath>
+#include <deque>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -167,6 +169,7 @@ class VioNode : public rclcpp::Node {
       RCLCPP_INFO(get_logger(), "Tier-2 backend: ceres LocalBA");
     }
     pipeline_ = std::make_unique<slamko_vio::VioPipeline>(cfg, std::move(backend));
+    use_imu_gate_ = cfg.enable_imu;  // gate frame processing on IMU coverage (determinism)
 
     if (!cfg.pose_dump_path.empty()) {
       pose_dump_.open(cfg.pose_dump_path);
@@ -287,6 +290,15 @@ class VioNode : public rclcpp::Node {
     s.a = Eigen::Vector3d(m->linear_acceleration.x, m->linear_acceleration.y, m->linear_acceleration.z);
     s.w = Eigen::Vector3d(m->angular_velocity.x, m->angular_velocity.y, m->angular_velocity.z);
     pipeline_->addImu(s);
+    // Advance the IMU frontier and release any buffered frame the IMU now covers.
+    // DETERMINISM: rclcpp's executor does NOT guarantee a fixed imu-vs-stereo
+    // callback order, so processing a frame on arrival would drain an INCOMPLETE
+    // IMU window (late samples are then dropped by drain_imu_window) → divergent
+    // preintegration → ~40-80% run-to-run ATE variance. Gating frame processing on
+    // "IMU has advanced past the frame timestamp" makes the window complete and the
+    // replay reproducible. See slamko_loop/docs memory slamko-vio-replay-nondeterministic.
+    if (s.t > latest_imu_ts_) latest_imu_ts_ = s.t;
+    drain_pending_frames();
   }
 
   bool parse_intrinsics(const sensor_msgs::msg::CameraInfo& cl,
@@ -334,13 +346,28 @@ class VioNode : public rclcpp::Node {
     if (!have_K_) { have_K_ = parse_intrinsics(*cam_l, *cam_r); if (!have_K_) return; }
     try_resolve_extrinsics(msg_l->header.frame_id);
 
-    const slamko::ImageView left(msg_l->data.data(), (int)msg_l->width, (int)msg_l->height, (int)msg_l->step);
-    const slamko::ImageView right(msg_r->data.data(), (int)msg_r->width, (int)msg_r->height, (int)msg_r->step);
     const double ts = (double)msg_l->header.stamp.sec + msg_l->header.stamp.nanosec * 1e-9;
+    // Buffer the frame (hold the msg shared_ptrs so the pixel data stays alive) and
+    // let it be processed by drain_pending_frames() once the IMU stream covers `ts`.
+    // No-IMU mode (use_imu_gate_=false) processes immediately — no window to complete.
+    pending_frames_.push_back(PendingFrame{msg_l, msg_r, ts});
+    drain_pending_frames();
+  }
 
-    pipeline_->processStereo(left, right, ts, K_);
-    publish(msg_l->header);
-    if (neverlost_enabled_) driveSupervisor(ts);
+  // Process buffered stereo frames whose timestamp the IMU stream has passed — the
+  // ordering-independent gate that makes IMU preintegration deterministic. The very
+  // last ≤1 frame after the final IMU sample is dropped (negligible for ATE).
+  void drain_pending_frames() {
+    while (!pending_frames_.empty() &&
+           (!use_imu_gate_ || pending_frames_.front().ts <= latest_imu_ts_)) {
+      const PendingFrame f = pending_frames_.front();
+      pending_frames_.pop_front();
+      const slamko::ImageView left(f.l->data.data(), (int)f.l->width, (int)f.l->height, (int)f.l->step);
+      const slamko::ImageView right(f.r->data.data(), (int)f.r->width, (int)f.r->height, (int)f.r->step);
+      pipeline_->processStereo(left, right, f.ts, K_);
+      publish(f.l->header);
+      if (neverlost_enabled_) driveSupervisor(f.ts);
+    }
   }
 
   // Parse "s:e,s:e,..." (seconds, rel to seq start) into [start,end) windows; skips
@@ -574,6 +601,16 @@ class VioNode : public rclcpp::Node {
   std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::CameraInfo>> sub_lcam_, sub_rcam_;
   std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
+
+  // Deterministic-replay frame gating (see on_imu): buffer stereo frames, release
+  // them only once the IMU stream has advanced past their timestamp.
+  struct PendingFrame {
+    sensor_msgs::msg::Image::ConstSharedPtr l, r;
+    double ts;
+  };
+  std::deque<PendingFrame> pending_frames_;
+  double latest_imu_ts_ = -std::numeric_limits<double>::infinity();
+  bool   use_imu_gate_  = true;  // false in no-IMU mode → process frames immediately
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_odom_;

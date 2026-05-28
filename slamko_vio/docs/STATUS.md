@@ -4,6 +4,29 @@ Living, dated progress + numbers log. Append on every validated change
 ([`../../docs/DOC_PROCESS.md`](../../docs/DOC_PROCESS.md)). Plan:
 [`PLAN_P0_vio.md`](PLAN_P0_vio.md).
 
+## 2026-05-28 — Deterministic replay: IMU↔frame gating (was ~40-80% ATE variance) ✅
+
+**Problem:** same code+config gave wildly different ATE between runs — EuRoC V1_03_difficult
+raw-odom SE3-ATE **52.9 / 74.7 / 95.3 cm** across runs (~40-80% variance). NOT frame drops (both
+runs processed ~all 2147 frames). Root cause: the **IMU↔frame association race** in the ROS
+replay. `rclcpp::spin` doesn't fix the imu-cb vs stereo-sync-cb callback order, so a stereo frame
+could be processed before all its preceding IMU samples arrived; `VioPipeline::drain_imu_window`
+then DISCARDS the late samples (`s.t < t_lo - 0.01`) → incomplete preintegration → divergence,
+amplified on hard sequences near the tracking limit.
+
+**Fix (`nodes/vio_node.cpp`):** frame-gating. `on_stereo` now buffers frames in `pending_frames_`
+(holding the msg shared_ptrs); `on_imu` advances `latest_imu_ts_` and calls
+`drain_pending_frames()`, which processes a buffered frame ONLY once `latest_imu_ts_ >= frame.ts`
+— so `drain_imu_window` always sees the COMPLETE window regardless of executor callback order.
+`use_imu_gate_` (= `enable_imu`) bypasses gating in no-IMU mode; the trailing ≤1 frame after the
+last IMU sample is dropped (negligible for ATE).
+
+**Result (two identical V1_03 runs):** trajectory delta **max 1.2 cm / mean 0.64 cm** over the
+whole run (was tens of cm in ATE) — **~50-80× nondeterminism reduction**, ATE A/B now trustworthy.
+Residual ~0.64 cm is GPU (XFeat-TRT FP16 / KLT-CUDA, not bit-identical) — negligible, not chased.
+VIO confirmed healthy independently: EuRoC MH_05 raw-odom Sim3 scale **1.0127** (metric), ATE
+~18-22 cm. See memory `slamko-vio-replay-nondeterministic`.
+
 ## 2026-05-27 — B1: faithful port of klt_vo → slamko_vio (baseline guard) ✅
 
 **What:** ported `klt_vo_core` (Shi-Tomasi, KLT, stereo matcher, triangulator,

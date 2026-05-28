@@ -34,9 +34,10 @@ synthetic-view matches) — corrected. Node params `reloc_use_lightglue`/`reloc_
 
 2. **VIO replay is non-deterministic** — on EuRoC V1_03_difficult, the SAME code+config gives
    raw-odom SE3-ATE **52.9 cm vs 74.7 cm vs 95.3 cm** across runs (~40–80% variance; ~all frames
-   processed, so not frame drops — GPU XFeat/KLT + solver nondeterminism, amplified on a hard
-   sequence near the tracking limit). This **swamps any loop-closure A/B** (can't tell a 38 vs
-   54 cm difference from run noise). Determinism/stability is a prerequisite for "precise".
+   processed, so not frame drops). **→ FIXED same day** (IMU↔frame gating in vio_node; root cause
+   was the rclcpp imu-vs-stereo callback-order race dropping late IMU samples). Two identical V1_03
+   runs now within **1.2 cm**; ATE A/B is now trustworthy. See slamko_vio/docs/STATUS.md
+   2026-05-28 + memory `slamko-vio-replay-nondeterministic`.
 
 **VIO confirmed HEALTHY though:** EuRoC MH_05 raw-odom Sim3 **scale 1.0127** (metric), SE3-ATE
 ~18–22 cm. So slamko_vio is sound; magistrale's scale weirdness was 100% the GT. On V1_03 the
