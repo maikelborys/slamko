@@ -10,9 +10,10 @@
 // touching the never-lost wiring yet.
 //
 // Usage:
-//   offline_ba <map_in_dir> <map_out_dir>
+//   offline_ba <map_in_dir> <map_out_dir> [--no-imu]
 //
 // The input dir must contain submap_*.smap (SMP3 with kf_obs) + calib.txt.
+// --no-imu forces visual-only BA even when SMP5 IMU windows are present (A/B baseline).
 // calib.txt format (one line, ASCII):
 //   fx fy cx cy baseline  tx ty tz qx qy qz qw
 //   (the last 7 fields are T_BS — cam->body — quaternion + translation)
@@ -47,9 +48,18 @@ bool loadCalib(const std::string& path, slamko::StereoCalib& K, slamko::SE3& T_B
 // Build a per-submap BA input in LOCAL frame: anchor stays out, gauge = first KF.
 // Each submap is independent — this refines intra-submap geometry only (the pose-
 // graph weld already handled the cross-submap anchor correction at closure time).
+// When SMP5 per-KF IMU windows are present, attach CombinedImuFactor constraints
+// between consecutive KFs (Phase B.2). Visual-only BA degrades ATE on real data
+// (PLAN_BA_GLOBAL.md D.1 — V1_03 37→82 cm); IMU factors lock metric scale + gravity
+// rotation + bias drift, which is what makes the BA actually move ATE in the right
+// direction. Velocities are bootstrapped from consecutive KF translations (the local
+// smoother's truth post-optimize isn't persisted yet; finite-diff is good enough as
+// LM iterates and refines the velocity variable anyway). Biases initialize to zero
+// for the same reason — the bias random-walk priors keep them small.
 slamko::GlobalBAInput buildPerSubmapInput(const slamko::SubMap& sm,
                                           const slamko::StereoCalib& K,
-                                          const slamko::SE3& T_BS) {
+                                          const slamko::SE3& T_BS,
+                                          bool use_imu) {
   slamko::GlobalBAInput in;
   in.calib = K;
   in.T_BS  = T_BS;
@@ -74,6 +84,43 @@ slamko::GlobalBAInput buildPerSubmapInput(const slamko::SubMap& sm,
     }
   }
   if (!sm.keyframes.empty()) in.anchor_kf = sm.keyframes.front().id;
+
+  // IMU windows (SMP5). Only when at least one KF carries `imu_since_prev` — older
+  // Atlases (SMP3/SMP4) fall through to visual-only. `--no-imu` also forces this off
+  // so we have a clean A/B baseline on the same map.
+  bool any_imu = false;
+  for (const auto& ko : sm.kf_obs) if (ko.hasImu()) { any_imu = true; break; }
+  if (use_imu && any_imu && sm.keyframes.size() >= 2) {
+    in.imu_params = slamko::ImuParams{};  // EuRoC-tuned defaults from imu_sample.hpp
+    // Initial velocity per KF from consecutive-KF translation / dt. The first and
+    // last KFs share the closest neighbor estimate to keep all KFs that are window
+    // endpoints covered (CombinedImuFactor binds (X,V,B) at BOTH endpoints).
+    for (std::size_t k = 0; k < sm.keyframes.size(); ++k) {
+      Eigen::Vector3d v(0, 0, 0);
+      // Pick the consecutive pair that exists. For interior KFs the centered diff is
+      // more accurate but the IMU factor will refine the estimate anyway.
+      const std::size_t kp = (k + 1 < sm.keyframes.size()) ? k + 1 : k;
+      const std::size_t km = (k == 0) ? 0 : k - 1;
+      if (kp != km) {
+        const double dt =
+            sm.keyframes[kp].timestamp - sm.keyframes[km].timestamp;
+        if (dt > 1e-6)
+          v = (sm.keyframes[kp].T_WB.translation() -
+               sm.keyframes[km].T_WB.translation()) / dt;
+      }
+      in.velocities.emplace_back(sm.keyframes[k].id, v);
+      in.biases.emplace_back(sm.keyframes[k].id, slamko::ImuBias{});  // zero init
+    }
+    // IMU windows: each KF's `imu_since_prev` spans (KF k-1) → (KF k). First KF stores [].
+    for (std::size_t k = 1; k < sm.keyframes.size() && k < sm.kf_obs.size(); ++k) {
+      if (!sm.kf_obs[k].hasImu()) continue;
+      slamko::GlobalBAImuWindow w;
+      w.kf_from = sm.keyframes[k - 1].id;
+      w.kf_to   = sm.keyframes[k].id;
+      w.samples = sm.kf_obs[k].imu_since_prev;
+      in.imu_windows.push_back(w);
+    }
+  }
   return in;
 }
 
@@ -95,11 +142,16 @@ void writeBack(const slamko::GlobalBAOutput& out, slamko::SubMap& sm) {
 
 int main(int argc, char** argv) {
   if (argc < 3) {
-    std::fprintf(stderr, "usage: offline_ba <map_in_dir> <map_out_dir>\n");
+    std::fprintf(stderr,
+        "usage: offline_ba <map_in_dir> <map_out_dir> [--no-imu]\n");
     return 1;
   }
   const std::string map_in  = argv[1];
   const std::string map_out = argv[2];
+  bool use_imu = true;
+  for (int i = 3; i < argc; ++i)
+    if (std::string(argv[i]) == "--no-imu") use_imu = false;
+  std::printf("offline_ba: use_imu=%s\n", use_imu ? "true" : "false");
 
   slamko::StereoCalib K{};
   slamko::SE3 T_BS;
@@ -130,17 +182,18 @@ int main(int argc, char** argv) {
       ++n_skipped;
       continue;
     }
-    const auto in  = buildPerSubmapInput(sm, K, T_BS);
+    const auto in  = buildPerSubmapInput(sm, K, T_BS, use_imu);
     if (in.observations.empty()) {
       std::printf("  submap %lu: SKIP (no stereo observations)\n", (unsigned long)sm.id);
       ++n_skipped;
       continue;
     }
     const auto out = smoother.optimize(in);
-    std::printf("  submap %lu: KFs=%zu lms=%zu obs=%zu  initial=%.2f → final=%.2f "
-                "(iters=%d %s)\n",
+    std::printf("  submap %lu: KFs=%zu lms=%zu obs=%zu imu_windows=%zu  initial=%.2f "
+                "→ final=%.2f (iters=%d %s)\n",
                 (unsigned long)sm.id, sm.keyframes.size(), sm.landmarks.size(),
-                in.observations.size(), out.initial_cost, out.final_cost,
+                in.observations.size(), in.imu_windows.size(),
+                out.initial_cost, out.final_cost,
                 out.iterations, out.converged ? "OK" : "no-improve");
     if (out.converged) {
       writeBack(out, sm);
