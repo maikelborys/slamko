@@ -32,6 +32,7 @@ def generate_launch_description():
     feature_source = LaunchConfiguration('feature_source')
     backend        = LaunchConfiguration('backend')
     pose_dump      = LaunchConfiguration('pose_dump_path')
+    ba_window_size = LaunchConfiguration('ba_window_size')
 
     player = Node(
         package='euroc_publisher',
@@ -67,6 +68,7 @@ def generate_launch_description():
             'child_frame_id':     'slamko_vio_cam',
             'publish_tf':         True,
             'pnp_use_cuda':       pnp_use_cuda,
+            'ba_window_size':     ParameterValue(LaunchConfiguration('ba_window_size'), value_type=int),
             'lmp_enabled':        lmp_enabled,
             'pnp_lm_max_iters':   lm_iters,
             'pnp_refine_second_pass': second_pass,
@@ -126,6 +128,8 @@ def generate_launch_description():
         DeclareLaunchArgument('patch_size',     default_value='9'),
         DeclareLaunchArgument('pyramid_levels', default_value='4'),
         DeclareLaunchArgument('pnp_use_cuda',   default_value='false'),
+        DeclareLaunchArgument('ba_window_size', default_value='20',
+            description='LocalBA fixed-lag window in keyframes. 5-10 is small for long traversals — bias drift on stairs (mag1 observed) marginalizes before visual evidence can correct it. 20 covers ~10 s of motion at typical KF rate.'),
         DeclareLaunchArgument('lmp_enabled',    default_value='false'),
         DeclareLaunchArgument('pnp_lm_max_iters', default_value='5'),
         DeclareLaunchArgument('pnp_refine_second_pass', default_value='true'),

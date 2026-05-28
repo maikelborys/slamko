@@ -268,8 +268,15 @@ class VioNode : public rclcpp::Node {
         rows.emplace_back(supervisor_->archive().activeId(), pipeline_->maxLandmarkId());
         std::uint64_t lo = 1;
         for (const auto& [sid, hi] : rows) {
-          const slamko::SubMap* s = supervisor_->archive().find(sid);
-          const Eigen::Matrix4d A = s ? s->anchor.matrix() : Eigen::Matrix4d::Identity();
+          // okvis-arch-refactor P1: live trajectory is now PURE VIO. The supervisor's
+          // anchor algebra was destroying ~7× of precision and creating boundary jumps
+          // (mag1 max delta 478 cm, vertical 303 cm — pure VIO is 21 cm / 8 cm). The
+          // .submaps sidecar is still written for downstream tooling (relocalizer DB
+          // book-keeping, cross-session ids), but every anchor is forced to IDENTITY so
+          // plot_slamko / check_neverlost don't re-corrupt the smooth VIO trajectory.
+          // The supervisor still ATTEMPTS welds (for cross-session relocalization), but
+          // its outputs never reach the trajectory dump or the TF map→odom.
+          const Eigen::Matrix4d A = Eigen::Matrix4d::Identity();
           f << sid << ',' << lo << ',' << hi;
           for (int r = 0; r < 3; ++r)
             for (int c = 0; c < 4; ++c) f << ',' << std::setprecision(9) << A(r, c);

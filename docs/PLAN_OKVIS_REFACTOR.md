@@ -151,7 +151,38 @@ trajectory continuous after the localization.
 - Update `CLAUDE.md`, `MASTER_PLAN.md`, `docs/SYSTEM.md`, `docs/DECOUPLING.md`
   to reflect the single-graph architecture.
 
-## Estimated total: 3 weeks of concentrated work
+## P0 BENCH RESULT (2026-05-28) — re-scopes the refactor
+
+Pure VIO sanity run on magistrale1 200 s, `enable_neverlost:=false`:
+- Sim3-ATE 6.37 cm, scale 0.9919
+- SE3-ATE 6.41 cm
+- Max frame-to-frame Δ = 20.9 cm; p99.9 = 11.0 cm
+- Max |Δz| = 8.4 cm
+
+Compare to bench A (same 200 s segment of mag1, supervisor ON):
+- SE3-ATE 46 cm-class
+- Max frame-to-frame Δ = 478 cm
+- Max |Δz| = 303 cm
+
+**The slamko VIO+LocalSmoother is ALREADY OKVIS-class precision (6.41 cm vs
+OKVIS's 5.91 cm on the same sequence).** The supervisor's multi-submap-anchor
+layer was actively *destroying* 6.7× of precision and creating all the
+sparkles. The refactor mission is therefore much smaller than 3 weeks:
+
+**STOP DESTROYING THE TRAJECTORY** rather than "rebuild the trajectory
+producer". Phase boundaries adjust accordingly:
+
+- P1 reduces to: bypass / disable the anchor layer for the live trajectory
+  output. ~1-2 days of work (rip out the supervisor's anchor-application;
+  pose_dump publishes VIO directly).
+- P2 (loop closure) becomes: when a loop is verified, apply the correction
+  smoothly to the live VIO without retroactive anchor jumps. Either via a
+  one-shot SE3 correction propagated forward (simple) or via the
+  un-marginalize VI-BA (OKVIS-correct but more work). Start with the simple
+  forward-propagate path; escalate to un-marginalize if needed for cm-class.
+- P3 / P4 / P5 mostly unchanged in concept.
+
+## Estimated total: 3-5 days (was 3 weeks)
 
 Per-phase gates are independent — each phase commits + can be merged to main
 in isolation. If P2 (the cm-class fix) doesn't land the ATE target within its
