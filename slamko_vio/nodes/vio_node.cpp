@@ -214,12 +214,18 @@ class VioNode : public rclcpp::Node {
 
     using ImgSub = message_filters::Subscriber<sensor_msgs::msg::Image>;
     using CamSub = message_filters::Subscriber<sensor_msgs::msg::CameraInfo>;
-    sub_left_  = std::make_shared<ImgSub>(this, "left/image_rect_raw",  rmw_qos_profile_sensor_data);
-    sub_right_ = std::make_shared<ImgSub>(this, "right/image_rect_raw", rmw_qos_profile_sensor_data);
-    sub_lcam_  = std::make_shared<CamSub>(this, "left/camera_info",  rmw_qos_profile_sensor_data);
-    sub_rcam_  = std::make_shared<CamSub>(this, "right/camera_info", rmw_qos_profile_sensor_data);
+    // DETERMINISM (offline replay): RELIABLE + deep queue, NOT sensor_data (best-effort,
+    // depth 5). When the single-threaded executor stalls on heavy reloc/LighterGlue GPU
+    // work, a best-effort sub silently DROPS stereo frames (timing-dependent → ~80 cm
+    // run-to-run trajectory divergence + ~13 lost frames). Reliable makes the player
+    // (reliable pub) back-pressure/throttle instead → lossless, reproducible replay.
+    const auto qos_img = rclcpp::QoS(rclcpp::KeepLast(100)).reliable().get_rmw_qos_profile();
+    sub_left_  = std::make_shared<ImgSub>(this, "left/image_rect_raw",  qos_img);
+    sub_right_ = std::make_shared<ImgSub>(this, "right/image_rect_raw", qos_img);
+    sub_lcam_  = std::make_shared<CamSub>(this, "left/camera_info",  qos_img);
+    sub_rcam_  = std::make_shared<CamSub>(this, "right/camera_info", qos_img);
     sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
-        SyncPolicy(20), *sub_left_, *sub_right_, *sub_lcam_, *sub_rcam_);
+        SyncPolicy(100), *sub_left_, *sub_right_, *sub_lcam_, *sub_rcam_);
     sync_->registerCallback(std::bind(&VioNode::on_stereo, this,
         std::placeholders::_1, std::placeholders::_2,
         std::placeholders::_3, std::placeholders::_4));
