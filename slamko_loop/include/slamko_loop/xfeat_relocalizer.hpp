@@ -24,6 +24,7 @@
 #include <Eigen/Core>
 
 #include <memory>
+#include <unordered_map>
 
 #include "slamko_core/features.hpp"
 #include "slamko_core/relocalizer.hpp"
@@ -129,7 +130,17 @@ class XFeatRelocalizer : public Relocalizer {
     Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> desc;  // M×D
     std::vector<Eigen::Vector3d> pos;  // M submap-local 3D, aligned with desc rows
     Eigen::VectorXf global_desc;       // VPR descriptor for this submap (empty if none)
-    std::vector<KeyframePose> keyframes;  // submap-local poses (LighterGlue train views)
+    std::vector<KeyframePose> keyframes;  // submap-local poses
+    // The per-keyframe 2D observation lists (slamko_core SubMap.kf_obs), aligned 1:1
+    // with `keyframes`. The REAL-keyframe LighterGlue verifier (lightGlueVerify) uses
+    // these as the train Features (real 2D pixels + descriptors looked up by lid) so
+    // LightGlue sees a true two-image match (in-distribution). Empty for legacy maps.
+    std::vector<KeyframeObservations> kf_obs;
+    // Full (un-subsampled) descriptor block + landmark-id index so the LightGlue verify
+    // can resolve `kf_obs[k].landmark_ids[i] → descriptor + 3D pos` in O(1). The
+    // brute-force NN path keeps the existing subsampled `desc`/`pos` for speed.
+    Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> full_desc;
+    std::unordered_map<std::uint64_t, std::pair<int, Eigen::Vector3d>> lid_to_desc_pos;
   };
 
   // LighterGlue verify of one candidate submap: project its landmarks into up to

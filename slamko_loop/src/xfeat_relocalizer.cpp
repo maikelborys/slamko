@@ -135,7 +135,15 @@ void XFeatRelocalizer::addSubMap(const SubMap& submap) {
   e.id = submap.id;
   e.anchor = submap.anchor;
   e.global_desc = submap.global_descriptor;  // VPR retrieval vector (empty if none)
-  e.keyframes = submap.keyframes;             // LighterGlue train-view projection poses
+  e.keyframes = submap.keyframes;             // submap-local KF poses
+  // Real per-KF observations + a lid → (descriptor_row, 3D) index for the LightGlue
+  // verifier (lightGlueVerify). The descriptor block is COPIED unsubsampled so the
+  // index resolves directly into `e.full_desc.row(drow)`.
+  e.kf_obs = submap.kf_obs;
+  e.full_desc = submap.descriptors;
+  for (const auto& lm : submap.landmarks)
+    if (lm.descriptor_row >= 0 && lm.descriptor_row < submap.descriptors.rows())
+      e.lid_to_desc_pos[lm.id] = {lm.descriptor_row, lm.position};
   int m = 0;
   for (const auto& lm : submap.landmarks)
     if (lm.descriptor_row >= 0 && lm.descriptor_row < submap.descriptors.rows()) ++m;
@@ -266,55 +274,63 @@ RelocResult XFeatRelocalizer::relocalize(const Features& query) const {
 bool XFeatRelocalizer::lightGlueVerify(const Features& query, const Entry& e,
                                        SE3& T_sl_cam_out, int& inliers_out,
                                        int& putative_out) const {
-  if (!lg_ || e.keyframes.empty() || e.pos.empty() || !query.hasDescriptors())
-    return false;
-  const int M = static_cast<int>(e.pos.size());
-  // The submap stores no 2D keypoints, so a train view is the landmark cloud
-  // projected into one keyframe's camera. Image bounds come from the principal
-  // point (rectified pinhole: cx≈w/2, cy≈h/2) so we keep only landmarks that
-  // land in a real image (the model's positional encoding assumes in-image px).
-  const double img_w = 2.0 * cfg_.cx;
-  const double img_h = 2.0 * cfg_.cy;
+  if (!lg_ || e.keyframes.empty() || !query.hasDescriptors()) return false;
+  // REAL per-keyframe matching (in-distribution for LightGlue, replaces the v1
+  // synthetic projected-cloud train view). For each candidate keyframe we build a
+  // train Features from its STORED `kf_obs` (the actual 2D pixel locations recorded
+  // when the KF was inserted) + descriptors looked up by `landmark_id`. LightGlue
+  // matches two real images → dense correspondences even on hard revisits, where
+  // the v1 sparse-projected-cloud train view failed (e.g. magistrale1 start-room
+  // return). Falls back gracefully when the submap predates Phase A (kf_obs empty).
+  if (e.kf_obs.empty() || e.full_desc.rows() == 0) return false;
+  const int desc_dim = static_cast<int>(e.full_desc.cols());
   const int nkf = static_cast<int>(e.keyframes.size());
-  const int views = std::min(cfg_.lg_max_views, nkf);
+  const int n_obs_kf = static_cast<int>(e.kf_obs.size());
+  if (n_obs_kf == 0) return false;
+  const int views = std::min(cfg_.lg_max_views, std::min(nkf, n_obs_kf));
 
   int best_inl = 0, best_putative = 0;
   SE3 best_T;
   bool have = false;
   for (int v = 0; v < views; ++v) {
-    // Evenly-spaced keyframes so the views together cover the whole submap span.
-    const int kfi = (views == 1) ? nkf / 2 : (v * (nkf - 1)) / (views - 1);
-    const SE3& T_WB = e.keyframes[kfi].T_WB;                  // body-in-world (local)
-    const SE3 T_cam_sl = (T_WB * cfg_.body_T_cam).inverse();  // world(local)→cam
+    // Evenly-spaced KFs across the submap to cover its full span.
+    const int kfi = (views == 1) ? n_obs_kf / 2
+                                 : (v * (n_obs_kf - 1)) / (views - 1);
+    const auto& ko = e.kf_obs[kfi];
+    const int N = ko.size();
+    if (N < cfg_.lg_min_view_landmarks) continue;
 
+    // Build train Features: real 2D pixel + descriptor (via lid lookup) + parallel
+    // 3D pos in submap-local frame for PnP after matching.
     Features train;
-    train.keypoints.resize(M, 3);
-    train.descriptors.resize(M, e.desc.cols());
+    train.keypoints.resize(N, 3);
+    train.descriptors.resize(N, desc_dim);
     std::vector<Eigen::Vector3d> pos_view;
-    pos_view.reserve(M);
+    pos_view.reserve(N);
     int row = 0;
-    for (int k = 0; k < M; ++k) {
-      const Eigen::Vector3d Xc = T_cam_sl * e.pos[k];
-      if (Xc.z() < 1e-3) continue;                            // behind the camera
-      const double u = cfg_.fx * Xc.x() / Xc.z() + cfg_.cx;
-      const double w = cfg_.fy * Xc.y() / Xc.z() + cfg_.cy;
-      if (u < 0 || u >= img_w || w < 0 || w >= img_h) continue;  // out of FOV
-      train.keypoints(row, 0) = static_cast<float>(u);
-      train.keypoints(row, 1) = static_cast<float>(w);
-      train.keypoints(row, 2) = static_cast<float>(1.0 / (1.0 + Xc.z()));  // near→high
-      train.descriptors.row(row) = e.desc.row(k);
-      pos_view.push_back(e.pos[k]);
+    for (int i = 0; i < N; ++i) {
+      const auto it = e.lid_to_desc_pos.find(ko.landmark_ids[i]);
+      if (it == e.lid_to_desc_pos.end()) continue;  // landmark dropped from descriptor block
+      train.keypoints(row, 0) = ko.uv(i, 0);
+      train.keypoints(row, 1) = ko.uv(i, 1);
+      // Score = 1 (the model uses positional encoding more than score; with all 1.0
+      // the top-K selection inside LightGlueMatcher falls back to insertion order).
+      train.keypoints(row, 2) = 1.0f;
+      train.descriptors.row(row) = e.full_desc.row(it->second.first);
+      pos_view.push_back(it->second.second);
       ++row;
     }
     if (row < cfg_.lg_min_view_landmarks) continue;
     train.keypoints.conservativeResize(row, 3);
-    train.descriptors.conservativeResize(row, e.desc.cols());
+    train.descriptors.conservativeResize(row, desc_dim);
 
     const auto matches = lg_->match(query, train);
     if (std::getenv("SLAMKO_LG_DEBUG"))
-      std::fprintf(stderr, "[LG] submap %llu view %d/%d: %d train-lm, %zu matches\n",
-                   (unsigned long long)e.id, v, views, row, matches.size());
+      std::fprintf(stderr, "[LG] submap %llu view %d/%d (kf %d): %d train-lm, "
+                           "%zu matches\n",
+                   (unsigned long long)e.id, v, views, kfi, row, matches.size());
     if (static_cast<int>(matches.size()) < cfg_.min_inliers) continue;
+
     std::vector<Eigen::Vector2d> uv;
     std::vector<Eigen::Vector3d> X;
     uv.reserve(matches.size());
