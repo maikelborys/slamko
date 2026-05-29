@@ -29,11 +29,12 @@ find_package(slamko_core REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
 
+# Relocalizer front-end only (place-rec + verify). The never-lost SUPERVISOR / anchor
+# layer / homegrown pose-graph + SessionGraph were deleted 2026-05-29 (dead on the live
+# path — anchors forced to identity; SessionGraph injected jitter, loop-use was inert).
+# This stack stays as the loop-closure front-end, DORMANT (not wired into vio_node) until
+# Phase C re-wires it with a learned VPR head (recall) + a thin TrackingMonitor.
 add_library(slamko_loop SHARED
-  src/submap_archive.cpp
-  src/anchor_gate.cpp
-  src/never_lost_supervisor.cpp
-  src/pose_graph.cpp
   src/bow.cpp
   src/xfeat_relocalizer.cpp
   src/lightglue_matcher.cpp)
@@ -59,7 +60,7 @@ install(DIRECTORY include/ DESTINATION include)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-  foreach(t test_supervisor test_relocalizer test_pose_graph test_stress test_bow)
+  foreach(t test_relocalizer test_bow)
     ament_add_gtest(${t} test/${t}.cpp)
     target_link_libraries(${t} slamko_loop Eigen3::Eigen)
     ament_target_dependencies(${t} slamko_core)

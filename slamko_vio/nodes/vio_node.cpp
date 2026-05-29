@@ -8,6 +8,13 @@
 //   - resolves cam→imu T_BS from TF once and hands it to the pipeline,
 //   - publishes /slamko_vio/odometry + TF + keypoint markers from the pipeline.
 // All algorithm + state lives in VioPipeline (bag/sim/real-portable, testable).
+//
+// 2026-05-29 SIMPLIFICATION: the never-lost SUPERVISOR + anchor layer + SessionGraph
+// wiring were ripped out (all dead on the live path — anchors were forced to identity,
+// SessionGraph injected jitter without loops, and gtsam was confirmed the inaccurate
+// secondary backend). The node is now just: params → Tier-2 estimator → publish. The
+// loop-closure front-end (slamko_loop relocalizer) stays DORMANT (built, not wired) for
+// Phase C, which re-introduces recovery via a thin TrackingMonitor + a learned VPR head.
 
 #include <cmath>
 #include <deque>
@@ -15,7 +22,6 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
-#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -36,18 +42,11 @@
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
-#include "slamko_core/estimation_frame.hpp"
-#include "slamko_core/features.hpp"
 #include "slamko_core/image_view.hpp"
 #include "slamko_core/local_smoother.hpp"
 #include "slamko_vio/vio_pipeline.hpp"
 #include "slamko_vio/types.hpp"
-#include "slamko_fusion/gtsam_local_smoother.hpp"        // node-only (composition root)
-#include "slamko_fusion/gtsam_global_smoother.hpp"       // C.live: BA on weld
-#include "slamko_fusion/session_graph.hpp"                // Refactor P2: async full-graph thread
-#include "slamko_loop/never_lost_supervisor.hpp"          // node-only (P2c)
-#include "slamko_loop/xfeat_relocalizer.hpp"
-#include "slamko_core/submap_io.hpp"                       // P4: cross-session map I/O
+#include "slamko_fusion/gtsam_local_smoother.hpp"  // node-only (composition root; gtsam optional backend)
 
 using slamko_vio::VioConfig;
 
@@ -103,8 +102,6 @@ class VioNode : public rclcpp::Node {
     cfg.dr_max_s           = P("dr_max_s", cfg.dr_max_s);
     cfg.dr_force_loss_start_s = P("dr_force_loss_start_s", cfg.dr_force_loss_start_s);
     cfg.dr_force_loss_end_s   = P("dr_force_loss_end_s", cfg.dr_force_loss_end_s);
-    // Extra forced-loss windows as "start:end,start:end,..." (seconds, rel to seq
-    // start) — induces several seals for the multi-submap merge validation.
     cfg.dr_force_loss_windows = parseLossWindows(
         P("dr_force_loss_windows", std::string{}));
     cfg.kf_translation_m   = P("kf_translation_m", cfg.kf_translation_m);
@@ -132,10 +129,9 @@ class VioNode : public rclcpp::Node {
       cfg.xfeat_onnx_path =
           ament_index_cpp::get_package_share_directory("slamko_vio") + "/models/xfeat.onnx";
     }
-    // EigenPlaces global VPR descriptor (loop-closure retrieval). Default-enable when the
-    // never-lost relocalizer runs (it's what makes loops actually close); the model ships
-    // in share/models/. reloc_use_vpr can force it off.
-    cfg.enable_vpr      = P("reloc_use_vpr", true);
+    // EigenPlaces global VPR descriptor — kept available (the loop-closure front-end uses
+    // it in Phase C); off by default since nothing consumes it on the live path now.
+    cfg.enable_vpr      = P("reloc_use_vpr", false);
     cfg.vpr_onnx_path   = P("vpr_onnx_path", cfg.vpr_onnx_path);
     cfg.vpr_engine_path = P("vpr_engine_path", cfg.vpr_engine_path);
     if (cfg.enable_vpr && cfg.vpr_onnx_path.empty()) {
@@ -149,26 +145,26 @@ class VioNode : public rclcpp::Node {
     child_frame_  = cfg.child_frame_id;
     publish_tf_   = cfg.publish_tf;
 
-    // Composition root for the Tier-2 backend. "ceres" (default) lets the
-    // pipeline build its own CeresLocalSmoother (klt_vo LocalBA). "gtsam"
-    // injects slamko_fusion's GtsamLocalSmoother — the node is the only place
-    // that knows slamko_fusion, so the pipeline core stays decoupled (Hard
-    // Rule #2). The pipeline drives whichever backend through the
-    // slamko::LocalSmoother contract (setExtrinsics/setImuParams/setStereoCalib/
-    // insertKeyframe).
+    // Composition root for the Tier-2 estimator. "ceres" (DEFAULT) lets the pipeline
+    // build its own CeresLocalSmoother (klt_vo LocalBA) — the validated production
+    // estimator (MH_01 ~10 cm, robust on mag1). "gtsam" injects slamko_fusion's
+    // GtsamLocalSmoother — kept as the optional/secondary backend (hardened 2026-05-29,
+    // but ~15× less accurate full-trajectory; see slamko_fusion/docs/STATUS.md). The
+    // node is the only place that knows slamko_fusion, so the pipeline core stays
+    // decoupled (Hard Rule #2).
     std::unique_ptr<slamko::LocalSmoother> backend;
     if (cfg.backend == "gtsam") {
       slamko_fusion::GtsamSmootherConfig gcfg;
       gcfg.use_imu = cfg.enable_imu;
       backend = std::make_unique<slamko_fusion::GtsamLocalSmoother>(gcfg);
       RCLCPP_INFO(get_logger(),
-                  "Tier-2 backend: GTSAM fixed-lag smoother (use_imu=%d)",
+                  "Tier-2 backend: GTSAM fixed-lag smoother (use_imu=%d) [secondary]",
                   (int)cfg.enable_imu);
     } else {
       if (cfg.backend != "ceres")
         RCLCPP_WARN(get_logger(), "unknown backend '%s'; using ceres",
                     cfg.backend.c_str());
-      RCLCPP_INFO(get_logger(), "Tier-2 backend: ceres LocalBA");
+      RCLCPP_INFO(get_logger(), "Tier-2 backend: ceres LocalBA [production default]");
     }
     pipeline_ = std::make_unique<slamko_vio::VioPipeline>(cfg, std::move(backend));
     use_imu_gate_ = cfg.enable_imu;  // gate frame processing on IMU coverage (determinism)
@@ -177,59 +173,13 @@ class VioNode : public rclcpp::Node {
       pose_dump_.open(cfg.pose_dump_path);
       RCLCPP_INFO(get_logger(), "pose dump (TUM) -> %s", cfg.pose_dump_path.c_str());
     }
-    // Never-lost map reconstruction: remember the dump paths; the per-frame epoch
-    // file + per-submap sidecar are opened/written once neverlost_enabled_ is known.
-    nl_landmark_dump_path_ = cfg.landmark_dump_path;
-    nl_pose_dump_path_     = cfg.pose_dump_path;
-
-    // P2c: the Tier-3 never-lost supervisor + XFeat relocalizer, driven in-process
-    // from the VIO outputs. Built lazily once K + T_BS resolve (need intrinsics +
-    // extrinsic). Logs seal/branch/weld; the weld re-anchors map→odom on revisit.
-    neverlost_enabled_ = declare_parameter("enable_neverlost", false);
-    // P2.5 (live): route the weld through the SE3 pose-graph backend (multi-submap
-    // merge); weld-once bounds the duplicate-edge growth per episode.
-    nl_use_pose_graph_ = declare_parameter("neverlost_use_pose_graph", false);
-    nl_weld_once_      = declare_parameter("neverlost_weld_once", true);
-    nl_continuous_reloc_ = declare_parameter("neverlost_continuous_reloc", false);
-    nl_auto_seal_dist_m_ = declare_parameter("neverlost_auto_seal_distance_m", 0.0);
-    nl_weld_ba_            = declare_parameter("neverlost_weld_ba", false);
-    nl_weld_ba_max_iters_  = declare_parameter("neverlost_weld_ba_max_iters", 20);
-    nl_weld_ba_pixel_sigma_= declare_parameter("neverlost_weld_ba_pixel_sigma", 1.0);
-    use_session_graph_     = declare_parameter("use_session_graph", false);
-    correction_slew_frames_= declare_parameter("session_graph_slew_frames", 30.0);
-    // Relocalizer recall knobs (sweepable; defaults match XFeatRelocConfig).
-    reloc_match_ratio_      = declare_parameter("reloc_match_ratio", 0.9);
-    reloc_use_bow_          = declare_parameter("reloc_use_bow", true);
-    reloc_bow_top_k_        = declare_parameter("reloc_bow_top_k", 25);
-    reloc_mutual_check_     = declare_parameter("reloc_mutual_check", false);
-    reloc_min_inlier_ratio_ = declare_parameter("reloc_min_inlier_ratio", 0.0);
-    reloc_min_inliers_      = declare_parameter("reloc_min_inliers", 15);
-    // LighterGlue verification: the viewpoint-robust matcher that replaces brute-force
-    // NN in the verify stage (what closes a hard revisit XFeat-NN can't). Needs
-    // slamko_loop built with -DSLAMKO_LOOP_WITH_TORCH; if the model can't load the
-    // relocalizer silently falls back to brute force. Model ships in share/models/.
-    reloc_use_lightglue_     = declare_parameter("reloc_use_lightglue", false);
-    reloc_lightglue_model_   = declare_parameter("reloc_lightglue_model", std::string());
-    reloc_lg_max_views_      = declare_parameter("reloc_lg_max_views", 4);
-    // VPR candidate breadth — higher = more submaps verified per query (more recall,
-    // more LightGlue compute). With real-KF LightGlue now strong, can push this past
-    // the default 10 to surface submaps that VPR ranks below the top-10 on hard revisits.
-    reloc_vpr_top_n_         = declare_parameter("reloc_vpr_top_n", 10);
-    // P4: cross-session map persistence. prior_map_dir → load a prior Atlas at startup
-    // (seed archive + reloc DB) so the live session localizes into it; map_save_dir →
-    // dump the sealed Atlas at shutdown for the next session.
-    nl_prior_map_dir_ = declare_parameter("prior_map_dir", std::string{});
-    nl_map_save_dir_  = declare_parameter("map_save_dir", std::string{});
-    if (neverlost_enabled_ && !nl_pose_dump_path_.empty())
-      pose_epoch_.open(nl_pose_dump_path_ + ".epoch");  // per-frame "ts submap_id"
 
     using ImgSub = message_filters::Subscriber<sensor_msgs::msg::Image>;
     using CamSub = message_filters::Subscriber<sensor_msgs::msg::CameraInfo>;
     // DETERMINISM (offline replay): RELIABLE + deep queue, NOT sensor_data (best-effort,
-    // depth 5). When the single-threaded executor stalls on heavy reloc/LighterGlue GPU
-    // work, a best-effort sub silently DROPS stereo frames (timing-dependent → ~80 cm
-    // run-to-run trajectory divergence + ~13 lost frames). Reliable makes the player
-    // (reliable pub) back-pressure/throttle instead → lossless, reproducible replay.
+    // depth 5). When the single-threaded executor stalls on heavy GPU work, a best-effort
+    // sub silently DROPS stereo frames (timing-dependent → run-to-run trajectory
+    // divergence + lost frames). Reliable makes the player back-pressure/throttle instead.
     const auto qos_img = rclcpp::QoS(rclcpp::KeepLast(100)).reliable().get_rmw_qos_profile();
     sub_left_  = std::make_shared<ImgSub>(this, "left/image_rect_raw",  qos_img);
     sub_right_ = std::make_shared<ImgSub>(this, "right/image_rect_raw", qos_img);
@@ -252,71 +202,7 @@ class VioNode : public rclcpp::Node {
     tf_pub_   = std::make_shared<tf2_ros::TransformBroadcaster>(*this);
   }
 
-  ~VioNode() override { writeSubmapSidecar(); }
-
  private:
-  // At shutdown, write "<landmark_dump>.submaps": for each never-lost submap, the
-  // landmark-id range it owns + its final (welded) anchor. The offline viz uses this
-  // to place each submap's landmarks in the corrected MAP frame (map = anchor·odom),
-  // making the merge visible instead of the raw drifted odom-frame cloud.
-  void writeSubmapSidecar() {
-    if (!neverlost_enabled_ || !supervisor_) return;
-
-    // Viz sidecar (only if a landmark dump was requested).
-    if (!nl_landmark_dump_path_.empty()) {
-      std::ofstream f(nl_landmark_dump_path_ + ".submaps");
-      if (f.is_open()) {
-        f << "submap_id,id_lo,id_hi,a00,a01,a02,a03,a10,a11,a12,a13,a20,a21,a22,a23\n";
-        auto rows = seal_idhi_;  // sealed submaps, in seal order
-        rows.emplace_back(supervisor_->archive().activeId(), pipeline_->maxLandmarkId());
-        std::uint64_t lo = 1;
-        for (const auto& [sid, hi] : rows) {
-          // okvis-arch-refactor P1: live trajectory is now PURE VIO. The supervisor's
-          // anchor algebra was destroying ~7× of precision and creating boundary jumps
-          // (mag1 max delta 478 cm, vertical 303 cm — pure VIO is 21 cm / 8 cm). The
-          // .submaps sidecar is still written for downstream tooling (relocalizer DB
-          // book-keeping, cross-session ids), but every anchor is forced to IDENTITY so
-          // plot_slamko / check_neverlost don't re-corrupt the smooth VIO trajectory.
-          // The supervisor still ATTEMPTS welds (for cross-session relocalization), but
-          // its outputs never reach the trajectory dump or the TF map→odom.
-          const Eigen::Matrix4d A = Eigen::Matrix4d::Identity();
-          f << sid << ',' << lo << ',' << hi;
-          for (int r = 0; r < 3; ++r)
-            for (int c = 0; c < 4; ++c) f << ',' << std::setprecision(9) << A(r, c);
-          f << '\n';
-          lo = hi + 1;
-        }
-        RCLCPP_INFO(get_logger(), "[neverlost] wrote %zu-submap map sidecar -> %s.submaps",
-                    rows.size(), nl_landmark_dump_path_.c_str());
-      }
-    }
-
-    // P4: persist the Atlas (sealed + the live active) for the next session to load.
-    if (!nl_map_save_dir_.empty()) {
-      std::vector<slamko::SubMap> maps = supervisor_->archive().sealed();
-      maps.push_back(supervisor_->archive().active());
-      if (slamko::saveSubMaps(maps, nl_map_save_dir_))
-        RCLCPP_INFO(get_logger(), "[neverlost] saved %zu-submap Atlas -> %s",
-                    maps.size(), nl_map_save_dir_.c_str());
-      else
-        RCLCPP_WARN(get_logger(), "[neverlost] FAILED to save Atlas to %s",
-                    nl_map_save_dir_.c_str());
-      // Calib + T_BS sidecar — the offline BA tool needs them (the .smap schema
-      // is per-submap and doesn't carry rig calibration). One line, ASCII, stable:
-      //   fx fy cx cy baseline tx ty tz qx qy qz qw
-      // T_BS is cam->body (matches StereoCalib + the GTSAM body_T_cam convention).
-      if (have_K_ && extrinsics_set_) {
-        std::ofstream c(nl_map_save_dir_ + "/calib.txt");
-        const Eigen::Quaterniond q(Eigen::Matrix3d(node_T_BS_.block<3,3>(0,0)));
-        c << std::fixed << std::setprecision(9)
-          << K_.fx << ' ' << K_.fy << ' ' << K_.cx << ' ' << K_.cy << ' '
-          << K_.baseline_m << ' '
-          << node_T_BS_(0,3) << ' ' << node_T_BS_(1,3) << ' ' << node_T_BS_(2,3) << ' '
-          << q.x() << ' ' << q.y() << ' ' << q.z() << ' ' << q.w() << '\n';
-      }
-    }
-  }
-
   using SyncPolicy = message_filters::sync_policies::ApproximateTime<
       sensor_msgs::msg::Image, sensor_msgs::msg::Image,
       sensor_msgs::msg::CameraInfo, sensor_msgs::msg::CameraInfo>;
@@ -328,12 +214,11 @@ class VioNode : public rclcpp::Node {
     s.w = Eigen::Vector3d(m->angular_velocity.x, m->angular_velocity.y, m->angular_velocity.z);
     pipeline_->addImu(s);
     // Advance the IMU frontier and release any buffered frame the IMU now covers.
-    // DETERMINISM: rclcpp's executor does NOT guarantee a fixed imu-vs-stereo
-    // callback order, so processing a frame on arrival would drain an INCOMPLETE
-    // IMU window (late samples are then dropped by drain_imu_window) → divergent
-    // preintegration → ~40-80% run-to-run ATE variance. Gating frame processing on
-    // "IMU has advanced past the frame timestamp" makes the window complete and the
-    // replay reproducible. See slamko_loop/docs memory slamko-vio-replay-nondeterministic.
+    // DETERMINISM: rclcpp's executor does NOT guarantee a fixed imu-vs-stereo callback
+    // order, so processing a frame on arrival would drain an INCOMPLETE IMU window (late
+    // samples then dropped) → divergent preintegration → run-to-run ATE variance. Gating
+    // frame processing on "IMU has advanced past the frame timestamp" makes the window
+    // complete and the replay reproducible. Memory: slamko-vio-replay-nondeterministic.
     if (s.t > latest_imu_ts_) latest_imu_ts_ = s.t;
     drain_pending_frames();
   }
@@ -361,7 +246,6 @@ class VioNode : public rclcpp::Node {
       T(0,3) = p.x; T(1,3) = p.y; T(2,3) = p.z;
       if (!T.isIdentity(1.0e-9)) {
         pipeline_->setExtrinsics(T);
-        node_T_BS_ = T;  // kept for the never-lost supervisor wiring (P2c)
         extrinsics_set_ = true;
         RCLCPP_INFO(get_logger(), "resolved T_BS (cam->imu) from TF");
       }
@@ -384,16 +268,15 @@ class VioNode : public rclcpp::Node {
     try_resolve_extrinsics(msg_l->header.frame_id);
 
     const double ts = (double)msg_l->header.stamp.sec + msg_l->header.stamp.nanosec * 1e-9;
-    // Buffer the frame (hold the msg shared_ptrs so the pixel data stays alive) and
-    // let it be processed by drain_pending_frames() once the IMU stream covers `ts`.
-    // No-IMU mode (use_imu_gate_=false) processes immediately — no window to complete.
+    // Buffer the frame (hold the msg shared_ptrs so the pixel data stays alive) and let
+    // it be processed by drain_pending_frames() once the IMU stream covers `ts`.
     pending_frames_.push_back(PendingFrame{msg_l, msg_r, ts});
     drain_pending_frames();
   }
 
   // Process buffered stereo frames whose timestamp the IMU stream has passed — the
-  // ordering-independent gate that makes IMU preintegration deterministic. The very
-  // last ≤1 frame after the final IMU sample is dropped (negligible for ATE).
+  // ordering-independent gate that makes IMU preintegration deterministic. The very last
+  // ≤1 frame after the final IMU sample is dropped (negligible for ATE).
   void drain_pending_frames() {
     while (!pending_frames_.empty() &&
            (!use_imu_gate_ || pending_frames_.front().ts <= latest_imu_ts_)) {
@@ -402,41 +285,7 @@ class VioNode : public rclcpp::Node {
       const slamko::ImageView left(f.l->data.data(), (int)f.l->width, (int)f.l->height, (int)f.l->step);
       const slamko::ImageView right(f.r->data.data(), (int)f.r->width, (int)f.r->height, (int)f.r->step);
       pipeline_->processStereo(left, right, f.ts, K_);
-      if (use_session_graph_) drainKfsToSessionGraph();
       publish(f.l->header);
-      if (neverlost_enabled_) driveSupervisor(f.ts);
-    }
-  }
-
-  // Refactor P2: drain NEW KFs inserted in this frame into the SessionGraph. The
-  // worker thread runs VI-BA asynchronously; we never block here. SessionGraph is
-  // built lazily on first KF so calibration + extrinsic are resolved by then.
-  void drainKfsToSessionGraph() {
-    if (!have_K_ || !extrinsics_set_) return;
-    if (!session_graph_) {
-      slamko::SessionGraphConfig sc;
-      sc.calib.fx       = K_.fx;
-      sc.calib.fy       = K_.fy;
-      sc.calib.cx       = K_.cx;
-      sc.calib.cy       = K_.cy;
-      sc.calib.baseline = K_.baseline_m;
-      sc.T_BS            = slamko::SE3(node_T_BS_);
-      session_graph_     = std::make_unique<slamko::SessionGraph>(sc);
-      RCLCPP_INFO(get_logger(), "[session_graph] up (relin_window=%d, optimize_every=%d)",
-                  sc.relin_window_size, sc.optimize_every_n_kfs);
-    }
-    const std::size_t n = pipeline_->keyframeCount();
-    for (; last_session_kf_idx_ < n; ++last_session_kf_idx_) {
-      const auto& ek = pipeline_->keyframe(last_session_kf_idx_);
-      slamko::SessionKeyframe skf;
-      skf.id            = ek.kf.id;
-      skf.timestamp     = ek.kf.timestamp;
-      skf.T_WB          = ek.kf.T_WB;
-      skf.velocity_w    = ek.velocity_w;
-      skf.bias          = ek.bias;
-      skf.obs           = ek.obs;
-      skf.imu_since_prev = ek.obs.imu_since_prev;
-      session_graph_->insertKeyframe(std::move(skf));
     }
   }
 
@@ -458,227 +307,19 @@ class VioNode : public rclcpp::Node {
     return out;
   }
 
-  // P2c: feed the live VIO outputs to the never-lost supervisor each frame and log
-  // its recovery actions. Built lazily once K + T_BS are known.
-  void driveSupervisor(double ts) {
-    if (!have_K_ || !extrinsics_set_) return;
-    if (!supervisor_) {
-      slamko::XFeatRelocConfig rc;
-      rc.fx = K_.fx; rc.fy = K_.fy; rc.cx = K_.cx; rc.cy = K_.cy;
-      rc.body_T_cam = slamko::SE3(node_T_BS_);   // T_BS (cam→body)
-      // Relocalization-recall tuning knobs (exposed as params for sweeping).
-      rc.match_ratio      = (float)reloc_match_ratio_;
-      rc.use_bow          = reloc_use_bow_;
-      rc.bow_top_k        = reloc_bow_top_k_;
-      rc.mutual_check     = reloc_mutual_check_;
-      rc.min_inlier_ratio = reloc_min_inlier_ratio_;
-      rc.min_inliers      = reloc_min_inliers_;
-      // LighterGlue verifier (loads lighterglue.pt from share/models/ by default).
-      rc.use_lightglue    = reloc_use_lightglue_;
-      rc.lg_max_views     = reloc_lg_max_views_;
-      rc.vpr_top_n        = reloc_vpr_top_n_;
-      if (reloc_use_lightglue_) {
-        rc.lightglue_model_path = reloc_lightglue_model_.empty()
-            ? ament_index_cpp::get_package_share_directory("slamko_vio") +
-                  "/models/lighterglue.pt"
-            : reloc_lightglue_model_;
-        RCLCPP_INFO(get_logger(), "[neverlost] LighterGlue verify ON (model=%s, views=%d)",
-                    rc.lightglue_model_path.c_str(), reloc_lg_max_views_);
-      }
-      reloc_ = std::make_unique<slamko::XFeatRelocalizer>(rc);
-      slamko::SupervisorConfig sc;
-      sc.use_pose_graph       = nl_use_pose_graph_;
-      sc.weld_once_per_target = nl_weld_once_;
-      sc.continuous_reloc     = nl_continuous_reloc_;
-      sc.auto_seal_distance_m = nl_auto_seal_dist_m_;
-      // C.live V0: BA on weld over the active submap (intra-submap, refines KFs +
-      // landmarks using visual + IMU factors when SMP5 windows are present). The
-      // composition root injects the concrete GTSAM-backed smoother; slamko_loop
-      // holds only the abstract slamko::GlobalSmoother* (Hard Rule #2 clean). The
-      // supervisor silently skips BA when this is null — back-compat preserved.
-      if (nl_weld_ba_) {
-        global_smoother_ = std::make_unique<slamko_fusion::GtsamGlobalSmoother>();
-        sc.global_smoother = global_smoother_.get();
-        // slamko_vio::StereoIntrinsics → slamko::StereoCalib (float→double, baseline_m
-        // → baseline). The two types coexist for legacy reasons (the audit flagged
-        // it); for now bridge here.
-        sc.ba_calib.fx       = K_.fx;
-        sc.ba_calib.fy       = K_.fy;
-        sc.ba_calib.cx       = K_.cx;
-        sc.ba_calib.cy       = K_.cy;
-        sc.ba_calib.baseline = K_.baseline_m;
-        sc.ba_T_BS  = slamko::SE3(node_T_BS_);
-        sc.ba_pixel_sigma = nl_weld_ba_pixel_sigma_;
-        sc.ba_max_iters   = nl_weld_ba_max_iters_;
-        RCLCPP_INFO(get_logger(),
-                    "[neverlost] BA-on-weld ON (max_iters=%d pixel_sigma=%.2f)",
-                    nl_weld_ba_max_iters_, nl_weld_ba_pixel_sigma_);
-      }
-      supervisor_ = std::make_unique<slamko::NeverLostSupervisor>(sc, reloc_.get());
-      RCLCPP_INFO(get_logger(),
-                  "[neverlost] supervisor + XFeat relocalizer up (pose_graph=%d weld_once=%d)",
-                  (int)nl_use_pose_graph_, (int)nl_weld_once_);
-      // Cross-session: load a prior Atlas → seed the archive (frozen sealed submaps)
-      // and the relocalizer DB, so the live session welds into the prior map on
-      // revisit. Live submap ids continue PAST the priors (set by seedPriorMap).
-      if (!nl_prior_map_dir_.empty()) {
-        std::vector<slamko::SubMap> priors;
-        if (slamko::loadSubMaps(priors, nl_prior_map_dir_) && !priors.empty()) {
-          for (const auto& p : priors) reloc_->addSubMap(p);
-          supervisor_->seedPriorMap(priors);
-          nl_first_live_id_ = supervisor_->archive().activeId();  // priors are < this
-          RCLCPP_WARN(get_logger(),
-                      "[neverlost] loaded %zu prior submaps from %s (live ids start at %lu)",
-                      priors.size(), nl_prior_map_dir_.c_str(),
-                      (unsigned long)nl_first_live_id_);
-        } else {
-          RCLCPP_WARN(get_logger(), "[neverlost] prior_map_dir set but no map loaded from %s",
-                      nl_prior_map_dir_.c_str());
-        }
-      }
-    }
-
-    // odom body pose: T_WB = T_WC · T_BS⁻¹ (worldPose is camera-in-world).
-    slamko::EstimationFrame ef;
-    ef.timestamp = ts;
-    ef.T_WB = slamko::SE3(Eigen::Matrix4d(
-        pipeline_->worldPose().cast<double>() * node_T_BS_.inverse()));
-
-    // Refresh the active submap content occasionally (buildSubMap is O(landmarks)).
-    if (++nl_frame_ % 30 == 0) supervisor_->submitActiveSubMap(pipeline_->buildSubMap());
-
-    // Query features from the current tracks (those carrying an XFeat descriptor).
-    slamko::Features q;
-    const auto& tr = pipeline_->tracks();
-    int nd = 0;
-    for (const auto& t : tr) if (t.has_desc) ++nd;
-    if (nd > 0) {
-      q.keypoints.resize(nd, 3);
-      q.descriptors.resize(nd, 64);
-      int r = 0;
-      for (const auto& t : tr) {
-        if (!t.has_desc) continue;
-        q.keypoints(r, 0) = t.left_curr_x; q.keypoints(r, 1) = t.left_curr_y; q.keypoints(r, 2) = 1.f;
-        for (int d = 0; d < 64; ++d) q.descriptors(r, d) = t.desc[d];
-        ++r;
-      }
-      // VPR global descriptor for coarse candidate retrieval (XFeat local descriptors
-      // can't recognize a revisited place — this is what closes loops).
-      q.global_descriptor = pipeline_->currentGlobalDescriptor();
-      supervisor_->submitQueryFeatures(q);
-    }
-
-    const slamko::HealthSignal h = pipeline_->health();
-    const slamko::RecoveryAction a = supervisor_->step(h, ef, ts);
-
-    if (a.sealed) {
-      // Register the just-sealed submap so the relocalizer can match against it.
-      const auto& sealed = supervisor_->archive().sealed();
-      if (!sealed.empty()) reloc_->addSubMap(sealed.back());
-      // Landmark-id seam: everything created so far belongs to the just-sealed
-      // submap (ids are monotonic) — lets the offline map reconstruction place
-      // each landmark in the corrected frame via its submap's welded anchor.
-      seal_idhi_.emplace_back(a.sealed_id, pipeline_->maxLandmarkId());
-      RCLCPP_WARN(get_logger(),
-                  "[neverlost] SEAL submap %lu (%zu landmarks) + BRANCH %lu (odom_stale_gap=%.2fs)",
-                  (unsigned long)a.sealed_id,
-                  sealed.empty() ? 0 : sealed.back().landmarks.size(),
-                  (unsigned long)a.branched_id, h.odom_stale_gap_s);
-    }
-    if (a.branched) {
-      // Start a fresh VIO submap epoch so the new branch's buildSubMap() returns only
-      // its OWN landmarks — sealed submaps stay disjoint (no cumulative duplication).
-      pipeline_->beginSubmap();
-    }
-    if (a.welded) {
-      const Eigen::Vector3d t = supervisor_->mapToOdom().translation();
-      const bool cross_session = a.welded_to_id < nl_first_live_id_;
-      RCLCPP_WARN(get_logger(),
-                  "[neverlost] WELD to submap %lu%s (inliers-gated); map→odom t=[%.3f %.3f %.3f]",
-                  (unsigned long)a.welded_to_id, cross_session ? " [CROSS-SESSION/prior map]" : "",
-                  t.x(), t.y(), t.z());
-      // V2.2: feed the verified loop closure into the SessionGraph so it can run
-      // VI-BA with the loop constraint and refine biases globally. The supervisor's
-      // consensus (a.applied_T_active_sealed) encodes the active→sealed body-frame
-      // transform; the SessionGraph loop is between sealed.first_kf and the most
-      // recently inserted KF, with measurement Z = T_VIO_from^-1 · consensus · T_VIO_to.
-      if (session_graph_) {
-        const slamko::SubMap* s = supervisor_->archive().find(a.welded_to_id);
-        if (s && !s->keyframes.empty() && pipeline_->keyframeCount() > 0) {
-          const std::uint64_t from_id = s->keyframes.front().id;
-          const std::uint64_t to_id   = pipeline_->keyframe(pipeline_->keyframeCount() - 1).kf.id;
-          const auto* from_ek = pipeline_->keyframeById(from_id);
-          const auto* to_ek   = pipeline_->keyframeById(to_id);
-          if (from_ek && to_ek) {
-            slamko::SessionLoopClosure lc;
-            lc.kf_from   = from_id;
-            lc.kf_to     = to_id;
-            const Eigen::Matrix4d Z =
-                from_ek->kf.T_WB.matrix().inverse() *
-                a.applied_T_active_sealed.matrix() *
-                to_ek->kf.T_WB.matrix();
-            lc.T_from_to = slamko::SE3(Z);
-            lc.sigma_t   = 0.1;   // m
-            lc.sigma_r   = 0.05;  // rad
-            session_graph_->insertLoopClosure(std::move(lc));
-            RCLCPP_INFO(get_logger(),
-                        "[session_graph] loop closure inserted: kf %lu → %lu",
-                        (unsigned long)from_id, (unsigned long)to_id);
-          }
-        }
-      }
-    }
-    if (supervisor_->state() != nl_last_state_) {
-      RCLCPP_INFO(get_logger(), "[neverlost] state %d → %d",
-                  (int)nl_last_state_, (int)supervisor_->state());
-      nl_last_state_ = supervisor_->state();
-    }
-  }
-
   void publish(const std_msgs::msg::Header& hdr) {
-    Eigen::Matrix4f T = pipeline_->worldPose();
-    // C V2: slewed SessionGraph correction. The async BA publishes a new SE3
-    // correction at each optimization pass (~every 5 KFs or on loop closure). To
-    // avoid the V1.0 frame-to-frame jumps (max 35 m measured), we linearly blend
-    // the previous correction toward the new one over `correction_slew_frames`
-    // frames after each seq advance — both rotation (SLERP via unit quaternion)
-    // and translation. Pure VIO output when no correction yet (cold start).
-    if (session_graph_ && session_graph_->haveCorrection()) {
-      const std::uint64_t seq = session_graph_->correctionSeq();
-      if (seq != last_correction_seq_) {
-        prev_correction_   = effective_correction_;
-        target_correction_ = session_graph_->latestCorrection();
-        slew_alpha_        = 0.0;
-        last_correction_seq_ = seq;
-      }
-      slew_alpha_ = std::min(1.0, slew_alpha_ + 1.0 / correction_slew_frames_);
-      // SE3 interpolate prev → target: SLERP on rotation, lerp on translation.
-      const Eigen::Quaterniond qp(prev_correction_.so3().unit_quaternion());
-      const Eigen::Quaterniond qt(target_correction_.so3().unit_quaternion());
-      const Eigen::Quaterniond qe = qp.slerp(slew_alpha_, qt);
-      const Eigen::Vector3d tp = prev_correction_.translation();
-      const Eigen::Vector3d tt = target_correction_.translation();
-      const Eigen::Vector3d te = tp + slew_alpha_ * (tt - tp);
-      effective_correction_ = slamko::SE3(slamko::SO3(qe), te);
-      T = (effective_correction_.matrix().cast<float>() * T);
-    }
+    const Eigen::Matrix4f T = pipeline_->worldPose();
     const Eigen::Vector3f t = T.block<3,1>(0,3);
     const Eigen::Quaternionf q(Eigen::Matrix3f(T.block<3,3>(0,0)));
 
-    // Offline TUM trajectory dump (in-process, bypasses rosbag2).
+    // Offline TUM trajectory dump (in-process, bypasses rosbag2 — the recorder path is
+    // flaky on this box). Empty path = off.
     if (pose_dump_.is_open()) {
       const double ts = (double)hdr.stamp.sec + hdr.stamp.nanosec * 1e-9;
       pose_dump_ << std::fixed << std::setprecision(9) << ts << ' '
                  << t.x() << ' ' << t.y() << ' ' << t.z() << ' '
                  << q.x() << ' ' << q.y() << ' ' << q.z() << ' ' << q.w() << '\n';
       pose_dump_.flush();  // complete lines stay durable even if the run is killed
-      // Lockstep epoch line (same frames as the TUM dump): which submap is active
-      // now, so this pose can later be moved into the corrected map frame.
-      if (pose_epoch_.is_open()) {
-        const std::uint64_t sid = supervisor_ ? supervisor_->archive().activeId() : 0;
-        pose_epoch_ << std::fixed << std::setprecision(9) << ts << ' ' << sid << '\n';
-        pose_epoch_.flush();
-      }
     }
 
     nav_msgs::msg::Odometry odom;
@@ -724,55 +365,13 @@ class VioNode : public rclcpp::Node {
   std::unique_ptr<slamko_vio::VioPipeline> pipeline_;
   std::ofstream pose_dump_;  // optional TUM trajectory export
 
-  // P2c never-lost supervisor (node = composition root).
-  bool neverlost_enabled_ = false;
-  bool nl_use_pose_graph_ = false;
-  bool nl_weld_once_      = true;
-  bool nl_continuous_reloc_ = false;
-  double nl_auto_seal_dist_m_ = 0.0;
-  // C.live V0: BA-on-weld
-  bool   nl_weld_ba_ = false;
-  int    nl_weld_ba_max_iters_   = 20;
-  double nl_weld_ba_pixel_sigma_ = 1.0;
-  std::unique_ptr<slamko::GlobalSmoother> global_smoother_;
-  // Refactor P2: SessionGraph (async full-graph thread). Consumes KFs from the
-  // pipeline as they're inserted, runs VI-BA over the recent window in the
-  // background, publishes the SE3 correction applied SMOOTHLY to the live
-  // worldPose (no retroactive jumps to past frames in run.tum).
-  bool   use_session_graph_ = false;
-  std::unique_ptr<slamko::SessionGraph> session_graph_;
-  std::size_t last_session_kf_idx_ = 0;
-  // V2 slewed-correction state (live worldPose composition).
-  double      correction_slew_frames_ = 30.0;  // ~0.6 s at 50 fps
-  std::uint64_t last_correction_seq_ = 0;
-  slamko::SE3 prev_correction_;
-  slamko::SE3 target_correction_;
-  slamko::SE3 effective_correction_;
-  double      slew_alpha_ = 1.0;  // 1.0 = fully transitioned to target
-  double reloc_match_ratio_ = 0.9, reloc_min_inlier_ratio_ = 0.0;
-  bool reloc_use_bow_ = true, reloc_mutual_check_ = false;
-  int reloc_bow_top_k_ = 25, reloc_min_inliers_ = 15;
-  bool reloc_use_lightglue_ = false;
-  std::string reloc_lightglue_model_;
-  int reloc_lg_max_views_ = 4;
-  int reloc_vpr_top_n_     = 10;
-  std::string nl_landmark_dump_path_, nl_pose_dump_path_;
-  std::string nl_prior_map_dir_, nl_map_save_dir_;  // P4 cross-session map I/O
-  std::uint64_t nl_first_live_id_ = 0;              // submap ids < this are prior-session
-  std::ofstream pose_epoch_;  // per-frame "ts active_submap_id" (corrected-map viz)
-  std::vector<std::pair<std::uint64_t, std::uint64_t>> seal_idhi_;  // (submap_id, max_lm_id@seal)
-  Eigen::Matrix4d node_T_BS_ = Eigen::Matrix4d::Identity();
-  std::unique_ptr<slamko::XFeatRelocalizer> reloc_;
-  std::unique_ptr<slamko::NeverLostSupervisor> supervisor_;
-  std::uint64_t nl_frame_ = 0;
-  slamko::SupervisorState nl_last_state_ = slamko::SupervisorState::OK;
   std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> sub_left_, sub_right_;
   std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::CameraInfo>> sub_lcam_, sub_rcam_;
   std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
 
-  // Deterministic-replay frame gating (see on_imu): buffer stereo frames, release
-  // them only once the IMU stream has advanced past their timestamp.
+  // Deterministic-replay frame gating (see on_imu): buffer stereo frames, release them
+  // only once the IMU stream has advanced past their timestamp.
   struct PendingFrame {
     sensor_msgs::msg::Image::ConstSharedPtr l, r;
     double ts;

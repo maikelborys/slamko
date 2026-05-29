@@ -2,6 +2,29 @@
 
 Living, dated progress + numbers log. Plan: [`PLAN_P2_loop.md`](PLAN_P2_loop.md).
 
+## 2026-05-29 — Deleted the dead anchor-era machinery; shrank to the relocalizer front-end (dormant)
+
+The okvis-arch-refactor forced the live trajectory to PURE VIO (anchors = identity), so the
+never-lost SUPERVISOR / anchor layer / homegrown pose-graph never reached `/tf`, `/odom`, or
+the pose dump — dead on the live path (and documented as a 7× precision destroyer + the 478 cm
+boundary-jump generator). The async SessionGraph (slamko_fusion) likewise injected 10–122 cm
+jitter without loops and its loop-use path was inert (recall is the real bottleneck — see the
+2026-05-28 entries). **Deleted** (≈2.5k LOC): `never_lost_supervisor`, `anchor_gate`,
+`pose_graph`, `submap_archive`, `supervisor_state` + tests (`test_supervisor`, `test_stress`,
+`test_pose_graph`); and `slamko_fusion::SessionGraph`. `vio_node` rewritten to the clean
+minimal path (params → Tier-2 estimator → publish + pose dump); its `slamko_loop` dependency
+dropped.
+
+**KEPT, DORMANT (the loop-closure front-end for Phase C):** `XFeatRelocalizer` + `bow` +
+`lightglue_matcher` (+ tests `test_relocalizer`, `test_bow`, `test_lightglue`). Still compiled,
+not wired into the node. The PnP + LightGlue verifier was proven perfect (100% positive
+control); only VPR RETRIEVAL fails — Phase C re-wires this stack with a learned VPR head
+(SALAD/MixVPR/NetVLAD) for recall + a thin TrackingMonitor for recovery.
+
+**Validation:** full gtest suite green (core 29 + fusion 6 + loop 12 + vio 17, 0 failures);
+production Ceres MH_01 unchanged after the deletion (Sim3-ATE 6.9 cm, 3419 poses). `main`
+untouched. See `slamko_fusion/docs/STATUS.md` (2026-05-29) for the estimator decision.
+
 ## 2026-05-28 (night) — Phase V.1: per-KF VPR granularity (SMP4)
 
 **Shipped:** `XFeatRelocalizer` now ranks VPR candidates by **per-keyframe** cosine, not per-submap.
