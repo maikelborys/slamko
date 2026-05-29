@@ -21,11 +21,28 @@
 namespace slamko_fusion {
 
 struct GtsamSmootherConfig {
-  double lag                  = 2.0;    // fixed-lag window (seconds) → marginalize older
+  // Fixed-lag horizon in KEYFRAMES, not wall-clock seconds. The marginalization
+  // clock is the monotonic KF index (see insertKeyframe stamping), so a slow
+  // segment (stairs) keeps the same spatial baseline of keyframes instead of
+  // ejecting velocity/bias after 2 s of near-zero motion. This is the OKVIS
+  // keyframe-window discipline: on slow low-excitation motion the bias stays
+  // observable across the window rather than being marginalized before stereo
+  // parallax can constrain it (the "stairs go horizontal" drift). A wall-clock
+  // lag coupled bias eviction to speed, which is exactly the failure mode.
+  int    window_kfs           = 15;     // fixed-lag window (keyframes) → marginalize older
   double pixel_sigma          = 1.0;    // stereo reprojection noise (px)
   double prior_pose_sigma     = 0.1;    // first-KF gauge anchor (m / rad)
   double prior_vel_sigma      = 0.1;    // m/s
   double prior_bias_sigma     = 1.0e-2;
+  // Tracking-loss robustness. On aggressive sequences (mag1) tracking is lost
+  // for a few frames; a KF inserted then can have NO stereo observations AND a
+  // broken IMU chain, leaving its pose X(i) with no connecting factor → GTSAM
+  // elimination throws "Leftover keys" / map::at and the smoother dies for the
+  // rest of the run. A weak prior on such an orphaned pose (loose sigma — it's a
+  // dead-reckoned pose, low confidence) keeps the variable eliminable without
+  // distorting the solution. This is what makes gtsam survivable as the sole
+  // estimator on real sequences.
+  double orphan_prior_sigma   = 1.0;    // m / rad — weak anchor for a no-factor KF
   // Weak prior on each landmark at first sight (m). Regularizes single-
   // observation / low-parallax points so the Schur marginalization stays
   // non-singular (LocalBA instead prunes <2-obs landmarks). Soft enough that

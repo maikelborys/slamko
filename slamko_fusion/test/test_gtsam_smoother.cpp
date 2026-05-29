@@ -58,10 +58,10 @@ bool projectStereo(const SE3& T_W_cam, const Eigen::Vector3d& lm,
 // Small deterministic perturbation so the optimizer has to actually converge.
 double jitter(int seed) { return 0.02 * std::sin(seed * 12.9898); }
 
-slamko_fusion::GtsamLocalSmoother makeVisualSmoother(double lag) {
+slamko_fusion::GtsamLocalSmoother makeVisualSmoother(int window_kfs) {
   slamko_fusion::GtsamSmootherConfig cfg;
   cfg.use_imu = false;       // visual-only synthetic test
-  cfg.lag = lag;
+  cfg.window_kfs = window_kfs;  // fixed-lag horizon is now in KEYFRAMES
   cfg.pixel_sigma = 1.0;
   cfg.prior_pose_sigma = 0.05;
   return slamko_fusion::GtsamLocalSmoother(cfg);
@@ -95,7 +95,7 @@ void runKeyframe(slamko_fusion::GtsamLocalSmoother& sm, int i,
 }  // namespace
 
 TEST(GtsamSmoother, RecoversStereoTrajectory) {
-  auto sm = makeVisualSmoother(/*lag=*/2.0);
+  auto sm = makeVisualSmoother(/*window_kfs=*/20);
   const auto lms = makeLandmarks();
   const int N = 12;
   for (int i = 0; i < N; ++i) runKeyframe(sm, i, lms);
@@ -119,14 +119,14 @@ TEST(GtsamSmoother, RecoversStereoTrajectory) {
 // regime GTSAM's smoothers are built for), so marginalization-under-load is
 // validated end-to-end on EuRoC in P1c rather than in this visual-only unit test.
 TEST(GtsamSmoother, DISABLED_MarginalizationBoundsTheWindow) {
-  auto sm = makeVisualSmoother(/*lag=*/0.5);
+  auto sm = makeVisualSmoother(/*window_kfs=*/5);
   const auto lms = makeLandmarks();
   for (int i = 0; i < 25; ++i) runKeyframe(sm, i, lms);
   EXPECT_LT(sm.numVariables(), 40u);
 }
 
 TEST(GtsamSmoother, FirstKeyframeIsAnchored) {
-  auto sm = makeVisualSmoother(/*lag=*/2.0);
+  auto sm = makeVisualSmoother(/*window_kfs=*/20);
   const auto lms = makeLandmarks();
   runKeyframe(sm, 0, lms);
   EXPECT_LT((sm.latestPose().translation() - truePose(0).translation()).norm(), 0.05);

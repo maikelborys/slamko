@@ -83,7 +83,15 @@ struct GtsamLocalSmoother::Impl {
   // visual-only init KFs, exactly as the ceres baseline does.
   void reset() {
     gtsam::LevenbergMarquardtParams lm;
-    smoother = std::make_unique<gtsam::BatchFixedLagSmoother>(cfg.lag, lm);
+    // Lag is in KEYFRAMES: keys are stamped with the monotonic KF index (not t),
+    // so GTSAM marginalizes a key once (latest_kf_index - its_index) > window_kfs.
+    // The +0.5 keeps the marginalization boundary OFF the integer stamps so it
+    // never lands exactly on a populated timestamp (which, with integer KF stamps,
+    // races our landmark keep-alive bookkeeping → a stereo factor on a just-
+    // marginalized landmark → map::at). Our forget loop uses `> window_kfs`, so
+    // both agree: age 15 kept, age 16 dropped, the 15.5 boundary hits no stamp.
+    smoother =
+        std::make_unique<gtsam::BatchFixedLagSmoother>((double)cfg.window_kfs + 0.5, lm);
     kf = 0;
     first = true;
     imu_started = false;
@@ -98,6 +106,34 @@ struct GtsamLocalSmoother::Impl {
     lm_active.clear();
     lm_last_seen.clear();
     lm_obs_count.clear();
+  }
+
+  // Disposable-graph recovery (MASTER_PLAN principle #3, GLIM/VILENS): the last
+  // solve hit an indeterminate/degenerate system — a tracking-loss frame left a
+  // pose rank-deficient — and the BatchFixedLagSmoother's internal Bayes tree is
+  // now corrupted (every subsequent calculateEstimate() re-throws on the same
+  // stuck variable, so the smoother would be dead for the rest of the run).
+  // DISCARD the corrupted graph and re-anchor a FRESH window at the last GOOD
+  // estimate (cur_pose/cur_vel/cur_bias); the fast odometry (pipeline PnP) keeps
+  // producing poses meanwhile, and the window re-accumulates once tracking
+  // resumes. This is the "global graph is disposable; catch-damp-rebuild, never
+  // crash" contract the framework is built on — NOT a silent give-up.
+  void softRebuild() {
+    gtsam::LevenbergMarquardtParams lm;
+    smoother =
+        std::make_unique<gtsam::BatchFixedLagSmoother>((double)cfg.window_kfs + 0.5, lm);
+    pending_graph.resize(0);
+    pending_values.clear();
+    pending_stamps.clear();
+    lm_active.clear();
+    lm_last_seen.clear();
+    lm_obs_count.clear();
+    // Re-anchor the next KF: for IMU mode, first=false + imu_started=false routes
+    // it through the re-anchor branch which seeds V/B from the recovered
+    // cur_vel/cur_bias (better than the pipeline's dead-reckoned seed). Visual-
+    // only mode re-anchors as a clean cold start (first=true). cur_* are KEPT.
+    first = !cfg.use_imu;
+    imu_started = false;
   }
 };
 
@@ -140,19 +176,23 @@ void GtsamLocalSmoother::insertKeyframe(
     const std::vector<slamko::StereoObservation>& obs) {
   auto& I = *impl_;
   const std::uint64_t i = I.kf;
+  // Marginalization clock = KF index, NOT wall-clock t (see window_kfs). The IMU
+  // preintegration below still uses real dt from imu[k].timestamp — only the
+  // fixed-lag horizon is keyframe-based.
+  const double stamp = (double)i;
   const gtsam::Pose3 pose0 = toPose3(T_WB_init);
   const gtsam::imuBias::ConstantBias b0(bias_init.accel, bias_init.gyro);  // (acc, gyro)
 
   // Pose node every KF.
   I.pending_values.insert(X(i), pose0);
-  I.pending_stamps[X(i)] = t;
+  I.pending_stamps[X(i)] = stamp;
 
   const bool imu_ready = I.cfg.use_imu && I.imu_params && imu.size() >= 2;
   auto insertVB = [&] {
     I.pending_values.insert(V(i), gtsam::Vector3(velocity_init));
     I.pending_values.insert(B(i), b0);
-    I.pending_stamps[V(i)] = t;
-    I.pending_stamps[B(i)] = t;
+    I.pending_stamps[V(i)] = stamp;
+    I.pending_stamps[B(i)] = stamp;
   };
 
   // Velocity/bias nodes exist ONLY inside the IMU factor chain — NEVER for a
@@ -163,16 +203,35 @@ void GtsamLocalSmoother::insertKeyframe(
   // ConstantBias" failure). So: the first KF (or the first IMU-ready KF after a
   // visual-only run) ANCHORS the chain with full priors; subsequent IMU KFs
   // chain via CombinedImuFactor; visual-only KFs are pose + stereo only.
+  // Track whether X(i) ends up connected to SOMETHING (prior, IMU factor, or a
+  // stereo factor). A KF inserted during total tracking loss (no stereo) with a
+  // broken IMU chain would otherwise be an orphan variable → GTSAM elimination
+  // throws and the smoother dies for the rest of the run. See the orphan guard
+  // after the observation loop.
+  bool pose_anchored = false;
   if (I.first || (imu_ready && !I.imu_started)) {
     I.pending_graph.addPrior(
         X(i), pose0, gtsam::noiseModel::Isotropic::Sigma(6, I.cfg.prior_pose_sigma));
+    pose_anchored = true;
     if (I.cfg.use_imu) {
-      insertVB();
+      // BIAS CARRY-FORWARD. A re-anchor (a visual-only KF broke the IMU chain —
+      // common on slow stairs with weak tracking) must NOT reset velocity/bias to
+      // the pipeline's zero-accel-bias seed: that throws away a converged bias and
+      // lets the fresh one absorb gravity-direction error → vertical/yaw creep.
+      // Seed the re-anchor from the last optimized estimate (cur_vel/cur_bias),
+      // tightly prior'd; only a true cold start (I.first) uses the pipeline seed.
+      const bool reanchor = !I.first;  // in this branch, !first ⇒ imu_ready re-anchor
+      const gtsam::Vector3 v_seed =
+          reanchor ? I.cur_vel : gtsam::Vector3(velocity_init);
+      const gtsam::imuBias::ConstantBias b_seed = reanchor ? I.cur_bias : b0;
+      I.pending_values.insert(V(i), v_seed);
+      I.pending_values.insert(B(i), b_seed);
+      I.pending_stamps[V(i)] = stamp;
+      I.pending_stamps[B(i)] = stamp;
       I.pending_graph.addPrior(
-          V(i), gtsam::Vector3(velocity_init),
-          gtsam::noiseModel::Isotropic::Sigma(3, I.cfg.prior_vel_sigma));
+          V(i), v_seed, gtsam::noiseModel::Isotropic::Sigma(3, I.cfg.prior_vel_sigma));
       I.pending_graph.addPrior(
-          B(i), b0, gtsam::noiseModel::Isotropic::Sigma(6, I.cfg.prior_bias_sigma));
+          B(i), b_seed, gtsam::noiseModel::Isotropic::Sigma(6, I.cfg.prior_bias_sigma));
     }
     if (imu_ready) I.imu_started = true;
   } else if (imu_ready) {
@@ -187,12 +246,14 @@ void GtsamLocalSmoother::insertKeyframe(
     // a bias ("retrieve vN as ConstantBias"); only fires once IMU is exercised.
     I.pending_graph.add(gtsam::CombinedImuFactor(
         X(i - 1), V(i - 1), X(i), V(i), B(i - 1), B(i), pim));
+    pose_anchored = true;  // IMU factor connects X(i) to the chain
   } else {
     // Visual-only KF (pre-IMU, or a mid-stream IMU dropout): pose + stereo only.
     // Break the chain so the next IMU-ready KF re-anchors with fresh priors.
     I.imu_started = false;
   }
 
+  int n_stereo = 0;  // stereo factors actually attached to X(i) this insert
   for (const auto& o : obs) {
     if (!o.hasRight() || !I.stereo_cal) continue;  // P1: stereo factors only
     const std::uint64_t id = o.landmark_id;
@@ -212,11 +273,23 @@ void GtsamLocalSmoother::insertKeyframe(
           gtsam::noiseModel::Isotropic::Sigma(3, I.cfg.landmark_prior_sigma));
       I.lm_active.insert(id);
     }
-    I.pending_stamps[L(id)] = t;  // keep alive while observed
-    I.lm_last_seen[id] = t;
+    I.pending_stamps[L(id)] = stamp;  // keep alive while observed (KF-index clock)
+    I.lm_last_seen[id] = stamp;
     I.pending_graph.add(gtsam::GenericStereoFactor<gtsam::Pose3, gtsam::Point3>(
         gtsam::StereoPoint2(o.uv_left.x(), o.uv_right.x(), o.uv_left.y()),
         I.stereo_noise, X(i), L(id), I.stereo_cal, I.body_T_cam));
+    ++n_stereo;
+  }
+
+  // TRACKING-LOSS ROBUSTNESS GUARD. If X(i) got no prior, no IMU factor, and no
+  // stereo factor (total tracking loss + broken IMU chain), it is an orphan
+  // variable: GTSAM's elimination throws "Leftover keys" / map::at and the
+  // smoother never recovers. Anchor it weakly to its dead-reckoned init pose so
+  // it stays eliminable. Loose sigma → negligible influence once tracking
+  // resumes and real factors reconnect the window.
+  if (!pose_anchored && n_stereo == 0) {
+    I.pending_graph.addPrior(
+        X(i), pose0, gtsam::noiseModel::Isotropic::Sigma(6, I.cfg.orphan_prior_sigma));
   }
 
   ++I.kf;
@@ -230,10 +303,11 @@ bool GtsamLocalSmoother::optimize() {
     I.smoother->update(I.pending_graph, I.pending_values, I.pending_stamps);
     I.estimate = I.smoother->calculateEstimate();
   } catch (const std::exception& e) {
-    std::fprintf(stderr, "[slamko_fusion] smoother update failed: %s\n", e.what());
-    I.pending_graph.resize(0);
-    I.pending_values.clear();
-    I.pending_stamps.clear();
+    std::fprintf(stderr,
+                 "[slamko_fusion] smoother update failed (%s) — disposable-graph "
+                 "rebuild from last-good nav state\n",
+                 e.what());
+    I.softRebuild();  // recover, don't die: rebuild the window at the last good estimate
     return false;
   }
   I.pending_graph.resize(0);
@@ -248,8 +322,9 @@ bool GtsamLocalSmoother::optimize() {
       I.cur_bias = I.estimate.at<gtsam::imuBias::ConstantBias>(B(last));
   }
   // Forget landmarks the smoother has marginalized so a re-sight re-inserts them.
+  // Same KF-index clock as the fixed-lag horizon (last = newest KF index).
   for (auto it = I.lm_last_seen.begin(); it != I.lm_last_seen.end();) {
-    if (I.latest_t - it->second > I.cfg.lag) {
+    if ((double)last - it->second > (double)I.cfg.window_kfs) {
       I.lm_active.erase(it->first);
       I.lm_obs_count.erase(it->first);  // a re-sight starts its count fresh
       it = I.lm_last_seen.erase(it);

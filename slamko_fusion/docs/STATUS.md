@@ -2,6 +2,44 @@
 
 Living, dated progress + numbers log. Plan: [`PLAN_P1_fusion.md`](PLAN_P1_fusion.md).
 
+## 2026-05-29 — GtsamLocalSmoother HARDENED (catch-damp-rebuild) + KF-count window + bias carry-forward; gravity-init gate. gtsam confirmed SECONDARY (Ceres is the estimator)
+
+**Context:** validating the "single estimator" refactor end-to-end on TUM-VI magistrale1
+revealed two PRE-EXISTING gtsam bugs (running it, not the static audit, found them):
+1. **Died on tracking loss.** A KF inserted during tracking loss (no stereo + broken IMU
+   chain) → orphan pose → GTSAM elimination throws `Leftover keys`/`map::at` and the
+   smoother is dead for the rest of the run (mag1: 893+ fails, pose exploded to ~700 m).
+2. **Inaccurate full-trajectory** (revealed once it stopped dying): see numbers below.
+
+**Fixes shipped (gtsam_local_smoother.{hpp,cpp}):**
+- **Orphan-pose guard** — every inserted pose gets ≥1 factor (weak `orphan_prior_sigma`
+  prior if no stereo + no IMU factor), so it stays eliminable.
+- **`softRebuild()` catch-damp-rebuild** in `optimize()` — on indeterminate system, DISCARD
+  the corrupted BatchFixedLagSmoother and re-anchor a fresh window at the last-good nav
+  state (the framework's principle #3, GLIM disposable-graph, never actually implemented
+  before — it was `catch → return false` = silent death).
+- **KF-count fixed-lag window** (`window_kfs`, was 2.0 s wall-clock) — keys stamped by KF
+  index, +0.5 marginalization-boundary offset (keeps it off integer stamps). Decouples the
+  bias horizon from speed (the "stairs go horizontal" mechanism on gtsam).
+- **Bias/velocity carry-forward** on re-anchor — seed from last converged `cur_bias/cur_vel`,
+  never reset a converged bias to the pipeline's zero seed.
+- **Low-motion gravity-init gate** (vio_pipeline.cpp) — pick the quietest IMU window for the
+  gravity DIRECTION estimate (fallback-safe: never regresses start-in-motion seqs like MH_01).
+
+**Numbers (validated):**
+- mag1 smoother failures: **893 (+ pose explosion to 700 m) → 10, survives the run.** ✅
+- **Decisive accuracy (MH_01_easy, FULL 3419 poses, 0 fails, Sim3-ATE):
+  Ceres 10.1 cm vs gtsam 151 cm** — gtsam is ~15× worse, INHERENT (reverting the KF-count
+  window to time-based lag gives 153 cm, same). The old gtsam "8.4 cm" was a truncation
+  artifact (it died at 2562/3419 poses before the drift tail).
+- mag1 stability: Ceres stays ~1 m near origin through frame 1000; gtsam drifts to 12 m. So
+  the catastrophic stairs/vertical drift was **gtsam-specific**; Ceres is stable.
+
+**Decision:** **Ceres (`backend=ceres`, the default) is the production single estimator.**
+gtsam stays as the optional backend / global loop-closure BA (Phase D), now hardened. This
+REVISES the refactor plan B1 (which assumed gtsam should be the sole survivor + Ceres deleted
+— backwards on both accuracy and robustness). Memory: `slamko-gtsam-smoother-inaccurate`.
+
 ## 2026-05-27 — P1a: GtsamLocalSmoother built + synthetic SfM validated ✅ (marg → P1c)
 
 **What:** `GtsamLocalSmoother` implements `slamko_core::LocalSmoother` using a GTSAM

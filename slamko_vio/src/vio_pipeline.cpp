@@ -1007,20 +1007,44 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
           // One-shot gravity calibration on the first VI window: accel mean
           // in body ≈ -g_body. Transform to the (visual) world via T_BS and
           // current T_w_c (which is the visual estimate at this KF).
-          std::vector<slamko_vio::ImuSample> warmup;
+          // A3: collect a generous pool (not just the first N) so we can pick the
+          // QUIETEST contiguous N-sample sub-window for the gravity-DIRECTION
+          // estimate. accel mean ≈ −g_body only when linear acceleration ≈ 0;
+          // choosing the lowest-motion window removes the direction error that
+          // otherwise tilts the world frame (vertical motion → horizontal leak,
+          // a contributor to the "stairs go horizontal" drift). Fallback-safe:
+          // it always picks the best AVAILABLE window (never defers), so a
+          // sequence that starts in motion (e.g. MH_01) never regresses — it
+          // just gets the least-bad window + a warning.
+          std::vector<slamko_vio::ImuSample> pool;
           {
             std::lock_guard<std::mutex> lk(imu_mutex_);
+            const int cap = imu_init_warmup_samples_ * 4;
             for (const auto& s : imu_buffer_) {
-              if ((int)warmup.size() >= imu_init_warmup_samples_) break;
-              warmup.push_back(s);
+              if ((int)pool.size() >= cap) break;
+              pool.push_back(s);
             }
           }
-          if ((int)warmup.size() >= imu_init_warmup_samples_) {
-            Eigen::Vector3d a_sum = Eigen::Vector3d::Zero();
-            Eigen::Vector3d w_sum = Eigen::Vector3d::Zero();
-            for (const auto& s : warmup) { a_sum += s.a; w_sum += s.w; }
-            const Eigen::Vector3d a_mean = a_sum / (double)warmup.size();
-            const Eigen::Vector3d w_mean = w_sum / (double)warmup.size();
+          const int kInitN = imu_init_warmup_samples_;
+          if ((int)pool.size() >= kInitN) {
+            int best_lo = 0; double best_score = 1e18;
+            Eigen::Vector3d a_mean = Eigen::Vector3d::Zero();
+            Eigen::Vector3d w_mean = Eigen::Vector3d::Zero();
+            for (int lo = 0; lo + kInitN <= (int)pool.size(); ++lo) {
+              Eigen::Vector3d a_sum = Eigen::Vector3d::Zero();
+              Eigen::Vector3d w_sum = Eigen::Vector3d::Zero();
+              for (int k = lo; k < lo + kInitN; ++k) { a_sum += pool[k].a; w_sum += pool[k].w; }
+              const Eigen::Vector3d a_win = a_sum / (double)kInitN;
+              const Eigen::Vector3d w_win = w_sum / (double)kInitN;
+              // score = ‖gyro mean‖ + |‖accel mean‖ − g| (both ≈ 0 when stationary).
+              const double score = w_win.norm() + std::abs(a_win.norm() - kGravityMag);
+              if (score < best_score) { best_score = score; best_lo = lo; a_mean = a_win; w_mean = w_win; }
+            }
+            (void)best_lo;
+            if (best_score > 0.5)
+              VIO_LOG("WARN gravity init: quietest %d-sample window still in motion "
+                      "(score %.2f, ‖w‖=%.3f, |‖a‖−g|=%.2f) — direction may be tilted",
+                      kInitN, best_score, w_mean.norm(), std::abs(a_mean.norm() - kGravityMag));
             // R_body_to_world at this KF: T_w_b = T_BS * T_w_c, so
             // R_b_to_w = (T_BS_R * R_wc)^T.
             const Eigen::Matrix3d R_w_b = T_BS_.block<3, 3>(0, 0)
