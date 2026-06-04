@@ -4,6 +4,31 @@ Living, dated progress + numbers log. Append on every validated change
 ([`../../docs/DOC_PROCESS.md`](../../docs/DOC_PROCESS.md)). Plan:
 [`PLAN_P0_vio.md`](PLAN_P0_vio.md).
 
+## 2026-06-04 — P0 gravity-as-state + lifelong submap sealing (branch klt-fork-loopclosure)
+
+**P0 — gravity DIRECTION is now a continuously-estimated 2-DOF state** (was frozen after a
+one-shot init → tilt locked → horizontal motion leaked into Z). `imu_factor.hpp`: gravity
+promoted from a const member to a 9th Ceres parameter block (`AutoDiffCostFunction<…,3,3,3,6,
+3,3,3,6,3>`). `local_ba`: one shared `grav_w_[3]` block (persists across windows = warm-start)
+with `ceres::SphereManifold<3>` (|g| locked to 9.81); a **`GravityPrior`** (σ≈3° toward the
+init seed) firewalls regression; an **excitation gate** (pin gravity when window rot-excite <
+0.10 rad) holds it steady in low-excitation segments (stairs/hover) so it can't wander;
+slew-limited, renormalized write-back. Flag `estimate_gravity` (VioConfig→vio_node→launch),
+**default OFF = bit-identical** (sanity: MH_01 flag-off 9.6 cm = baseline; pinned-block inert).
+- **Validated A/B (EuRoC MH_01):** ATE 8.88 cm (frozen) → **6.36 cm (estimated) = −28%**,
+  scale 1.002. IMU/BA unit tests green.
+- **magistrale1:** Z-span 69.2→71.5 m (≈unchanged) — gravity refinement does NOT fix
+  magistrale's vertical drift, which is dominated by gyro-orientation drift over 13 min
+  open-loop + real multi-floor, NOT gravity tilt. Confirms: long-run floor-tilt is a
+  loop-closure problem, not an odometry one. Parametrization = S² (VINS RefineGravity math,
+  idea-only); plan workflow `wl1pyrl12`, memory `slamko-vio-outdoor-drift-diagnosis`.
+
+**Lifelong submap sealing.** `vio_pipeline` seals the current submap every `kf_per_submap`
+KFs (or `submap_seal_metres`) into `submap_dump_dir` as `.smap` (saveSubMaps): `buildSubMap(id)`
+sets a first-KF anchor + rebases payload to submap-local; disjoint epochs; XFeat descriptors +
+per-KF VPR. **OFF when dir empty → odometry byte-identical** (seal reads state, never mutates).
+Validated MH_01 (53 submaps) + magistrale1 (578). Feeds the offline loop-closure driver.
+
 ## 2026-05-28 — Deterministic replay: IMU↔frame gating (was ~40-80% ATE variance) ✅
 
 **Problem:** same code+config gave wildly different ATE between runs — EuRoC V1_03_difficult

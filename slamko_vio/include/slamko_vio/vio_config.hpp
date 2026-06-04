@@ -35,6 +35,17 @@ struct VioConfig {
   // recorder path is flaky on this box; this is in-process and reliable. Empty=off.
   std::string pose_dump_path;
 
+  // Lifelong submap dump. If submap_dump_dir is set, the VIO seals the current
+  // submap every `kf_per_submap` keyframes (and/or every `submap_seal_metres` of
+  // travel) and writes submap_<id>.smap into the dir. Each sealed submap is
+  // disjoint (own epoch), rebased to its first-KF anchor, and carries XFeat
+  // descriptors + per-KF VPR — the loop-closure / lifelong substrate the offline
+  // driver consumes. Empty dir = OFF: no sealing, the running odometry stays
+  // byte-identical (sealing only reads state, never mutates the estimate).
+  std::string submap_dump_dir;
+  int    kf_per_submap      = 25;    // seal every N keyframes (~8m indoor)
+  double submap_seal_metres = 0.0;   // OR seal every M metres of travel; 0 = off
+
   // Shi-Tomasi grid
   int    grid_cols  = 8;
   int    grid_rows  = 6;
@@ -65,6 +76,9 @@ struct VioConfig {
   double ba_function_tol         = 1.0e-6;
   int    ba_min_obs_per_landmark = 2;
   bool   enable_imu              = true;
+  // P0: refine gravity direction as a 2-DOF state (S²) instead of freezing the init.
+  // OFF by default (frozen, bit-identical). Prior + excitation-gate live in LocalBA.
+  bool   estimate_gravity        = false;
   bool   ba_use_inv_depth        = true;
   double imu_bias_rw_gyro        = 1.9393e-5;
   double imu_bias_rw_accel       = 3.0e-3;

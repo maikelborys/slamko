@@ -68,6 +68,10 @@ class VioNode : public rclcpp::Node {
     cfg.publish_tf         = P("publish_tf", cfg.publish_tf);
     cfg.landmark_dump_path = P("landmark_dump_path", cfg.landmark_dump_path);
     cfg.pose_dump_path     = P("pose_dump_path", cfg.pose_dump_path);
+    cfg.estimate_gravity   = P("estimate_gravity", cfg.estimate_gravity);
+    cfg.submap_dump_dir    = P("submap_dump_dir", cfg.submap_dump_dir);
+    cfg.kf_per_submap      = P("kf_per_submap", cfg.kf_per_submap);
+    cfg.submap_seal_metres = P("submap_seal_metres", cfg.submap_seal_metres);
     cfg.grid_cols          = P("grid_cols", cfg.grid_cols);
     cfg.grid_rows          = P("grid_rows", cfg.grid_rows);
     cfg.k_per_cell         = P("k_per_cell", cfg.k_per_cell);

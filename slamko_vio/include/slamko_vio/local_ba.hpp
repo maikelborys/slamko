@@ -123,6 +123,15 @@ class LocalBA {
     Eigen::Vector3d  gravity_w       = Eigen::Vector3d(0.0, 0.0, -9.81);
     double           bias_rw_gyro    = 1.9393e-5;   // EuRoC ADIS16448
     double           bias_rw_accel   = 3.0e-3;
+
+    // P0 — gravity as an optimized 2-DOF state (S² / SphereManifold), OFF by default
+    // (frozen behavior, bit-identical). When on: weak prior (σ≈3°) toward the seed +
+    // excitation gate pin it where gravity is unobservable (slow stairs/hover) so it
+    // self-corrects only under motion and never regresses indoor.
+    bool   estimate_gravity      = false;
+    double gravity_prior_weight  = 1.95;   // 1/(9.81·σθ), σθ≈3° = 0.0524 rad
+    double gravity_excite_min_rad = 0.10;  // pin gravity if window rot-excitation below this
+    double gravity_max_step_rad  = 0.05;   // cap the per-solve gravity direction change
   };
 
   LocalBA();
@@ -198,6 +207,13 @@ class LocalBA {
   std::unordered_map<std::uint32_t, Landmark> landmarks_;
   StereoIntrinsics K_{};
   std::uint32_t next_kf_id_ = 1;
+
+  // P0 — persistent world-gravity state (survives the per-solve Problem rebuild =
+  // cross-window warm-start + coarse-init→refined handoff). Seeded once from
+  // cfg_.gravity_w; refined on S² when cfg_.estimate_gravity (else pinned const).
+  double          grav_w_[3]      = {0.0, 0.0, -9.81};
+  Eigen::Vector3d grav_seed_      = Eigen::Vector3d(0.0, 0.0, -9.81);
+  bool            grav_seed_set_  = false;
 };
 
 }  // namespace slamko_vio

@@ -6,6 +6,7 @@
 
 #include <Eigen/Geometry>
 #include <ceres/ceres.h>
+#include <ceres/manifold.h>   // SphereManifold<3> for the P0 gravity-on-S² state
 #include <ceres/rotation.h>
 
 #include <algorithm>
@@ -42,6 +43,41 @@ inline Eigen::Matrix4d aa_t_to_T(const double aa[3], const double t[3]) {
   T.block<3, 3>(0, 0) = R;
   T(0, 3) = t[0];  T(1, 3) = t[1];  T(2, 3) = t[2];
   return T;
+}
+
+// P0 — weak prior pulling the gravity block toward its init seed. The firewall
+// against indoor/low-excitation regression: under good accel/rot excitation the
+// 9-dim IMU information dwarfs this, so gravity self-corrects the tilt; under
+// hover/constant-velocity/stairs the IMU is rank-deficient along (δg↔δb_a) and
+// this prior is the only constraint → gravity stays at the seed (== frozen).
+struct GravityPrior {
+  GravityPrior(const Eigen::Vector3d& seed, double w) : seed_(seed), w_(w) {}
+  template <typename T>
+  bool operator()(const T* const g, T* r) const {
+    r[0] = T(w_) * (g[0] - T(seed_.x()));
+    r[1] = T(w_) * (g[1] - T(seed_.y()));
+    r[2] = T(w_) * (g[2] - T(seed_.z()));
+    return true;
+  }
+  static ceres::CostFunction* Create(const Eigen::Vector3d& seed, double w) {
+    return new ceres::AutoDiffCostFunction<GravityPrior, 3, 3>(new GravityPrior(seed, w));
+  }
+  Eigen::Vector3d seed_;
+  double w_;
+};
+
+// Window rotational excitation = Σ relative-rotation angle between consecutive
+// KFs. Gravity direction is observable only with enough rotation; below the gate
+// we hold it (don't let it wander on slow stairs / hover).
+inline double windowRotExcitation(const std::vector<KeyFrame>& kfs) {
+  double s = 0.0;
+  for (std::size_t i = 1; i < kfs.size(); ++i) {
+    const Eigen::Matrix4d Ti = aa_t_to_T(kfs[i - 1].angle_axis, kfs[i - 1].translation);
+    const Eigen::Matrix4d Tj = aa_t_to_T(kfs[i].angle_axis, kfs[i].translation);
+    const Eigen::Matrix3d dR = Ti.block<3, 3>(0, 0).transpose() * Tj.block<3, 3>(0, 0);
+    s += Eigen::AngleAxisd(dR).angle();
+  }
+  return s;
 }
 
 }  // namespace
@@ -418,6 +454,35 @@ bool LocalBA::solve() {
     problem.SetParameterBlockConstant(kfs_.front().bias);
   }
 
+  // P0 — shared world-gravity parameter block (optimized on S², |g| locked to its
+  // seed norm by SphereManifold). Seeded ONCE from the (post-init) cfg_.gravity_w and
+  // persisted across windows (warm-start). Pinned constant when estimate_gravity is
+  // off → byte-identical to the frozen behavior. (Prior + excitation gate: STEP 3.)
+  bool gravity_free = false;  // was this solve allowed to refine gravity?
+  if (cfg_.enable_imu) {
+    if (!grav_seed_set_) {
+      grav_seed_ = cfg_.gravity_w;
+      grav_w_[0] = cfg_.gravity_w.x();
+      grav_w_[1] = cfg_.gravity_w.y();
+      grav_w_[2] = cfg_.gravity_w.z();
+      grav_seed_set_ = true;
+    }
+    problem.AddParameterBlock(grav_w_, 3);
+    problem.SetManifold(grav_w_, new ceres::SphereManifold<3>());
+    // STEP 3 gate: refine gravity only when the flag is on AND the window has
+    // enough rotational excitation (else it's unobservable → hold it; this is the
+    // stairs/hover protection). When free, the weak prior toward the seed firewalls
+    // any regression in the singular regime.
+    const double rot_excite = windowRotExcitation(kfs_);
+    gravity_free = cfg_.estimate_gravity && rot_excite >= cfg_.gravity_excite_min_rad;
+    if (gravity_free) {
+      problem.AddResidualBlock(GravityPrior::Create(grav_seed_, cfg_.gravity_prior_weight),
+                               nullptr, grav_w_);
+    } else {
+      problem.SetParameterBlockConstant(grav_w_);
+    }
+  }
+
   // IMU factor chain between consecutive KFs (Forster 2017).
   if (cfg_.enable_imu) {
     for (std::size_t i = 1; i < kfs_.size(); ++i) {
@@ -433,7 +498,8 @@ bool LocalBA::solve() {
                                kf_i.angle_axis, kf_i.translation,
                                kf_i.velocity,   kf_i.bias,
                                kf_j.angle_axis, kf_j.translation,
-                               kf_j.velocity,   kf_j.bias);
+                               kf_j.velocity,   kf_j.bias,
+                               grav_w_);   // P0: shared gravity block (9th)
     }
   }
 
@@ -553,6 +619,26 @@ bool LocalBA::solve() {
   ceres::Solve(opts, &problem, &summary);
   // Loss is consumed by problem; release ownership so we don't double-free.
   (void)loss.release();
+
+  // P0 — propagate the refined gravity (slew-limited + renormalized to 9.81) back
+  // into cfg_.gravity_w so downstream (dead-reckoning, next-window seed) uses it.
+  // grav_w_ is a persistent member → it already warm-starts the next window. The
+  // slew cap stops a single ill-conditioned window from snapping gravity.
+  if (gravity_free && summary.IsSolutionUsable()) {
+    Eigen::Vector3d g_new(grav_w_[0], grav_w_[1], grav_w_[2]);
+    const Eigen::Vector3d a = cfg_.gravity_w.normalized();
+    const Eigen::Vector3d b = g_new.normalized();
+    const double ang = std::acos(std::clamp(a.dot(b), -1.0, 1.0));
+    Eigen::Vector3d dir = b;
+    if (ang > cfg_.gravity_max_step_rad && ang > 1e-9) {
+      const Eigen::Vector3d axis = a.cross(b).normalized();  // slew toward b by the cap
+      dir = Eigen::AngleAxisd(cfg_.gravity_max_step_rad, axis) * a;
+    }
+    cfg_.gravity_w = dir * 9.81;  // renormalize (SphereManifold keeps |g|, this is belt-and-braces)
+    grav_w_[0] = cfg_.gravity_w.x();
+    grav_w_[1] = cfg_.gravity_w.y();
+    grav_w_[2] = cfg_.gravity_w.z();
+  }
 
   // Inv-depth path: sync each landmark's Euclidean world position from its
   // refined inverse depth + (refined) host pose, so node-side queries and the

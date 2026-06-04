@@ -128,9 +128,16 @@ class VioPipeline {
   // branch, so a normal/no-loss run is byte-identical to before.
   void beginSubmap() { ++submap_epoch_; }
 
-  // Assemble the current global map as a slamko_core::SubMap (landmarks +
-  // their XFeat descriptor index). One submap for now; submap splitting is P2.
-  slamko::SubMap buildSubMap() const;
+  // Assemble the current epoch's landmarks + KFs + XFeat descriptor index + per-KF
+  // VPR into a slamko_core::SubMap, tagged with `id`, anchored at (and rebased to)
+  // the epoch's first keyframe (so each sealed submap is individually placeable —
+  // anchor: submap-local → VIO-world). Pure read of state; mutates nothing.
+  slamko::SubMap buildSubMap(std::uint64_t id) const;
+
+  // Seal the current submap (build → accumulate → optionally write its .smap) and
+  // open the next epoch. No-op if the current epoch holds no keyframes. NEVER
+  // touches the odometry estimate — only epoch counters + the sealed archive.
+  void sealSubmap();
 
  private:
   // LMP appearance-patch helpers (now ImageView-based, ROS-free).
@@ -152,6 +159,14 @@ class VioPipeline {
   int patch_size_, pyramid_lvls_;
   std::string timing_csv_;
   std::string landmark_dump_path_;
+  // ---- lifelong submap sealing (config-derived; sealing off when dir empty) ----
+  std::string submap_dump_dir_;
+  int    kf_per_submap_      = 0;
+  double submap_seal_metres_ = 0.0;
+  int    kf_in_epoch_        = 0;     // KFs accrued in the current (unsealed) epoch
+  double dist_in_epoch_      = 0.0;   // metres travelled in the current epoch
+  std::uint64_t next_submap_id_ = 0;
+  std::vector<slamko::SubMap> sealed_submaps_;  // flushed via saveSubMaps at shutdown
 
   StereoIntrinsics K_{};
   bool have_K_ = false;

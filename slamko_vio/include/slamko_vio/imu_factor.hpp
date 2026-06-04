@@ -120,6 +120,7 @@ class ImuFactor {
                   const T* const vel_i, const T* const bias_i,
                   const T* const aa_j, const T* const t_j_p,
                   const T* const vel_j, const T* const bias_j,
+                  const T* const grav,   // P0: world gravity (3-vec, |g|=9.81 via SphereManifold)
                   T* residuals) const {
     using Vec3   = Eigen::Matrix<T, 3, 1>;
     using Mat3   = Eigen::Matrix<T, 3, 3>;
@@ -196,7 +197,9 @@ class ImuFactor {
     const Vec3 dP_corr = dP_lin + J_dP_bg * dbg + J_dP_ba * dba;
 
     // ---- Forster residuals --------------------------------------------------
-    Vec3 g(T(g_.x()), T(g_.y()), T(g_.z()));
+    // P0: gravity comes from the shared parameter block `grav` (optimized on S²,
+    // |g| locked to 9.81), not the frozen ctor seed g_. r_V/r_P below unchanged.
+    Vec3 g(grav[0], grav[1], grav[2]);
     const T dt   = T(pi_.dt());
     const T dt2h = T(0.5 * pi_.dt() * pi_.dt());
 
@@ -230,11 +233,14 @@ class ImuFactor {
                                      const Eigen::Vector3d&    g,
                                      double bias_rw_gyro,
                                      double bias_rw_accel) {
-    // Block sizes: 15 residuals; aa 3, t 3, vel 3, bias 6 (×2 frames).
+    // Block sizes: 15 residuals; aa 3, t 3, vel 3, bias 6 (×2 frames), gravity 3.
+    // The trailing 3 is the shared world-gravity block (P0). `g` still seeds the
+    // (now vestigial) g_ member for ABI; the live value comes from the param block.
     return new ceres::AutoDiffCostFunction<
         ImuFactor, 15,
         3, 3, 3, 6,
-        3, 3, 3, 6>(
+        3, 3, 3, 6,
+        3>(
         new ImuFactor(pi, T_BS, g, bias_rw_gyro, bias_rw_accel));
   }
 

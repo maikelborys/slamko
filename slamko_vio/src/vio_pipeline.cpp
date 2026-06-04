@@ -22,6 +22,7 @@
 #include <unordered_set>
 #include <algorithm>
 
+#include "slamko_core/submap_io.hpp"  // saveSubMap / saveSubMaps (lifelong sealing)
 #include "slamko_vio/ceres_local_smoother.hpp"
 #include "slamko_vio/feature/eigenplaces.h"
 #include "slamko_vio/feature/shitomasi_source.hpp"
@@ -48,6 +49,9 @@ VioPipeline::VioPipeline(const VioConfig& cfg,
     // Optional: dump the final BA landmark world map (id x y z obs_count) at
     // shutdown for offline viz. Empty = disabled. PLY-friendly CSV.
     landmark_dump_path_ = cfg.landmark_dump_path;
+    submap_dump_dir_    = cfg.submap_dump_dir;
+    kf_per_submap_      = cfg.kf_per_submap;
+    submap_seal_metres_ = cfg.submap_seal_metres;
 
     slamko_vio::ShiTomasiDetector::Config scfg;
     scfg.max_corners = max_corners_;
@@ -169,6 +173,7 @@ VioPipeline::VioPipeline(const VioConfig& cfg,
     // T_BS (cam-in-body): set when the static tf imu→left_rect arrives.
     bcfg.T_BS = Eigen::Matrix4d::Identity();
     bcfg.gravity_w = Eigen::Vector3d(0.0, 0.0, -9.81);
+    bcfg.estimate_gravity = cfg.estimate_gravity;  // P0: gravity-as-state (flag)
     ba_cfg_ = bcfg;
     // Tier-2 backend. Default = CeresLocalSmoother wrapping LocalBA (the P0
     // baseline) built from this cfg; an injected backend (P1c gtsam) is used
@@ -262,17 +267,28 @@ VioPipeline::~VioPipeline() {
     if (csv_out_.is_open()) csv_out_.close();
     if (!landmark_dump_path_.empty()) dump_landmarks();
     // Report the reloc-map descriptor index built this session (B3).
-    const slamko::SubMap sm = buildSubMap();
+    const slamko::SubMap sm = buildSubMap(next_submap_id_);
     int with_desc = 0;
     for (const auto& l : sm.landmarks) if (l.descriptor_row >= 0) ++with_desc;
     VIO_LOG("submap @ shutdown: %zu landmarks, %d with descriptors (index %dx%d)",
             sm.landmarks.size(), with_desc,
             (int)sm.descriptors.rows(), (int)sm.descriptors.cols());
+    // Lifelong flush: seal the trailing (partial) epoch + persist the whole archive
+    // (writes submaps.manifest + submap_<id>.smap; loadSubMaps reads it back). The
+    // destructor must not throw — saveSubMaps returns bool, we just log on failure.
+    if (!submap_dump_dir_.empty()) {
+      sealSubmap();  // close the trailing epoch (no-op if it holds no KFs)
+      if (!slamko::saveSubMaps(sealed_submaps_, submap_dump_dir_))
+        VIO_LOG("WARN: saveSubMaps to %s failed", submap_dump_dir_.c_str());
+      else
+        VIO_LOG("flushed %zu sealed submaps -> %s",
+                sealed_submaps_.size(), submap_dump_dir_.c_str());
+    }
   }
 
-slamko::SubMap VioPipeline::buildSubMap() const {
+slamko::SubMap VioPipeline::buildSubMap(std::uint64_t id) const {
   slamko::SubMap sm;
-  sm.id = 0;  // anchor/id are owned by the never-lost archive, not the VIO
+  sm.id = id;
   // Only landmarks created in the CURRENT submap epoch (since the last beginSubmap)
   // — so sealed submaps are disjoint, not cumulative supersets. epoch 0 with no
   // branch ⇒ every landmark qualifies ⇒ identical to the pre-partition behavior.
@@ -280,6 +296,17 @@ slamko::SubMap VioPipeline::buildSubMap() const {
     auto it = landmark_epoch_.find(lid);
     return it != landmark_epoch_.end() && it->second == submap_epoch_;
   };
+  // Anchor = the epoch's FIRST keyframe pose (VIO-world). Every payload below is
+  // rebased into this anchor-local frame so the submap is individually placeable:
+  // anchor maps submap-local → VIO-world, and the offline driver re-composes
+  // anchor·local to chain submaps. anchor = identity if the epoch has no KFs
+  // (degenerate — sealSubmap() guards against sealing an empty epoch).
+  slamko::SE3 anchor;  // identity default
+  for (const auto& ek : kf_poses_)
+    if (ek.epoch == submap_epoch_) { anchor = ek.kf.T_WB; break; }
+  const slamko::SE3 anchor_inv = anchor.inverse();
+  sm.anchor = anchor;
+
   int n_desc = 0;
   for (const auto& kv : landmark_world_)
     if (in_epoch(kv.first) && landmark_descriptors_.count(kv.first)) ++n_desc;
@@ -290,7 +317,7 @@ slamko::SubMap VioPipeline::buildSubMap() const {
     if (!in_epoch(lid)) continue;
     slamko::MapLandmark lm;
     lm.id = lid;
-    lm.position = p;
+    lm.position = anchor_inv * p;  // rebase: VIO-world → submap-local
     auto dit = landmark_descriptors_.find(lid);
     if (dit != landmark_descriptors_.end()) {
       for (int d = 0; d < 64; ++d) sm.descriptors(row, d) = dit->second[d];
@@ -298,15 +325,38 @@ slamko::SubMap VioPipeline::buildSubMap() const {
     }
     sm.landmarks.push_back(lm);
   }
-  // Attach this epoch's keyframe poses + per-KF 2D observations (BA substrate +
-  // real-LightGlue input). `kf_obs` is aligned 1:1 with `keyframes` by construction.
+  // Attach this epoch's keyframe poses (rebased) + per-KF 2D observations (BA
+  // substrate + real-LightGlue input). `kf_obs` is aligned 1:1 with `keyframes`.
   for (const auto& ek : kf_poses_)
     if (ek.epoch == submap_epoch_) {
-      sm.keyframes.push_back(ek.kf);
+      slamko::KeyframePose kf = ek.kf;
+      kf.T_WB = anchor_inv * kf.T_WB;  // rebase: VIO-world → submap-local
+      sm.keyframes.push_back(kf);
       sm.kf_obs.push_back(ek.obs);
     }
   sm.global_descriptor = current_global_desc_;  // VPR retrieval vector (empty if no VPR)
   return sm;
+}
+
+void VioPipeline::sealSubmap() {
+  // No-op if the current epoch holds no keyframes (guards empty trailing seal /
+  // double seal). Counts KFs in this epoch.
+  int n_kf = 0;
+  for (const auto& ek : kf_poses_) if (ek.epoch == submap_epoch_) ++n_kf;
+  if (n_kf == 0) return;
+  slamko::SubMap sm = buildSubMap(next_submap_id_);
+  if (!submap_dump_dir_.empty()) {  // crash-safe per-seal write
+    const std::string path =
+        submap_dump_dir_ + "/submap_" + std::to_string(next_submap_id_) + ".smap";
+    if (!slamko::saveSubMap(sm, path)) VIO_LOG("WARN sealSubmap: saveSubMap failed: %s", path.c_str());
+  }
+  VIO_LOG("sealed submap %llu: %d KFs, %zu landmarks (epoch %d)",
+          (unsigned long long)next_submap_id_, n_kf, sm.landmarks.size(), submap_epoch_);
+  sealed_submaps_.push_back(std::move(sm));
+  ++next_submap_id_;
+  beginSubmap();          // bump epoch → next submap disjoint (odometry untouched)
+  kf_in_epoch_   = 0;
+  dist_in_epoch_ = 0.0;
 }
 
   // Write the final BA world map to a CSV (id,x,y,z,obs) for offline viz.
@@ -1285,6 +1335,21 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
       T_w_c_at_last_kf_     = T_w_c_;
       have_last_kf_         = true;
       frames_since_last_kf_ = 0;
+      // ---- lifelong submap sealing (only when a dump dir is set; else the run is
+      // byte-identical — no epoch bumps, no archive). The KF was just pushed into
+      // kf_poses_, so it belongs to the epoch we are about to close. Seals touch
+      // ONLY epoch counters + the sealed archive, never the odometry estimate.
+      if (!submap_dump_dir_.empty()) {
+        ++kf_in_epoch_;
+        if (kf_poses_.size() >= 2) {
+          const auto& pa = kf_poses_[kf_poses_.size() - 2].kf.T_WB;
+          const auto& pb = kf_poses_.back().kf.T_WB;
+          dist_in_epoch_ += (pb.translation() - pa.translation()).norm();
+        }
+        const bool seal_kf = kf_per_submap_ > 0 && kf_in_epoch_ >= kf_per_submap_;
+        const bool seal_d  = submap_seal_metres_ > 0.0 && dist_in_epoch_ >= submap_seal_metres_;
+        if (seal_kf || seal_d) sealSubmap();
+      }
       // Fix A: snapshot the left-cam pixel at this KF; parallax for next-KF
       // decision is computed against this.
       for (auto& t : tracks_) {
