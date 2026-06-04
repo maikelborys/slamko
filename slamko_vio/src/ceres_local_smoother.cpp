@@ -146,4 +146,16 @@ slamko::HealthSignal CeresLocalSmoother::health() const {
   return slamko::HealthSignal{};
 }
 
+slamko::LocalSolveStats CeresLocalSmoother::lastSolveStats() const {
+  const LocalBA::LastSolve& s = ba_->last_solve();
+  slamko::LocalSolveStats out;
+  out.init_cost     = s.init_cost;
+  out.final_cost    = s.final_cost;
+  out.iterations    = s.iterations;
+  out.converged     = s.converged;
+  out.num_residuals = s.num_residuals;
+  out.fail_reason   = s.fail_reason;
+  return out;
+}
+
 }  // namespace slamko_vio

@@ -25,6 +25,20 @@
 
 namespace slamko {
 
+// Per-solve diagnostics from the local smoother's last optimize() — the offline
+// health trace (scripts/plot_health.py) needs to see whether a KF's BA actually
+// converged or silently hit max-iters. Optional: a backend that doesn't expose
+// its solver internals returns the default (-1 / false), which the CSV logs as
+// "not reported" rather than corrupting the trace.
+struct LocalSolveStats {
+  double init_cost   = -1.0;   // cost before the solve
+  double final_cost  = -1.0;   // cost after the solve
+  int    iterations  = -1;     // successful iterations taken
+  bool   converged   = false;  // solution usable AND a convergence termination
+  int    num_residuals = -1;   // total residual scalars in the problem
+  int    fail_reason   = 0;    // 0=solved/na, else backend-specific bail code
+};
+
 class LocalSmoother {
  public:
   virtual ~LocalSmoother() = default;
@@ -59,6 +73,10 @@ class LocalSmoother {
 
   // Observability / loss probes for the never-lost supervisor (P2).
   virtual HealthSignal health() const = 0;
+
+  // Diagnostics from the most recent optimize(). Non-pure (default = neutral)
+  // so existing backends need no change; the offline health trace reads it.
+  virtual LocalSolveStats lastSolveStats() const { return {}; }
 };
 
 }  // namespace slamko

@@ -417,6 +417,18 @@ void LocalBA::drop_oldest_() {
 }
 
 void LocalBA::prune_landmarks_() {
+  // NOTE (2026-06-04 health-trace finding): this <min_obs deletion runs at the top
+  // of every solve() and PERMANENTLY collapses the steady-state map — a just-inserted
+  // 1-obs landmark is erased the same solve, the next KF re-observes the same track id
+  // but (finding it gone) re-creates a fresh 1-obs landmark that is pruned again,
+  // forever (maxobs==1 → landmarks_ empties → solve() bails ba_fail=2 on ~99% of
+  // post-init KFs → the VI-BA never runs and the pose falls back to PnP). Relaxing
+  // this to erase only obs.empty() DOES revive the BA (ba_solved 20→448), BUT the
+  // revived VI-BA is LESS accurate than the PnP fallback (MH_01 5.84cm → ~1.5m;
+  // inv_depth=false → 2.74m) because the window has no marginalization prior / FEJ.
+  // So the deletion is left as-is for now: it accidentally keeps production on the
+  // accurate PnP path. Revisit together with a marginalization prior + FEJ (the
+  // real VI-BA fix), not in isolation.
   for (auto it = landmarks_.begin(); it != landmarks_.end(); ) {
     if ((int)it->second.obs.size() < cfg_.min_observations_per_landmark)
       it = landmarks_.erase(it);
@@ -426,9 +438,19 @@ void LocalBA::prune_landmarks_() {
 }
 
 bool LocalBA::solve() {
-  if ((int)kfs_.size() < 2) return false;
+  // Health trace: record WHY a solve bails so the per-frame CSV localizes the
+  // VI-BA dropout (1=window<2 i.e. just rebuilt/empty, 2=no landmarks survived
+  // prune). Diagnoses the post-IMU-init "optimize() returns false" finding.
+  last_solve_ = LastSolve{};  // reset (fail_reason defaults to 0)
+  if ((int)kfs_.size() < 2) {
+    last_solve_.fail_reason = 1;
+    return false;
+  }
   prune_landmarks_();
-  if (landmarks_.empty()) return false;
+  if (landmarks_.empty()) {
+    last_solve_.fail_reason = 2;
+    return false;
+  }
 
   ceres::Problem problem;
   // CauchyLoss(σ) — heavier outlier attenuation than Huber. OKVIS2-X uses
@@ -619,6 +641,16 @@ bool LocalBA::solve() {
   ceres::Solve(opts, &problem, &summary);
   // Loss is consumed by problem; release ownership so we don't double-free.
   (void)loss.release();
+
+  // Health trace: a KF whose BA hit max-iters (not CONVERGENCE/NO_CHANGE) or
+  // whose cost barely moved is a silent-corruption suspect — surface it.
+  last_solve_.init_cost     = summary.initial_cost;
+  last_solve_.final_cost    = summary.final_cost;
+  last_solve_.iterations    = summary.num_successful_steps;
+  last_solve_.num_residuals = summary.num_residuals;
+  last_solve_.converged =
+      summary.IsSolutionUsable() &&
+      (summary.termination_type == ceres::CONVERGENCE);
 
   // P0 — propagate the refined gravity (slew-limited + renormalized to 9.81) back
   // into cfg_.gravity_w so downstream (dead-reckoning, next-window seed) uses it.

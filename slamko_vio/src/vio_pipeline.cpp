@@ -240,7 +240,11 @@ VioPipeline::VioPipeline(const VioConfig& cfg,
       csv_out_ << "frame,ms_total,ms_klt,ms_stereo,ms_pnp,ms_detect,ms_ba,"
                   "n_tracked,n_active,n_3d_prev,n_pnp_inliers,n_stereo_match,"
                   "n_new,n_total,n_ba_landmarks,ba_solved,"
-                  "n_lmp_attempt,n_lmp_promote,ms_lmp\n";
+                  "n_lmp_attempt,n_lmp_promote,ms_lmp,"
+                  // P0-1 health trace: localizes any failure to a frame/KF.
+                  "reproj_rms,inlier_ratio,pnp_ok,dr_active,"
+                  "n_imu_interval,interval_dt,max_imu_gap,"
+                  "ba_init_cost,ba_final_cost,ba_iters,ba_converged,ba_fail\n";
       csv_out_.flush();
     }
 
@@ -795,6 +799,12 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
     int n_3d_prev = 0;
     int n_mature  = 0;
     bool pnp_ok = false;   // did PnP produce a pose this frame? (dead-reckoning)
+    // Reset per-frame health probes (P0-1): -1 = "not produced this frame" so the
+    // CSV distinguishes a missing value from a real zero.
+    hb_reproj_rms_     = -1.f;
+    hb_n_imu_interval_ = -1;
+    hb_interval_dt_    = -1.0;
+    hb_max_imu_gap_    = -1.0;
     if (!tracks_.empty()) {
       const Eigen::Matrix4d T_w_c_prev = T_w_c_;        // pose BEFORE this PnP
       std::vector<Eigen::Vector3f> p3d;
@@ -852,6 +862,26 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
           T_w_c_      = world_pose_.cast<double>().inverse();
           last_T_pp_  = T_pp;
           have_world_pose_ = true;
+
+          // Health trace: left-cam reprojection RMS over PnP inliers. High RMS
+          // with HIGH inlier count = a coherent mis-track cluster the geometry
+          // accepted (outlier contamination); low RMS = a clean solve. p3d are
+          // in the previous-cam frame; T_pp maps prev→cur.
+          {
+            const Eigen::Matrix3f R = T_pp.block<3,3>(0,0);
+            const Eigen::Vector3f tt = T_pp.block<3,1>(0,3);
+            double sse = 0.0; int n = 0;
+            for (int idx : inliers) {
+              const Eigen::Vector3f Xc = R * p3d[idx] + tt;
+              if (Xc.z() <= 1e-6f) continue;
+              const float u = K_.fx * Xc.x() / Xc.z() + K_.cx;
+              const float v = K_.fy * Xc.y() / Xc.z() + K_.cy;
+              const float du = u - p2d_l[idx].x();
+              const float dv = v - p2d_l[idx].y();
+              sse += (double)(du*du + dv*dv); ++n;
+            }
+            hb_reproj_rms_ = (n > 0) ? (float)std::sqrt(sse / n) : -1.f;
+          }
 
           // Drop tracks rejected as PnP outliers.
           const int n_active_before = (int)tracks_.size();
@@ -942,6 +972,7 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
     float ms_ba = 0.f;
     int  n_ba_landmarks = 0;
     bool ba_solved = false;
+    slamko::LocalSolveStats ba_stats;  // health trace: filled on a solved KF
     ++frames_since_last_kf_;
     bool kf_due = false;
 
@@ -1192,6 +1223,23 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
         if (T_BS_resolved_ && gravity_calibrated_ && bias_g_initialised_) {
           // Pull IMU samples spanning the inter-KF interval.
           auto samples = drain_imu_window(last_kf_ts_, ts_now);
+          // Health trace: a short/sparse IMU window integrates to garbage (the
+          // samples.size()>=2 gate alone would silently accept a 50ms interval
+          // with 2 samples). Record the integrity probes + WARN when starved.
+          hb_n_imu_interval_ = (int)samples.size();
+          hb_interval_dt_    = ts_now - last_kf_ts_;
+          hb_max_imu_gap_    = 0.0;
+          for (std::size_t i = 1; i < samples.size(); ++i)
+            hb_max_imu_gap_ = std::max(hb_max_imu_gap_, samples[i].t - samples[i-1].t);
+          {
+            const double expected = hb_interval_dt_ * imu_noise_.rate_hz;
+            if (expected >= 2.0 && hb_n_imu_interval_ < 0.5 * expected) {
+              VIO_LOG("WARN frame=%u IMU window starved: %d samples over %.3fs "
+                      "(expected ~%.0f, max_gap=%.4fs) — preintegration suspect",
+                      frame_idx_, hb_n_imu_interval_, hb_interval_dt_,
+                      expected, hb_max_imu_gap_);
+            }
+          }
           if ((int)samples.size() >= 2) {
             // Sandwich the interval: insert bracketing virtual samples at
             // the exact endpoints by clamping timestamps. Forster integrate
@@ -1249,7 +1297,9 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
       // R2 maturity counter: each KF observation matures the landmark.
       for (std::uint32_t lid : lids) ++landmark_obs_count_[lid];
       int n_live_landmarks = 0;
-      if (smoother_->optimize()) {
+      const bool ba_ok = smoother_->optimize();
+      ba_stats = smoother_->lastSolveStats();  // health trace (incl. fail_reason on bail)
+      if (ba_ok) {
         ba_solved = true;
         // latestPose() is T_WB; back to T_w_c_: T_w_c = E⁻¹·T_WB⁻¹ (E = T_BS_).
         // optimize()==true ⇒ a latest KF exists, so this is always valid (the
@@ -1385,7 +1435,15 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
                << n_new << "," << tracks_.size() << ","
                << n_ba_landmarks << "," << (ba_solved ? 1 : 0)
                << "," << n_lmp_attempt << "," << n_lmp_promote
-               << "," << ms_lmp << "\n";
+               << "," << ms_lmp << ","
+               // P0-1 health trace
+               << hb_reproj_rms_ << ","
+               << ((n_3d_prev > 0) ? (float)n_pnp_in / (float)n_3d_prev : -1.f) << ","
+               << (pnp_ok ? 1 : 0) << "," << (in_dead_reckoning_ ? 1 : 0) << ","
+               << hb_n_imu_interval_ << "," << hb_interval_dt_ << "," << hb_max_imu_gap_ << ","
+               << ba_stats.init_cost << "," << ba_stats.final_cost << ","
+               << ba_stats.iterations << "," << (ba_stats.converged ? 1 : 0) << ","
+               << ba_stats.fail_reason << "\n";
       if ((frame_idx_ % 20) == 0) csv_out_.flush();
     }
 

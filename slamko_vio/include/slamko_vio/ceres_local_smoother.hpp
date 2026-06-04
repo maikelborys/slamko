@@ -77,6 +77,7 @@ class CeresLocalSmoother : public slamko::LocalSmoother {
   slamko::ImuBias  latestBias() const override;
   bool landmark(std::uint64_t id, Eigen::Vector3d& out) const override;
   slamko::HealthSignal health() const override;
+  slamko::LocalSolveStats lastSolveStats() const override;
 
  private:
   void rebuild();  // local_ba_ = make_unique<LocalBA>(ba_cfg_)

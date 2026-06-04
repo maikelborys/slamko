@@ -239,6 +239,11 @@ class VioPipeline {
   bool           tracker_has_prev_ = false;
   std::uint32_t  frame_idx_ = 0;
   std::ofstream  csv_out_;
+  // ---- per-frame health trace (P0-1) — refreshed each frame, logged to CSV ----
+  float  hb_reproj_rms_      = -1.f;  // left-cam reprojection RMS over PnP inliers (px)
+  int    hb_n_imu_interval_  = -1;    // IMU samples spanning the last KF interval
+  double hb_interval_dt_     = -1.0;  // wall dt of that interval (s)
+  double hb_max_imu_gap_     = -1.0;  // largest inter-sample gap in that interval (s)
   Eigen::Matrix4f world_pose_ = Eigen::Matrix4f::Identity();
   Eigen::Matrix4d T_w_c_ = Eigen::Matrix4d::Identity();
   std::unordered_map<std::uint32_t, Eigen::Vector3d> landmark_world_;

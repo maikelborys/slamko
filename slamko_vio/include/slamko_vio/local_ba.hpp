@@ -198,6 +198,17 @@ class LocalBA {
   int  landmark_count() const { return (int)landmarks_.size(); }
   const KeyFrame* latest_kf() const;
 
+  // Diagnostics from the last solve() (Ceres summary) — for the health trace.
+  struct LastSolve {
+    double init_cost     = -1.0;
+    double final_cost    = -1.0;
+    int    iterations    = -1;
+    bool   converged     = false;
+    int    num_residuals = -1;
+    int    fail_reason    = 0;  // 0=solved, 1=window<2, 2=no landmarks post-prune
+  };
+  const LastSolve& last_solve() const { return last_solve_; }
+
  private:
   void drop_oldest_();      // remove the front KF, prune orphaned landmarks
   void prune_landmarks_();  // drop landmarks observed in < min_observations_per_landmark KFs
@@ -214,6 +225,8 @@ class LocalBA {
   double          grav_w_[3]      = {0.0, 0.0, -9.81};
   Eigen::Vector3d grav_seed_      = Eigen::Vector3d(0.0, 0.0, -9.81);
   bool            grav_seed_set_  = false;
+
+  LastSolve       last_solve_;    // refreshed every solve() from the Ceres summary
 };
 
 }  // namespace slamko_vio

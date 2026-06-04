@@ -4,6 +4,31 @@ Living, dated progress + numbers log. Append on every validated change
 ([`../../docs/DOC_PROCESS.md`](../../docs/DOC_PROCESS.md)). Plan:
 [`PLAN_P0_vio.md`](PLAN_P0_vio.md).
 
+## 2026-06-04 — VIO health-trace instrumentation + VI-BA-dropout root cause (branch klt-fork-loopclosure)
+
+**Built a per-frame health trace** (no regression: MH_01 still 5.84–6.36 cm). `timing.csv` now
+logs `reproj_rms, inlier_ratio, pnp_ok, dr_active, n_imu_interval, interval_dt, max_imu_gap,
+ba_init_cost, ba_final_cost, ba_iters, ba_converged, ba_fail` (+ short-IMU-window WARN). Plumbed
+through a new non-breaking `slamko::LocalSolveStats lastSolveStats()` on the `LocalSmoother` core
+contract (`CeresLocalSmoother` forwards `LocalBA`'s Ceres summary). New `scripts/plot_health.py`
+(health vs per-frame ATE overlay + ba_fail breakdown) and `scripts/eval_rpe_attitude.py` (rpg-style
+RPE by segment + roll/pitch-vs-yaw split + Sim3 scale; attitude panel has a known body-frame ~90°
+artifact to fix). `ba_use_inv_depth` exposed as a launch arg.
+
+**Root cause found — the VI local BA is effectively dead, and that masks a broken BA:**
+- `LocalBA::solve()` succeeds on only **20 / 1211** post-init KFs (MH_01); ~1206 bail `ba_fail=2`
+  (landmarks_ empty). Pose runs PnP frame-to-frame + IMU-DR, NOT the fixed-lag smoother. The good
+  ATE comes *because* the BA stays out of the way.
+- Mechanism: `prune_landmarks_()` permanently deletes every `<2-obs` landmark at the top of every
+  solve; a 1-obs landmark is erased before it can earn a 2nd obs next KF → `maxobs==1` → empties.
+  Front-end is HEALTHY (consecutive KFs share 400–800 landmarks; tracks chain) — the bug is purely
+  in `LocalBA` map management.
+- **Reviving the BA REGRESSES accuracy** (load-bearing): relaxing prune → `ba_solved` 20→448 but
+  ATE → ~1.5 m; `ba_use_inv_depth=false` → ATE 2.74 m. Both confirm the VI-BA has no marginalization
+  prior / FEJ, so when it runs it drifts to meters. Prune deletion REVERTED (documented inline) to
+  keep production on the accurate PnP path. Real fix = Schur marginalization prior + FEJ, then relax
+  prune + re-anchor inv-depth. Full writeup: memory `slamko-vio-ba-broken-worse-than-pnp`.
+
 ## 2026-06-04 — P0 gravity-as-state + lifelong submap sealing (branch klt-fork-loopclosure)
 
 **P0 — gravity DIRECTION is now a continuously-estimated 2-DOF state** (was frozen after a
