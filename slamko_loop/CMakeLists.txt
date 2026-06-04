@@ -28,20 +28,24 @@ find_package(ament_cmake REQUIRED)
 find_package(slamko_core REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
+# Ceres backs the thin global pose-graph (src/pose_graph.cpp) — the P2.5 solver,
+# rebuilt clean on branch klt-fork-loopclosure. Encapsulated in the .cpp; the
+# public header (pose_graph.hpp) stays solver-free (Hard Rule #2).
+find_package(Ceres REQUIRED)
 
-# Relocalizer front-end only (place-rec + verify). The never-lost SUPERVISOR / anchor
-# layer / homegrown pose-graph + SessionGraph were deleted 2026-05-29 (dead on the live
-# path — anchors forced to identity; SessionGraph injected jitter, loop-use was inert).
-# This stack stays as the loop-closure front-end, DORMANT (not wired into vio_node) until
-# Phase C re-wires it with a learned VPR head (recall) + a thin TrackingMonitor.
+# Relocalizer front-end (place-rec + verify) + the thin global PoseGraph. The old
+# never-lost SUPERVISOR / anchor layer / SessionGraph were deleted 2026-05-29 (dead on
+# the live path). pose_graph.cpp is the clean "loop closure + optimization, separate"
+# layer: SE3 nodes + relative odometry edges + robust loop edges (Ceres).
 add_library(slamko_loop SHARED
   src/bow.cpp
   src/xfeat_relocalizer.cpp
-  src/lightglue_matcher.cpp)
+  src/lightglue_matcher.cpp
+  src/pose_graph.cpp)
 target_include_directories(slamko_loop PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
-target_link_libraries(slamko_loop Eigen3::Eigen)
+target_link_libraries(slamko_loop Eigen3::Eigen Ceres::ceres)
 ament_target_dependencies(slamko_loop slamko_core)
 target_compile_features(slamko_loop PUBLIC cxx_std_17)
 
@@ -58,9 +62,28 @@ install(TARGETS slamko_loop
   LIBRARY DESTINATION lib ARCHIVE DESTINATION lib RUNTIME DESTINATION bin)
 install(DIRECTORY include/ DESTINATION include)
 
+# Tools: smap_info (archive inspector / VPR-coverage hard gate). The offline
+# loop-closure driver (loop_offline) lands next to it in Milestone 2.
+add_executable(smap_info tools/smap_info.cpp)
+target_link_libraries(smap_info slamko_loop Eigen3::Eigen)
+ament_target_dependencies(smap_info slamko_core)
+install(TARGETS smap_info RUNTIME DESTINATION lib/${PROJECT_NAME})
+
+# loop_offline — the offline loop-closure + optimization driver (Milestone 2).
+add_executable(loop_offline tools/loop_offline.cpp)
+target_link_libraries(loop_offline slamko_loop Eigen3::Eigen Ceres::ceres)
+ament_target_dependencies(loop_offline slamko_core)
+install(TARGETS loop_offline RUNTIME DESTINATION lib/${PROJECT_NAME})
+
+# smap_cloud — export the global point cloud (anchor·local) for visualization.
+add_executable(smap_cloud tools/smap_cloud.cpp)
+target_link_libraries(smap_cloud slamko_loop Eigen3::Eigen)
+ament_target_dependencies(smap_cloud slamko_core)
+install(TARGETS smap_cloud RUNTIME DESTINATION lib/${PROJECT_NAME})
+
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-  foreach(t test_relocalizer test_bow)
+  foreach(t test_relocalizer test_bow test_pose_graph)
     ament_add_gtest(${t} test/${t}.cpp)
     target_link_libraries(${t} slamko_loop Eigen3::Eigen)
     ament_target_dependencies(${t} slamko_core)

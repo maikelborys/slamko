@@ -2,6 +2,29 @@
 
 Living, dated progress + numbers log. Plan: [`PLAN_P2_loop.md`](PLAN_P2_loop.md).
 
+## 2026-06-04 — Thin global pose-graph + offline loop-closure driver (branch klt-fork-loopclosure)
+
+Built the clean "loop closure + optimization, separate" layer (the disposable global
+graph). Depends only on `slamko_core` contracts + Ceres (Hard Rule #2).
+
+- **`pose_graph.{hpp,cpp}`** — Ceres SE3 pose-graph: SE3 nodes, relative-pose odometry
+  edges + robust-Huber loop edges, gauge anchor, `optimize()`. Solver encapsulated in the
+  .cpp; header solver-free. **`test_pose_graph` 3/3 green**: closes a synthetic drifted
+  24-pose loop (gap 0.018, error collapses), weld-math + anchor-invariance proven.
+- **`tools/loop_offline.cpp`** — offline driver: `loadSubMaps` → odometry pose-graph
+  (gid=(submap<<32)|kf) → `XFeatRelocalizer` incremental causal detection (DB only holds
+  submaps ≥`min_gap` older → every match is a genuine revisit) → weld
+  `T_from_to=T_query_match⁻¹·matchedKF.T_WB` → `addLoopEdge` → optimize → corrected.tum +
+  metrics. `--query_stride` decouples loop-detection cost from over-dense odometry KFs.
+- **`tools/smap_info.cpp`** (archive inspector + VPR-coverage hard gate) + **`smap_cloud.cpp`**
+  (global point-cloud export, anchor·local).
+- **Validated on magistrale1** (578 submaps, 14429 KFs, VPR 100%): 175 loops detected +
+  geometrically verified (inliers 40-147, VPR cos 0.7-0.95), pose-graph converged
+  (cost 26.7k→11.6k). Machinery works end-to-end. Open: end→start BRIDGE doesn't form
+  (single-best matching → disconnected start/end clusters; 0 loops submap>500→<100) → only
+  14% of the 26.5m gap closed. NEXT: multi-candidate acceptance + submap culling. See memory
+  `slamko-lifelong-build-roadmap`.
+
 ## 2026-05-29 — Deleted the dead anchor-era machinery; shrank to the relocalizer front-end (dormant)
 
 The okvis-arch-refactor forced the live trajectory to PURE VIO (anchors = identity), so the
