@@ -194,6 +194,7 @@ class ProviderFusionNode : public rclcpp::Node {
       // into the prior's global frame (anchor-don't-weld — the session graph is
       // untouched, only T_global<-map is estimated).
       prior_min_inliers_ = declare_parameter("prior_min_inliers", 15);
+      reanchor_jump_m_ = declare_parameter("reanchor_jump_m", 0.5);
       lg_model_path_ = declare_parameter(
           "lightglue_model_path",
           onnx_default.empty() ? std::string()
@@ -619,18 +620,51 @@ class ProviderFusionNode : public rclcpp::Node {
 
     if (is_prior) {
       // Cross-session: re-anchor this session into the prior map's global frame
-      // (anchor-don't-weld — the session graph is untouched). T_global_map is
-      // re-estimated on every accepted match (later sessions can low-pass it).
+      // (anchor-don't-weld — the session graph is untouched).
+      //
+      // Correction-consensus (the RTABmap Suave+Escaleras lesson, MULTISESSION_
+      // FUSION.md): cross-FLOOR aliased matches are SELF-consistent (they pass
+      // PCM) and showed up here as sudden 2.6-8 m T_global_map jumps. Small
+      // refinements (< reanchor_jump_m) apply directly; a BIG correction only
+      // applies when TWO consecutive accepted re-anchors agree on it (a real
+      // drift correction repeats; an aliased floor jumps somewhere else next).
       const slamko::SE3 T_global_q = prior_anchor_.at(r.submap_id) * r.T_query_match;
-      T_global_map_ = T_global_q * graph_.pose(q_id).inverse();
+      const slamko::SE3 T_new = T_global_q * graph_.pose(q_id).inverse();
+      const char* tag = "LOCALIZED";
+      if (!localized_) {
+        T_global_map_ = T_new;
+        localized_ = true;
+      } else {
+        const double jump = (T_global_map_.inverse() * T_new).translation().norm();
+        if (jump < reanchor_jump_m_) {
+          T_global_map_ = T_new;
+          have_big_cand_ = false;
+          tag = "RE-ANCHORED";
+        } else if (have_big_cand_ &&
+                   (T_big_cand_.inverse() * T_new).translation().norm() <
+                       reanchor_jump_m_) {
+          T_global_map_ = T_new;
+          have_big_cand_ = false;
+          tag = "BIG CORRECTION applied (2-vote)";
+        } else {
+          T_big_cand_ = T_new;
+          have_big_cand_ = true;
+          RCLCPP_WARN(get_logger(),
+                      "re-anchor JUMP held (%.2f m, needs a 2nd agreeing vote): "
+                      "kf %llu -> prior submap %llu inliers=%d t=[%.2f %.2f %.2f]",
+                      jump, (unsigned long long)q_id,
+                      (unsigned long long)r.submap_id, r.num_inliers,
+                      T_new.translation().x(), T_new.translation().y(),
+                      T_new.translation().z());
+          return;
+        }
+      }
       const auto& gt = T_global_map_.translation();
       RCLCPP_INFO(get_logger(),
                   "%s in prior map: kf %llu -> prior submap %llu inliers=%d  "
                   "T_global_map t=[%.3f %.3f %.3f]",
-                  localized_ ? "RE-ANCHORED" : "LOCALIZED",
-                  (unsigned long long)q_id, (unsigned long long)r.submap_id,
+                  tag, (unsigned long long)q_id, (unsigned long long)r.submap_id,
                   r.num_inliers, gt.x(), gt.y(), gt.z());
-      localized_ = true;
       return;
     }
 
@@ -778,6 +812,10 @@ class ProviderFusionNode : public rclcpp::Node {
   std::unordered_map<std::uint64_t, slamko::SE3> prior_anchor_;
   slamko::SE3 T_global_map_;
   bool localized_ = false;
+  // correction-consensus for big re-anchor jumps (cross-floor alias defense)
+  double reanchor_jump_m_ = 0.5;
+  slamko::SE3 T_big_cand_;
+  bool have_big_cand_ = false;
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_image_, sub_image_r_;

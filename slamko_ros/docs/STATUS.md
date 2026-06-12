@@ -191,3 +191,27 @@ The épico the user asked for: two different walks sharing a start point, fused.
 **Build note:** LighterGlue requires `colcon build --packages-select slamko_loop
 --cmake-args -DSLAMKO_LOOP_WITH_TORCH=ON` (libtorch at ~/libtorch); without it
 the prior verify silently falls back to NN and cross-bag fusion won't fire.
+
+---
+
+## 2026-06-12 (late) — fusion v2: cross-floor false re-anchor caught (RTABmap zgate lesson, 2-vote correction-consensus)
+
+User spotted it in the viz: Suave sat BELOW the floor. Diagnosis (fusion3 log):
+re-anchors 1-13 stable at cm; #14 jumped 3.7 m (prior submap 2 = upper floor,
+aliased) and #15 +2.6 m in z — and T_global_map was a hard replace. This is
+EXACTLY RTABmap's documented Suave+Escaleras failure (MULTISESSION_FUSION.md:
+cross-floor false loops are SELF-consistent; zgate at |ΔZ|>1.5 m was their fix;
+their clean reference run = casa1_fused_clean_zgate.db).
+
+Fix: **correction-consensus on re-anchor updates** (`reanchor_jump_m`=0.5):
+small refinements apply directly; a BIG T_global_map change needs TWO
+consecutive accepted re-anchors agreeing on it (real drift repeats; an aliased
+floor jumps elsewhere next). fusion4: the 3.62 m jump to submap 2 was HELD (no
+2nd vote ever came — confirmed alias), 12 clean re-anchors, global z end
+-0.06 m (was +2.65). Suave landmarks now plotted fused into the Escaleras map.
+
+**Known remaining (the P-C′ headline):** mid-run z dip (-2.3 m) = provider
+drift leaking BETWEEN re-anchors — the output-transform re-anchor only corrects
+where the prior covers. The continuous fix is prior ANCHOR EDGES in the
+pose-graph (+ refreshing sealed submap anchors post-optimize), so corrections
+distribute through the whole trajectory.
