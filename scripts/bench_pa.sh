@@ -17,7 +17,10 @@ RATE=${3:-1.0}
 MAX_WAIT=${MAX_WAIT:-900}   # hard cap on the whole run [s]
 VPR=${VPR:-false}           # true => P-B path (KF images + EigenPlaces + reloc + sealed map)
 
-PATTERN='okvis2x_stereo_network_node_subscriber|provider_fusion_node'
+PROVIDER=${PROVIDER:-okvis}   # okvis | kltvo
+PATTERN='okvis2x_stereo_network_node_subscriber|provider_fusion_node|klt_vo_node'
+LAUNCH_FILE=pa_okvis_bag.launch.py
+[ "$PROVIDER" = kltvo ] && LAUNCH_FILE=pa_kltvo_bag.launch.py
 
 if pgrep -af "$PATTERN" > /dev/null; then
   echo "ABORT: an okvis/provider_fusion_node process is already running:"
@@ -29,12 +32,13 @@ fi
 mkdir -p "$OUT"
 source /opt/ros/jazzy/setup.bash
 source ~/coding/OKVIS2-X/install/setup.bash   # provider workspace (okvis pkg)
+source ~/ros2_ws/install/setup.bash            # klt_vo workspace
 source install/setup.bash
 
 echo "== P-A bench: bag=$BAG out=$OUT rate=$RATE"
 EXTRA_ARGS=()
 [ -n "${PRIOR_MAP:-}" ] && EXTRA_ARGS+=("prior_map_dir:=$PRIOR_MAP")
-setsid ros2 launch slamko_ros pa_okvis_bag.launch.py \
+setsid ros2 launch slamko_ros $LAUNCH_FILE \
   bag_path:="$BAG" out_dir:="$PWD/$OUT" rate:="$RATE" rviz:=false vpr:="$VPR" \
   "${EXTRA_ARGS[@]}" \
   > "$OUT/launch.log" 2>&1 &

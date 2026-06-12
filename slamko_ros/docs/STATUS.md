@@ -234,3 +234,21 @@ Our TRT inference (XFeat×2 + EigenPlaces per KF) starves OKVIS's GPU.
 budget (reloc inference throttle `reloc_every_n_kf` — next session, INT8
 engines, or a second GPU). Sealed-anchor refresh after optimize() remains the
 map-straightening fix for whatever residual drift the provider has.
+
+---
+
+## 2026-06-12 (close) — P-E first light: klt_vo AS PROVIDER, full stack, both routes
+
+`pa_kltvo_bag.launch.py` + `PROVIDER=kltvo` in bench_pa.sh: klt_vo (the user's
+own 190 fps XFeat/KLT VIO, ~/ros2_ws workspace) drives the SAME
+provider_fusion_node — odom_topic:=/klt_vo/odometry, body_T_cam=IDENTITY
+(klt_vo publishes the CAMERA pose, klt_vo_node.cpp:767), bag QoS override for
+its RELIABLE IMU sub. Zero fusion-code changes — the loose contract delivered.
+
+| Route (rate 0.5) | klt_vo raw closure | slamko fused | loops | submaps/landmarks |
+|---|---|---|---|---|
+| CASA1_Suave | 0.489 m | **0.080 m** | 6 | 8 / 79k |
+| CASA1_Escaleras | 2.477 m | **0.163 m** | 11 | 16 / 155k |
+
+Note: klt_vo's Escaleras z span (-2.2..3.5) underestimates the climb vs OKVIS
+(0..8.2) — the known stairs-bias signature; the loop layer still bounds it.
