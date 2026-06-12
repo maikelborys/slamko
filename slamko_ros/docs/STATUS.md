@@ -140,3 +140,27 @@ configs (the sparse 3.22 cm baseline has none). For slamko's loose layer the
 right analogue is **landmark-cloud overlap verification after an anchor**
 (Bosch-style reversible merge check, ~no new deps) — planned for P-C; copying
 supereight2 would couple us to the provider's dense backend for marginal gain.
+
+---
+
+## 2026-06-12 — P-C first pass: S1 BLACKOUT gate — auto-recovery works on both protocol bags
+
+The kidnap/blackout protocol bags through the unmodified P-B stack (no
+dedicated never-lost code yet — recovery emerges from continuous per-KF reloc +
+consensus loops):
+
+| Bag (49.4 s, lens covered mid-run) | Provider closure | Fused closure | Crashes | Loops |
+|---|---|---|---|---|
+| CASA1_Suave_blackout | 3.12 m (18.9 m/s IMU-only spike at t+34) | **0.16 m** | 0 | 2 |
+| CASA1_Suave_blackout4 | 3.69 m | **0.09 m** | 0 | 2 |
+
+S1 gate criteria (PLAN_STRESS_SUITE): zero crashes ✓, clean recovery ✓,
+un-aligned divergence bounded ✓ (single-run; reproducibility pass pending).
+Remaining P-C: explicit seal-on-loss/branch state machine (today the chain just
+keeps consuming OKVIS's quality-inflated covariance — Hard Rule #3 doing the
+work), Atlas multi-prior-map + A↔B bridging, landmark-overlap merge check.
+
+Also this block: klt_vo confirmed drop-in second provider (offline contract
+gate PASS 5.3e-14 on its MH_01 est.tum; its node already publishes
+nav_msgs/Odometry on /klt_vo/odometry) — P-E is a remap away. bench_pa.sh:
+PRIOR_MAP env + empty-arg fix.

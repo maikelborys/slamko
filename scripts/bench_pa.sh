@@ -32,9 +32,11 @@ source ~/coding/OKVIS2-X/install/setup.bash   # provider workspace (okvis pkg)
 source install/setup.bash
 
 echo "== P-A bench: bag=$BAG out=$OUT rate=$RATE"
+EXTRA_ARGS=()
+[ -n "${PRIOR_MAP:-}" ] && EXTRA_ARGS+=("prior_map_dir:=$PRIOR_MAP")
 setsid ros2 launch slamko_ros pa_okvis_bag.launch.py \
   bag_path:="$BAG" out_dir:="$PWD/$OUT" rate:="$RATE" rviz:=false vpr:="$VPR" \
-  prior_map_dir:="${PRIOR_MAP:-}" \
+  "${EXTRA_ARGS[@]}" \
   > "$OUT/launch.log" 2>&1 &
 LAUNCH_PID=$!
 sleep 8
