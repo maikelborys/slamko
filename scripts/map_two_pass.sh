@@ -34,9 +34,12 @@ echo "== PASS 1: OKVIS alone (rate $RATE1), recording odometry"
 rm -rf "$OUT/odom_bag"
 setsid ros2 bag record /okvis/okvis_odometry -o "$OUT/odom_bag" > "$OUT/record.log" 2>&1 &
 REC_PID=$!
-OKVIS_CFG=${OKVIS_CFG:-$HOME/coding/OKVIS2-X/src/OKVIS2-X/config/rsD455_bno}  # 640x480 CASA1_BNO default
-setsid ros2 launch ~/coding/d455_setup/okvis_d455_casa2_odom.launch.py \
-  bag_path:="$BAG" rate:="$RATE1" rviz:=false csv_path:="$OUT/okvis/" config_dir:="$OKVIS_CFG" \
+# PROVEN launch for the bno_ab bags (BNO055/ab): their /camera/camera/imu accel
+# is DOUBLED (unite_imu_method:=2) -> imu_relay.py --accel-scale 0.5 feeds
+# /okvis/imu0; OKVIS_CFG picks the calib (rsD455_map_odom = 640, pure VIO).
+export OKVIS_CFG=${OKVIS_CFG:-rsD455_map_odom}
+setsid ros2 launch ~/coding/BNO055/ab/okvis_ab_c1_d455imu.launch.py \
+  bag_path:="$BAG" rate:="$RATE1" rviz:=false csv_path:="$OUT/okvis/" \
   > "$OUT/pass1.log" 2>&1 &
 P1_PID=$!
 sleep 8; P1_PIDS=$(pgrep -f "$PATTERN" | tr '\n' ' ')
@@ -46,6 +49,12 @@ while pgrep -f "ros2 bag play $BAG" > /dev/null; do sleep 5; done
 sleep 5
 kill -INT -- -"$REC_PID" 2>/dev/null   # recorder first: let it write metadata
 sleep 4
+# the record process routinely escapes the group — reap OUR exact recorder
+pgrep -f "bag record /okvis/okvis_odometry -o $OUT/odom_bag" | xargs -r kill -INT 2>/dev/null
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  pgrep -f "bag record /okvis/okvis_odometry -o $OUT/odom_bag" > /dev/null || break
+  sleep 1
+done
 kill -INT -- -"$P1_PID" 2>/dev/null
 for _ in 1 2 3 4 5 6 7 8; do pgrep -f "$PATTERN" > /dev/null || break; sleep 1; done
 kill -- -"$P1_PID" 2>/dev/null

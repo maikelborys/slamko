@@ -21,18 +21,25 @@ setsid ros2 run slamko_ros provider_fusion_node --ros-args \
   -p traj_fused_path:="$PWD/$OUT/fused.tum" \
   -p traj_provider_path:="$PWD/$OUT/provider.tum" \
   -p traj_graph_path:="$PWD/$OUT/graph.tum" \
+  -p traj_global_path:="$PWD/$OUT/global.tum" \
+  ${PRIOR_MAP:+-p prior_map_dir:="$PRIOR_MAP"} \
   > "$OUT/pass2.log" 2>&1 &
 NODE_GRP=$!
 sleep 14  # TRT engines deserialize
 
+# odometry is replayed IMAGE-DRIVEN (scripts/odom_player.py): independent bag
+# players skew timelines by the pass-1 pre-roll and the fusion node's image
+# buffer never overlaps. The player publishes each recorded odometry message
+# when the image stream reaches its header stamp — synced by construction.
+setsid python3 scripts/odom_player.py "$OUT/odom_bag" > "$OUT/play_odo.log" 2>&1 &
+ODOP=$!
+sleep 5
 setsid ros2 bag play "$BAG" --rate "$RATE" --qos-profile-overrides-path "$QOS" \
   --remap /tf_static:=/_bag_tf_static_unused > "$OUT/play_img.log" 2>&1 &
-setsid ros2 bag play "$OUT/odom_bag" --rate "$RATE" > "$OUT/play_odo.log" 2>&1 &
 sleep 10
 echo "10s: provider=$(wc -l < "$OUT/provider.tum" 2>/dev/null || echo 0)"
-while pgrep -f "ros2 bag play $BAG" > /dev/null || pgrep -f "bag play $PWD/$OUT/odom_bag" > /dev/null; do
-  sleep 5
-done
+while pgrep -f "ros2 bag play $BAG" > /dev/null; do sleep 5; done
+kill -- -"$ODOP" 2>/dev/null
 sleep 8
 kill -INT -- -"$NODE_GRP" 2>/dev/null
 for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -f '^[^ ]*provider_fusion_node' > /dev/null || break; sleep 1; done

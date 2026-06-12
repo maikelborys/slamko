@@ -292,3 +292,30 @@ SE3-ATE can hide a scale error; (c) check `nvidia-smi`/pgrep for OTHER GPU
 tenants before blaming algorithms. Defaults fixed: pa_okvis_bag + map_two_pass
 use rsD455_map_odom; d455_setup launch grew a config_dir arg (default
 unchanged).
+
+---
+
+## 2026-06-13 — THE CLEAN FUSION: second root cause (2x camera-IMU accel) + image-driven replay
+
+Escaleras kept diverging (z→km, then bad_alloc from the runaway map) even with
+the right calib config — **second root cause: the bno_ab bags' /camera/camera/imu
+accel is DOUBLED** (unite_imu_method:=2). The PROVEN launch for these bags is
+`~/coding/BNO055/ab/okvis_ab_c1_d455imu.launch.py` (imu_relay --accel-scale 0.5
+-> /okvis/imu0; OKVIS_CFG env; 80 Hz propagated odometry). Suave had survived
+the 2x accel by luck (gentle motion); the stairs' vertical accelerations
+couldn't. map_two_pass.sh pass 1 now uses it (OKVIS_CFG=rsD455_map_odom).
+
+Also: pass-2 replay re-synced — two independent bag players skew by the pass-1
+pre-roll; `scripts/odom_player.py` now replays the recorded odometry
+IMAGE-DRIVEN (publishes each message when the image stream reaches its header
+stamp — synced by construction).
+
+**Clean results (two-pass, correct config + accel relay):**
+| Run | provider | slamko graph | loops |
+|---|---|---|---|
+| Suave | 3.5 cm / scale 1.000 | 4.2 cm | 1 |
+| Escaleras | 10.1 cm / scale 1.008 | **8.1 cm (improves the provider)** | 9 |
+| **Fusion (Suave over Escaleras prior)** | — | LOCALIZED kf 3, 53 inliers, **T_global = 4 cm**, 14 re-anchors, **0 held jumps** | 6 |
+
+With clean data the consensus/jump gates sit idle (0 interventions) — they are
+armour, not crutches. Map: 151k landmarks, real floors 0→6.7 m, flat ground.
