@@ -215,3 +215,22 @@ drift leaking BETWEEN re-anchors — the output-transform re-anchor only correct
 where the prior covers. The continuous fix is prior ANCHOR EDGES in the
 pose-graph (+ refreshing sealed submap anchors post-optimize), so corrections
 distribute through the whole trajectory.
+
+---
+
+## 2026-06-12 (final) — GPU contention CONFIRMED dose-response; rate 0.5 = clean maps
+
+User: "OKVIS verde está perfecta, algo hacemos mal" — correct. Controlled test,
+same bag, same code:
+
+| Bag rate | Provider closure | z min | Fused closure |
+|---|---|---|---|
+| 1.0 (contended) | 8.25 m | -2.23 | 0.01 m |
+| **0.5** | **0.75 m** | -0.69 | **0.022 m** |
+| (reference, no slamko inference at all) | 0.04 m | ~0 | — |
+
+Our TRT inference (XFeat×2 + EigenPlaces per KF) starves OKVIS's GPU.
+**Operational recipe:** bag map-building at rate ≤0.5; online robot needs a GPU
+budget (reloc inference throttle `reloc_every_n_kf` — next session, INT8
+engines, or a second GPU). Sealed-anchor refresh after optimize() remains the
+map-straightening fix for whatever residual drift the provider has.
