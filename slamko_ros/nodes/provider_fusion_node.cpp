@@ -195,6 +195,7 @@ class ProviderFusionNode : public rclcpp::Node {
       // untouched, only T_global<-map is estimated).
       prior_min_inliers_ = declare_parameter("prior_min_inliers", 15);
       reanchor_jump_m_ = declare_parameter("reanchor_jump_m", 0.5);
+      min_reloc_period_s_ = declare_parameter("min_reloc_period_s", 0.5);
       lg_model_path_ = declare_parameter(
           "lightglue_model_path",
           onnx_default.empty() ? std::string()
@@ -515,7 +516,15 @@ class ProviderFusionNode : public rclcpp::Node {
         slamko::Features qr;
         if (right && detect(*right, qr)) stereoLandmarks(ql, qr, rec);
         ql.global_descriptor = rec.g;
-        tryRelocalize(id, t, ql);
+        // Reloc THROTTLE (the GPU-contention fix): attempting on EVERY chain KF
+        // (5-9 Hz walking) starves a co-running provider — the verify stage
+        // (NN brute / LighterGlue x top-10 candidates) is the hog, and the
+        // consensus gate works fine at 2 Hz (3 consistent hits = 1.5 s).
+        // Detection stays per-KF (cheap, and the map needs the landmarks).
+        if (t - last_reloc_attempt_t_ >= min_reloc_period_s_) {
+          last_reloc_attempt_t_ = t;
+          tryRelocalize(id, t, ql);
+        }
       }
     }
 
@@ -803,6 +812,7 @@ class ProviderFusionNode : public rclcpp::Node {
   int pcm_consec_ = 3;
   int reloc_min_inliers_ = 25, max_kf_landmarks_ = 200;
   int prior_min_inliers_ = 15;
+  double min_reloc_period_s_ = 0.5, last_reloc_attempt_t_ = -1e18;
   std::string lg_model_path_;
   slamko::LoopConsensusGate gate_;
 

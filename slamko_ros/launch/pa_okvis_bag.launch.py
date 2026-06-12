@@ -31,6 +31,11 @@ def setup(context):
     out_dir = LaunchConfiguration('out_dir').perform(context)
     os.makedirs(out_dir, exist_ok=True)
 
+    # With the VPR path on, our TRT engine deserialization + first inferences
+    # overlap OKVIS's CNN warm-up; if the bag starts during that window OKVIS
+    # drops enough consecutive frames to go IMU-only and blow up (observed:
+    # 673 m on a run with 2657 dropped frames). Give warm-ups 20 s.
+    vpr_pre = LaunchConfiguration('vpr').perform(context).lower() == 'true'
     okvis = IncludeLaunchDescription(
         AnyLaunchDescriptionSource(OKVIS_LAUNCH),
         launch_arguments={
@@ -39,6 +44,7 @@ def setup(context):
             'imu_rate': LaunchConfiguration('imu_rate'),
             'csv_path': out_dir + '/okvis/',
             'rviz':     LaunchConfiguration('rviz'),
+            'bag_delay': '20.0' if vpr_pre else '10.0',
         }.items())
 
     # image_topic:='' keeps the P-A behavior; vpr:=true turns on the P-B path
