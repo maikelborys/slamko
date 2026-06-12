@@ -15,6 +15,7 @@ BAG=${1:-/mnt/data/bno_ab/CASA1_Suave_Stereo60_RGB30_BNO}
 OUT=${2:-results/pa/$(basename "$BAG")}
 RATE=${3:-1.0}
 MAX_WAIT=${MAX_WAIT:-900}   # hard cap on the whole run [s]
+VPR=${VPR:-false}           # true => P-B path (KF images + EigenPlaces + reloc + sealed map)
 
 PATTERN='okvis2x_stereo_network_node_subscriber|provider_fusion_node'
 
@@ -32,7 +33,7 @@ source install/setup.bash
 
 echo "== P-A bench: bag=$BAG out=$OUT rate=$RATE"
 setsid ros2 launch slamko_ros pa_okvis_bag.launch.py \
-  bag_path:="$BAG" out_dir:="$PWD/$OUT" rate:="$RATE" rviz:=false \
+  bag_path:="$BAG" out_dir:="$PWD/$OUT" rate:="$RATE" rviz:=false vpr:="$VPR" \
   > "$OUT/launch.log" 2>&1 &
 LAUNCH_PID=$!
 sleep 8

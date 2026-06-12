@@ -34,6 +34,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <Eigen/Core>
@@ -48,12 +49,17 @@
 
 #include <opencv2/imgproc.hpp>
 
+#include <sensor_msgs/msg/camera_info.hpp>
+
+#include "slamko_core/features.hpp"
 #include "slamko_core/odometry_provider.hpp"
 #include "slamko_core/se3.hpp"
 #include "slamko_core/submap.hpp"
 #include "slamko_core/submap_io.hpp"
 #include "slamko_loop/pose_graph.hpp"
+#include "slamko_loop/xfeat_relocalizer.hpp"
 #include "slamko_vio/feature/eigenplaces.h"
+#include "slamko_vio/feature/xfeat.h"
 
 namespace {
 
@@ -129,7 +135,9 @@ class ProviderFusionNode : public rclcpp::Node {
     map_dir_ = declare_parameter("map_dir", std::string(""));
     kf_per_submap_ = declare_parameter("kf_per_submap", 50);
     image_tol_s_ = declare_parameter("image_tol_s", 0.06);
-    image_buffer_s_ = declare_parameter("image_buffer_s", 0.6);
+    // Provider odometry arrives with estimation latency (worse under GPU load —
+    // the 0.6 s default starved 235/1300 KFs of their image on CASA1_Suave).
+    image_buffer_s_ = declare_parameter("image_buffer_s", 2.5);
     if (!image_topic.empty()) {
       std::string onnx_default;
       try {
@@ -155,6 +163,61 @@ class ProviderFusionNode : public rclcpp::Node {
       if (!map_dir_.empty()) std::filesystem::create_directories(map_dir_);
       RCLCPP_INFO(get_logger(), "VPR path on: image=%s map_dir=%s kf_per_submap=%d",
                   image_topic.c_str(), map_dir_.c_str(), kf_per_submap_);
+
+      // ---------- P-B step 2b: XFeat stereo landmarks + relocalization -> loop
+      // edges. Needs the right image + both camera_infos; the relocalizer is
+      // built lazily once the intrinsics arrive. XFeat ONNX is STATIC 752x480
+      // (non-native input -> 0 keypoints) and the D455 IR is 848x480, so both
+      // images are CENTER-CROPPED to 752 and the canonical camera model of
+      // everything downstream (kp uv, PnP intrinsics, stored submap obs) is the
+      // cropped one: cx' = cx - crop_x.
+      reloc_enabled_ = declare_parameter("reloc", true);
+      min_loop_gap_s_ = declare_parameter("min_loop_gap_s", 25.0);
+      reloc_min_inliers_ = declare_parameter("reloc_min_inliers", 25);
+      max_kf_landmarks_ = declare_parameter("max_kf_landmarks", 200);
+      loop_sigma_t_ = declare_parameter("loop_sigma_t", 0.10);
+      loop_sigma_r_ = declare_parameter("loop_sigma_r", 0.05);
+      max_loop_disagree_m_ = declare_parameter("max_loop_disagree_m", 30.0);
+      pcm_tol_t_ = declare_parameter("pcm_tol_t", 0.30);
+      pcm_tol_r_ = declare_parameter("pcm_tol_r", 0.15);
+      pcm_consec_ = declare_parameter("pcm_consec", 3);
+      loop_cooldown_s_ = declare_parameter("loop_cooldown_s", 2.0);
+      // OKVIS rsD455 T_SC cam0 (body=S -> cam): identity rotation + this offset.
+      const std::vector<double> btc = declare_parameter(
+          "body_t_cam_xyz", std::vector<double>{-0.03022, 0.0074, 0.01602});
+      body_T_cam_ = slamko::SE3(slamko::SO3(), Eigen::Vector3d(btc[0], btc[1], btc[2]));
+      if (reloc_enabled_) {
+        XFeatConfig xcfg;
+        xcfg.onnx_file = declare_parameter(
+            "xfeat_onnx_path",
+            onnx_default.empty() ? std::string()
+                                 : onnx_default.substr(0, onnx_default.rfind('/')) + "/xfeat.onnx");
+        xcfg.engine_file =
+            declare_parameter("xfeat_engine_path", std::string("/tmp/slamko_vio_xfeat_752.engine"));
+        xcfg.max_keypoints = declare_parameter("xfeat_max_keypoints", 800);
+        xfeat_ = std::make_shared<XFeat>(xcfg);
+        if (!xfeat_->build()) {
+          RCLCPP_ERROR(get_logger(), "XFeat build failed (onnx=%s) — reloc disabled",
+                       xcfg.onnx_file.c_str());
+          xfeat_.reset();
+          reloc_enabled_ = false;
+        }
+        const auto right_topic =
+            declare_parameter("right_image_topic",
+                              std::string("/camera/camera/infra2/image_rect_raw"));
+        sub_image_r_ = create_subscription<sensor_msgs::msg::Image>(
+            right_topic, img_qos,
+            std::bind(&ProviderFusionNode::onImageRight, this, std::placeholders::_1));
+        auto info_qos = rclcpp::QoS(rclcpp::KeepLast(5)).durability_volatile().best_effort();
+        sub_info_l_ = create_subscription<sensor_msgs::msg::CameraInfo>(
+            declare_parameter("left_info_topic",
+                              std::string("/camera/camera/infra1/camera_info")),
+            info_qos, [this](sensor_msgs::msg::CameraInfo::SharedPtr m) { onInfo(m, false); });
+        sub_info_r_ = create_subscription<sensor_msgs::msg::CameraInfo>(
+            declare_parameter("right_info_topic",
+                              std::string("/camera/camera/infra2/camera_info")),
+            info_qos, [this](sensor_msgs::msg::CameraInfo::SharedPtr m) { onInfo(m, true); });
+      }
     }
 
     RCLCPP_INFO(get_logger(), "provider_fusion_node up: topic=%s frames %s->%s->%s",
@@ -258,6 +321,17 @@ class ProviderFusionNode : public rclcpp::Node {
   }
 
   // ------------------------------------------------ P-B: images + VPR + sealing
+  struct KfRec {
+    std::uint64_t id;
+    double t;
+    slamko::SE3 T_map;
+    Eigen::VectorXf g;
+    // Stereo-triangulated XFeat landmarks (cropped-camera-model uv, camera-frame 3D).
+    Eigen::Matrix<float, Eigen::Dynamic, 2, Eigen::RowMajor> lm_uv;
+    Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> lm_desc;
+    std::vector<Eigen::Vector3d> lm_pcam;
+  };
+
   void onImage(const sensor_msgs::msg::Image::SharedPtr msg) {
     const double t = rclcpp::Time(msg->header.stamp).seconds();
     cv::Mat gray;
@@ -278,25 +352,235 @@ class ProviderFusionNode : public rclcpp::Node {
       img_buf_.pop_front();
   }
 
+  void onImageRight(const sensor_msgs::msg::Image::SharedPtr msg) {
+    if (msg->encoding != "mono8") return;
+    const double t = rclcpp::Time(msg->header.stamp).seconds();
+    cv::Mat gray = cv::Mat(msg->height, msg->width, CV_8UC1,
+                           const_cast<std::uint8_t*>(msg->data.data()), msg->step).clone();
+    img_buf_r_.emplace_back(t, std::move(gray));
+    while (!img_buf_r_.empty() &&
+           img_buf_r_.back().first - img_buf_r_.front().first > image_buffer_s_)
+      img_buf_r_.pop_front();
+  }
+
+  void onInfo(const sensor_msgs::msg::CameraInfo::SharedPtr m, bool right) {
+    if (have_calib_ || !reloc_enabled_) return;
+    if (!right) {
+      fx_ = m->p[0]; fy_ = m->p[5]; cx_ = m->p[2]; cy_ = m->p[6];
+      img_w_ = m->width;
+      have_info_l_ = true;
+    } else {
+      // P[0,3] = -fx * baseline for the right camera of a rectified pair.
+      baseline_ = -m->p[3] / m->p[0];
+      have_info_r_ = true;
+    }
+    if (have_info_l_ && have_info_r_) {
+      have_calib_ = true;
+      crop_x_ = std::max(0, (int)img_w_ - 752) / 2;
+      slamko::XFeatRelocConfig rcfg;
+      rcfg.fx = fx_; rcfg.fy = fy_; rcfg.cx = cx_ - crop_x_; rcfg.cy = cy_;
+      rcfg.body_T_cam = body_T_cam_;
+      rcfg.min_inliers = reloc_min_inliers_;
+      rcfg.use_bow = false;  // VPR per-KF ranking is the candidate stage (P-B verdict)
+      reloc_ = std::make_unique<slamko::XFeatRelocalizer>(rcfg);
+      RCLCPP_INFO(get_logger(),
+                  "reloc ready: fx=%.1f cx'=%.1f baseline=%.4f m crop_x=%d top-10 VPR + PnP",
+                  fx_, cx_ - crop_x_, baseline_, crop_x_);
+    }
+  }
+
+  // XFeat needs its STATIC 752x480 input. Wider sensors (848) are center-cropped
+  // (crop_x_ > 0, canonical cx' = cx - crop_x); narrower ones (640) are RIGHT-
+  // padded with black — padding on the right leaves the principal point alone
+  // (cx' = cx), and keypoints landing in the pad are dropped. Output keypoints
+  // are in the canonical (cropped/original) pixel frame.
+  bool detect(const cv::Mat& full, slamko::Features& out) {
+    constexpr int W = 752;
+    cv::Mat view;
+    if (full.cols >= W) {
+      view = full(cv::Rect(crop_x_, 0, W, full.rows));
+    } else {
+      view = cv::Mat::zeros(full.rows, W, CV_8UC1);
+      full.copyTo(view(cv::Rect(0, 0, full.cols, full.rows)));
+    }
+    Eigen::Matrix<float, kXFeatFeatureRows, Eigen::Dynamic> f;
+    if (!xfeat_->infer(view, f) || f.cols() == 0) return false;
+    const float x_max = (full.cols >= W ? W : full.cols) - 2.0f;
+    const int n = (int)f.cols();
+    out.keypoints.resize(n, 3);
+    out.descriptors.resize(n, 64);
+    int k = 0;
+    for (int j = 0; j < n; ++j) {
+      if (f(1, j) > x_max) continue;  // pad region
+      out.keypoints(k, 0) = f(1, j);
+      out.keypoints(k, 1) = f(2, j);
+      out.keypoints(k, 2) = f(0, j);
+      out.descriptors.row(k) = f.block<64, 1>(3, j).transpose();
+      ++k;
+    }
+    out.keypoints.conservativeResize(k, 3);
+    out.descriptors.conservativeResize(k, 64);
+    return k > 0;
+  }
+
   // Called once per new chain keyframe (single-threaded executor — no locking).
-  // EigenPlaces runs HERE, at keyframe rate (~1-2 Hz), never per frame.
+  // EigenPlaces + XFeat run HERE, at keyframe rate (~1-5 Hz), never per frame.
   void onKeyframe(std::uint64_t id, double t, const slamko::SE3& T_map) {
     if (!vpr_) return;
-    // nearest buffered image
-    double best_dt = 1e9;
-    const cv::Mat* best = nullptr;
-    for (const auto& [it, img] : img_buf_) {
-      const double dt = std::abs(it - t);
-      if (dt < best_dt) { best_dt = dt; best = &img; }
+    auto nearest = [&](const std::deque<std::pair<double, cv::Mat>>& buf) -> const cv::Mat* {
+      double best_dt = 1e9;
+      const cv::Mat* best = nullptr;
+      for (const auto& [it, img] : buf)
+        if (std::abs(it - t) < best_dt) { best_dt = std::abs(it - t); best = &img; }
+      return (best && best_dt <= image_tol_s_) ? best : nullptr;
+    };
+    const cv::Mat* left = nearest(img_buf_);
+    if (!left) { ++kf_no_image_; return; }
+    Eigen::VectorXf g;
+    if (!vpr_->infer(*left, g)) return;
+
+    KfRec rec{id, t, T_map, std::move(g), {}, {}, {}};
+
+    if (reloc_enabled_ && have_calib_ && xfeat_) {
+      slamko::Features ql;
+      if (detect(*left, ql)) {
+        // Stereo: XFeat on the right view, NN match row-constrained, triangulate.
+        const cv::Mat* right = nearest(img_buf_r_);
+        slamko::Features qr;
+        if (right && detect(*right, qr)) stereoLandmarks(ql, qr, rec);
+        ql.global_descriptor = rec.g;
+        tryRelocalize(id, t, ql);
+      }
     }
-    if (!best || best_dt > image_tol_s_) {
-      ++kf_no_image_;
+
+    pending_kfs_.push_back(std::move(rec));
+    registerAgedSubmaps(t);
+    if (!map_dir_.empty() && (int)pending_kfs_.size() >= kf_per_submap_) sealSubmap();
+  }
+
+  // Mutual-best NN stereo match (row tolerance 2 px, disparity 0.5..200 px) ->
+  // triangulate in the CAMERA frame; keep the strongest max_kf_landmarks_.
+  void stereoLandmarks(const slamko::Features& l, const slamko::Features& r, KfRec& rec) {
+    if (r.size() == 0 || l.size() == 0 || baseline_ <= 0.0) return;
+    const Eigen::MatrixXf sim = l.descriptors * r.descriptors.transpose();
+    std::vector<std::tuple<float, int, int>> cand;  // score, li, ri
+    for (int i = 0; i < l.size(); ++i) {
+      int best_j = -1;
+      float best = 0.80f;  // descriptor cosine floor
+      for (int j = 0; j < r.size(); ++j) {
+        if (std::abs(l.keypoints(i, 1) - r.keypoints(j, 1)) > 2.0f) continue;
+        const float d = l.keypoints(i, 0) - r.keypoints(j, 0);
+        if (d < 0.5f || d > 200.0f) continue;
+        if (sim(i, j) > best) { best = sim(i, j); best_j = j; }
+      }
+      if (best_j < 0) continue;
+      // mutual check along the same row
+      bool mutual = true;
+      for (int i2 = 0; i2 < l.size(); ++i2)
+        if (i2 != i && sim(i2, best_j) > sim(i, best_j) &&
+            std::abs(l.keypoints(i2, 1) - r.keypoints(best_j, 1)) <= 2.0f) { mutual = false; break; }
+      if (mutual) cand.emplace_back(l.keypoints(i, 2), i, best_j);
+    }
+    std::sort(cand.rbegin(), cand.rend());
+    if ((int)cand.size() > max_kf_landmarks_) cand.resize(max_kf_landmarks_);
+    rec.lm_uv.resize(cand.size(), 2);
+    rec.lm_desc.resize(cand.size(), 64);
+    rec.lm_pcam.reserve(cand.size());
+    int k = 0;
+    const double cxp = cx_ - crop_x_;
+    for (const auto& [score, i, j] : cand) {
+      (void)score;
+      const double d = l.keypoints(i, 0) - r.keypoints(j, 0);
+      const double z = fx_ * baseline_ / d;
+      if (z < 0.25 || z > 12.0) continue;
+      rec.lm_uv(k, 0) = l.keypoints(i, 0);
+      rec.lm_uv(k, 1) = l.keypoints(i, 1);
+      rec.lm_desc.row(k) = l.descriptors.row(i);
+      rec.lm_pcam.emplace_back((l.keypoints(i, 0) - cxp) * z / fx_,
+                               (l.keypoints(i, 1) - cy_) * z / fy_, z);
+      ++k;
+    }
+    rec.lm_uv.conservativeResize(k, 2);
+    rec.lm_desc.conservativeResize(k, 64);
+  }
+
+  // Query the relocalizer against AGED sealed submaps; on a verified match add
+  // a robust loop edge + re-optimize. Gates (P-B; reversibility lands in P-C):
+  // PnP inliers >= reloc_min_inliers_ AND the matched submap is older than
+  // min_loop_gap_s_ (adjacent-corridor matches are not loops).
+  void tryRelocalize(std::uint64_t q_id, double t, const slamko::Features& query) {
+    if (!reloc_ || reloc_->numSubMaps() == 0) return;
+    const auto r = reloc_->relocalize(query);
+    if (r.found)
+      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+                           "reloc attempt: kf %llu best=submap %llu inliers=%d",
+                           (unsigned long long)q_id, (unsigned long long)r.submap_id,
+                           r.num_inliers);
+    if (!r.found || r.num_inliers < reloc_min_inliers_) return;
+    const auto it = submap_last_t_.find(r.submap_id);
+    if (it == submap_last_t_.end() || t - it->second < min_loop_gap_s_) return;
+
+    // Consensus gate (PCM-lite, the lesson of CASA1_Suave_loop3/4): an ABSOLUTE
+    // disagree-with-graph gate rejects exactly the loops that matter (the graph
+    // is wrong BY the drift the loop corrects — this run's provider drifted
+    // 6-10 m under GPU contention and every true return match got rejected).
+    // Instead require pcm_consec_ CONSECUTIVE matches to the same submap that
+    // are PAIRWISE consistent under the provider's relative odometry:
+    //   meas_k ≈ meas_{k-1} ∘ T_{q_{k-1} q_k}(provider).
+    // True matches track the motion; aliasing/PnP-on-self-similar-structure
+    // jitters and never builds a streak. Absolute gate stays only as a loose
+    // teleport bound (max_loop_disagree_m_, default 30 m).
+    const slamko::SE3 T_a_q_graph =
+        graph_.pose(submap_first_kf_.at(r.submap_id)).inverse() * graph_.pose(q_id);
+    if ((T_a_q_graph.inverse() * r.T_query_match).translation().norm() >
+        max_loop_disagree_m_)
+      return;
+    const slamko::SE3 T_OB_q = chain_.lastKeyframe().T_OB;
+    auto& c = loop_cands_[r.submap_id];
+    if (c.consec > 0) {
+      const slamko::SE3 pred = c.meas * (c.T_OB.inverse() * T_OB_q);
+      const slamko::SE3 d = pred.inverse() * r.T_query_match;
+      if (d.translation().norm() < pcm_tol_t_ && d.so3().log().norm() < pcm_tol_r_)
+        c.consec += 1;
+      else
+        c.consec = 1;  // inconsistent — restart the streak from this candidate
+    } else {
+      c.consec = 1;
+    }
+    c.q_id = q_id; c.t = t; c.meas = r.T_query_match; c.T_OB = T_OB_q;
+    if (c.consec < pcm_consec_) {
+      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+                           "loop candidate: kf %llu -> submap %llu inliers=%d streak=%d/%d",
+                           (unsigned long long)q_id, (unsigned long long)r.submap_id,
+                           r.num_inliers, c.consec, pcm_consec_);
       return;
     }
-    Eigen::VectorXf g;
-    if (!vpr_->infer(*best, g)) return;
-    pending_kfs_.push_back(KfRec{id, t, T_map, std::move(g)});
-    if (!map_dir_.empty() && (int)pending_kfs_.size() >= kf_per_submap_) sealSubmap();
+    if (t - last_loop_add_t_ < loop_cooldown_s_) return;
+    last_loop_add_t_ = t;
+
+    const std::uint64_t a = submap_first_kf_.at(r.submap_id);
+    // Submap-local frame == its first KF's body frame (sealing convention), so
+    // T_query_match IS the a->query relative measurement.
+    graph_.addLoopEdge(a, q_id, r.T_query_match, loop_sigma_t_, loop_sigma_r_);
+    const auto res = graph_.optimize();
+    T_map_odom_target_ = graph_.pose(q_id) * chain_.lastKeyframe().T_OB.inverse();
+    RCLCPP_INFO(get_logger(),
+                "LOOP CLOSED: kf %llu -> submap %llu (kf %llu), inliers=%d | optimize: "
+                "converged=%d iters=%d cost %.2e -> %.2e",
+                (unsigned long long)q_id, (unsigned long long)r.submap_id,
+                (unsigned long long)a, r.num_inliers, (int)res.converged,
+                res.iterations, res.initial_cost, res.final_cost);
+    ++loops_closed_;
+  }
+
+  // Register sealed submaps into the relocalizer only once they are OLDER than
+  // the loop gap — relocalize() then never sees "places" it just left.
+  void registerAgedSubmaps(double now_t) {
+    while (!sealed_unregistered_.empty() &&
+           now_t - sealed_unregistered_.front().second > min_loop_gap_s_) {
+      if (reloc_) reloc_->addSubMap(sealed_unregistered_.front().first);
+      sealed_unregistered_.pop_front();
+    }
   }
 
   void sealSubmap() {
@@ -307,26 +591,54 @@ class ProviderFusionNode : public rclcpp::Node {
     sm.keyframes.reserve(pending_kfs_.size());
     sm.kf_obs.resize(pending_kfs_.size());
     Eigen::VectorXf mean = Eigen::VectorXf::Zero(pending_kfs_.front().g.size());
+    int total_lms = 0;
+    for (const auto& r : pending_kfs_) total_lms += (int)r.lm_pcam.size();
+    sm.landmarks.reserve(total_lms);
+    sm.descriptors.resize(total_lms, 64);
+    int row = 0;
     for (std::size_t k = 0; k < pending_kfs_.size(); ++k) {
       const auto& r = pending_kfs_[k];
-      sm.keyframes.push_back(slamko::KeyframePose{r.id, r.t, anchor_inv * r.T_map});
+      const slamko::SE3 T_local_b = anchor_inv * r.T_map;
+      sm.keyframes.push_back(slamko::KeyframePose{r.id, r.t, T_local_b});
       sm.kf_obs[k].global_descriptor = r.g;
       mean += r.g;
+      // Stereo landmarks: camera frame -> submap-local (body-anchor) frame.
+      const slamko::SE3 T_local_cam = T_local_b * body_T_cam_;
+      const int m = (int)r.lm_pcam.size();
+      sm.kf_obs[k].landmark_ids.reserve(m);
+      sm.kf_obs[k].uv.resize(m, 2);
+      for (int i = 0; i < m; ++i) {
+        const std::uint64_t lid = next_landmark_id_++;
+        sm.landmarks.push_back(
+            slamko::MapLandmark{lid, T_local_cam * r.lm_pcam[i], row});
+        sm.descriptors.row(row) = r.lm_desc.row(i);
+        sm.kf_obs[k].landmark_ids.push_back(lid);
+        sm.kf_obs[k].uv.row(i) = r.lm_uv.row(i);
+        ++row;
+      }
     }
     mean.normalize();
     sm.global_descriptor = mean;  // submap-level representative (coarse stage)
-    const std::string path = map_dir_ + "/submap_" + std::to_string(sm.id) + ".smap";
-    if (!slamko::saveSubMap(sm, path)) {
-      RCLCPP_ERROR(get_logger(), "saveSubMap failed: %s", path.c_str());
-    } else {
-      sealed_ids_.push_back(sm.id);
-      std::ofstream mf(map_dir_ + "/submaps.manifest");
-      for (auto sid : sealed_ids_) mf << sid << "\n";
-      RCLCPP_INFO(get_logger(), "sealed submap %llu (%zu KF, VPR) -> %s%s",
-                  (unsigned long long)sm.id, sm.keyframes.size(), path.c_str(),
-                  kf_no_image_ ? (" [" + std::to_string(kf_no_image_) + " KF w/o image]").c_str()
-                               : "");
+    const std::string path = map_dir_.empty()
+        ? std::string()
+        : map_dir_ + "/submap_" + std::to_string(sm.id) + ".smap";
+    if (!path.empty()) {
+      if (!slamko::saveSubMap(sm, path)) {
+        RCLCPP_ERROR(get_logger(), "saveSubMap failed: %s", path.c_str());
+      } else {
+        sealed_ids_.push_back(sm.id);
+        std::ofstream mf(map_dir_ + "/submaps.manifest");
+        for (auto sid : sealed_ids_) mf << sid << "\n";
+      }
     }
+    RCLCPP_INFO(get_logger(), "sealed submap %llu (%zu KF, %zu lm, VPR)%s",
+                (unsigned long long)sm.id, sm.keyframes.size(), sm.landmarks.size(),
+                kf_no_image_ ? (" [" + std::to_string(kf_no_image_) + " KF w/o image]").c_str()
+                             : "");
+    // Defer relocalizer registration until the submap is older than the loop gap.
+    submap_first_kf_[sm.id] = sm.keyframes.front().id;
+    submap_last_t_[sm.id] = pending_kfs_.back().t;
+    sealed_unregistered_.emplace_back(std::move(sm), pending_kfs_.back().t);
     pending_kfs_.clear();
   }
 
@@ -352,25 +664,45 @@ class ProviderFusionNode : public rclcpp::Node {
   std::FILE* fused_file_ = nullptr;
   std::FILE* provider_file_ = nullptr;
 
-  // P-B: image buffer + VPR + sealing
-  struct KfRec {
-    std::uint64_t id;
-    double t;
-    slamko::SE3 T_map;
-    Eigen::VectorXf g;
-  };
-  std::deque<std::pair<double, cv::Mat>> img_buf_;
+  // P-B: image buffer + VPR + sealing (KfRec declared above the methods)
+  std::deque<std::pair<double, cv::Mat>> img_buf_, img_buf_r_;
   EigenPlacesPtr vpr_;
+  std::shared_ptr<XFeat> xfeat_;
+  std::unique_ptr<slamko::XFeatRelocalizer> reloc_;
   std::vector<KfRec> pending_kfs_;
   std::vector<std::uint64_t> sealed_ids_;
-  std::uint64_t next_submap_id_ = 0;
+  std::deque<std::pair<slamko::SubMap, double>> sealed_unregistered_;
+  std::unordered_map<std::uint64_t, std::uint64_t> submap_first_kf_;
+  std::unordered_map<std::uint64_t, double> submap_last_t_;
+  std::uint64_t next_submap_id_ = 0, next_landmark_id_ = 0;
   std::string map_dir_;
   int kf_per_submap_ = 50;
-  int kf_no_image_ = 0;
+  int kf_no_image_ = 0, loops_closed_ = 0;
   double image_tol_s_ = 0.06, image_buffer_s_ = 0.6;
 
+  // P-B 2b: calibration (canonical CROPPED camera model) + reloc gates
+  bool reloc_enabled_ = false, have_calib_ = false, have_info_l_ = false, have_info_r_ = false;
+  double fx_ = 0, fy_ = 0, cx_ = 0, cy_ = 0, baseline_ = 0;
+  unsigned img_w_ = 0;
+  int crop_x_ = 0;
+  slamko::SE3 body_T_cam_;
+  double min_loop_gap_s_ = 25.0, loop_sigma_t_ = 0.10, loop_sigma_r_ = 0.05;
+  double max_loop_disagree_m_ = 30.0;
+  double pcm_tol_t_ = 0.30, pcm_tol_r_ = 0.15, loop_cooldown_s_ = 2.0;
+  int pcm_consec_ = 3;
+  int reloc_min_inliers_ = 25, max_kf_landmarks_ = 200;
+  struct LoopCand {
+    std::uint64_t q_id = 0;
+    double t = 0;
+    slamko::SE3 meas, T_OB;
+    int consec = 0;
+  };
+  std::unordered_map<std::uint64_t, LoopCand> loop_cands_;
+  double last_loop_add_t_ = -1e9;
+
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
-  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_image_;
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_image_, sub_image_r_;
+  rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr sub_info_l_, sub_info_r_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_fused_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   rclcpp::TimerBase::SharedPtr tf_timer_;

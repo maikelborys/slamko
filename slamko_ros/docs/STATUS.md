@@ -74,3 +74,40 @@ before killing so the trailing submap seals (bench_pa.sh).
 magistrale bridge cannot recur. **Next (P-B step 2b):** XFeat features per KF
 → retrieval top-10 (per the step-1 verdict) + LighterGlue/PnP verify →
 reversible gated anchor edge → optimize off-thread.
+
+---
+
+## 2026-06-12 — P-B step 2b: LIVE LOOP CLOSURE in the provider chain — 5.02 m → 0.057 m
+
+The full reloc chain runs live in `provider_fusion_node`: XFeat per KF (left+
+right, static-752 pad/crop handling for 640/848-wide sensors) → stereo NN match
++ triangulation (~200 lm/KF) → submaps sealed WITH landmarks+descriptors →
+XFeatRelocalizer (EigenPlaces per-KF top-10 retrieval + PnP-RANSAC verify,
+BoW off) on every KF against AGED submaps (older than min_loop_gap_s=25) →
+**PCM-lite consensus gate** → robust loop edge → synchronous `optimize()` →
+map→odom correction.
+
+**Validated on CASA1_Suave with REAL drift** (GPU contention from our own
+TRT inference degraded this OKVIS run to 5-10 m closure error — an accidental
+but realistic stress test):
+
+| Run | Gate | Result |
+|---|---|---|
+| loop2 | none | 14 true loops accepted BUT cost stayed ~2e4, fused frame torn (max 1274 m) — earlier in-run edges + no gating |
+| loop3/4 | absolute disagree ≤2 m | ALL true return loops REJECTED (the graph is wrong BY the drift the loop corrects — chicken-and-egg), fused = provider exactly |
+| **loop5** | **PCM-lite: 3 consecutive same-submap candidates pairwise-consistent under provider relative odometry (tol 0.30 m/0.15 rad) + 2 s cooldown + 30 m teleport bound** | **6 loops accepted, optimize converged: provider closure 5.020 m → fused closure 0.057 m (88×)** |
+
+**Lessons (load-bearing):**
+1. **Absolute disagree gates are structurally wrong for loop closure** — they
+   reject precisely when correction is needed. Consensus (matches consistent
+   with EACH OTHER under odometry) is drift-magnitude-agnostic.
+2. **Our TRT inference contends with OKVIS for the GPU** and can degrade the
+   provider 4 cm → 10 m on the same bag. System-level budget issue for the
+   robot (mitigations: KF-rate throttle, INT8, second GPU). Meanwhile it
+   conveniently generates realistic drift for testing the loop layer.
+3. provider odometry latency under load starved 235/1300 KFs of their image at
+   a 0.6 s ring buffer → 2.5 s default.
+
+**Remaining for the full P-B gate:** cross-session (load a prior map at
+startup, reloc against it → anchor into the prior frame) on the casa bags;
+optimize() off the callback thread (P-C′ iSAM2).
