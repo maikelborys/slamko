@@ -611,3 +611,36 @@ publisher (`TF_OLD_DATA` flood) that corrupts the next run. Fixes: `bench_neverl
 **Next:** with BoW pre-selecting a few candidates, the per-submap brute-force only runs on
 the top-k, so the `max_db_landmarks` cap can be raised (more recall per candidate) — a cheap
 follow-on. Then a persisted/pre-trained vocabulary (so it's not re-trained per session).
+
+---
+
+## 2026-06-12 — P-B step 1: VPR recall diagnostic — EigenPlaces VERDICT: GO (top-N + verify)
+
+New tool `tools/vpr_recall_diag.cpp` (per-KF cosine recall over smap archives,
+submap-index OR GT-time split) + `scripts/vpr_recall_frames.py` (same metrics
+directly on dataset frames, no VIO in the loop, onnxruntime + eigenplaces.onnx).
+
+**Root-cause chain on the magistrale1 start↔end bridge (the P-B gate):**
+1. smap archive `perkfvpr_mag1_diag` (76 submaps, VPR 100%) gives R@10=0.000 —
+   but the archive's KFs start at t=777.6 while GT says the start room ends at
+   t=707.2: **the deprecated VIO ate 133 s initializing, the start room never
+   entered the map.** The historical "didn't close" was a DATA hole, not (only)
+   a recall failure. Un-measurable from smaps; measured from frames instead.
+2. Frame-level, honest setup (DB = GT start-room window ≤707.2, queries = GT
+   return window ≥1357.8, distractors = the full 650 s corridor trek, stride 10
+   ≈ 2 Hz, 127 DB / 1301 distractors / 117 queries):
+   **R@1=0.316 · R@5=0.846 · R@10=0.949 · median rank of first start-room
+   hit = 3 (p90=8, worst=32)**; best_db median cos 0.394 vs best_distractor
+   0.468 (margin −0.046).
+
+**Verdict:** EigenPlaces is sufficient — no SALAD/CosPlace fallback needed —
+**iff** the relocalizer (a) retrieves top-N ≥ 10 candidates (not top-1), (b)
+geometric-verifies each (XFeat/LighterGlue + PnP), and (c) attempts on every
+return KF (117 queries ≈ 59 s of return: per-frame R@5=0.85 compounds to
+practical certainty). Absolute-threshold designs are DEAD (distractor cosines
+exceed true-match cosines) — ranking+verify only, as PLAN_VPR_RELOC said.
+
+**Design consequences for P-B step 2 (wire into the provider chain):** reloc
+attempts continuous per-KF; candidate budget 10; the provider chain must
+capture KF images from t≈0 (OKVIS inits in seconds — the 133 s hole was a
+deprecated-VIO artifact and is gone by architecture).

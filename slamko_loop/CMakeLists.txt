@@ -75,6 +75,13 @@ target_link_libraries(loop_offline slamko_loop Eigen3::Eigen Ceres::ceres)
 ament_target_dependencies(loop_offline slamko_core)
 install(TARGETS loop_offline RUNTIME DESTINATION lib/${PROJECT_NAME})
 
+# vpr_recall_diag — P-B per-KF VPR recall diagnostic (start-room DB vs return
+# queries vs full-map distractors; R@k + margins + per-query CSV).
+add_executable(vpr_recall_diag tools/vpr_recall_diag.cpp)
+target_link_libraries(vpr_recall_diag slamko_loop Eigen3::Eigen)
+ament_target_dependencies(vpr_recall_diag slamko_core)
+install(TARGETS vpr_recall_diag RUNTIME DESTINATION lib/${PROJECT_NAME})
+
 # smap_cloud — export the global point cloud (anchor·local) for visualization.
 add_executable(smap_cloud tools/smap_cloud.cpp)
 target_link_libraries(smap_cloud slamko_loop Eigen3::Eigen)
