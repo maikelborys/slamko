@@ -34,7 +34,13 @@ def setup(context):
     vpr_on = LaunchConfiguration('vpr').perform(context).lower() == 'true'
     prior = LaunchConfiguration('prior_map_dir').perform(context)
 
-    klt = IncludeLaunchDescription(AnyLaunchDescriptionSource(KLT_LAUNCH))
+    # feature_detector:=xfeat is klt_vo's RECOMMENDED robot/D455 config
+    # (CLAUDE.md platform rule: wins both axes on the real casa bag, 190 fps).
+    klt = IncludeLaunchDescription(
+        AnyLaunchDescriptionSource(KLT_LAUNCH),
+        launch_arguments={
+            'feature_detector': LaunchConfiguration('feature_detector'),
+        }.items())
 
     fusion = Node(
         package='slamko_ros', executable='provider_fusion_node',
@@ -72,5 +78,6 @@ def generate_launch_description():
         DeclareLaunchArgument('vpr', default_value='true'),
         DeclareLaunchArgument('prior_map_dir', default_value=''),
         DeclareLaunchArgument('rviz', default_value='false'),  # accepted, unused
+        DeclareLaunchArgument('feature_detector', default_value='xfeat'),
         OpaqueFunction(function=setup),
     ])

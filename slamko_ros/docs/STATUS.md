@@ -252,3 +252,12 @@ its RELIABLE IMU sub. Zero fusion-code changes — the loose contract delivered.
 
 Note: klt_vo's Escaleras z span (-2.2..3.5) underestimates the climb vs OKVIS
 (0..8.2) — the known stairs-bias signature; the loop layer still bounds it.
+
+**Addendum (klt_vo docs check):** klt_vo's CLAUDE.md platform rule says
+`feature_detector:=xfeat` is THE robot/D455 config (wins both axes on the real
+casa bag, 190 fps) — the d455 launch default (shitomasi) is the blur-bench
+default, not the robot one. With xfeat: Escaleras raw 2.477→1.628 m, fused
+0.163→**0.070 m** (12 loops). Now the launch default in pa_kltvo_bag. The z
+compression on the climb (±3 vs true 8 m) is klt_vo's documented open
+stairs-bias — its fix belongs in the klt_vo repo (bias carry-forward + gravity
+gate per the slamko stairs memory); the loop layer bounds it meanwhile.
