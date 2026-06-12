@@ -35,6 +35,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <Eigen/Core>
@@ -52,6 +53,7 @@
 #include <sensor_msgs/msg/camera_info.hpp>
 
 #include "slamko_core/features.hpp"
+#include "slamko_core/loop_consensus.hpp"
 #include "slamko_core/odometry_provider.hpp"
 #include "slamko_core/se3.hpp"
 #include "slamko_core/submap.hpp"
@@ -178,10 +180,31 @@ class ProviderFusionNode : public rclcpp::Node {
       loop_sigma_t_ = declare_parameter("loop_sigma_t", 0.10);
       loop_sigma_r_ = declare_parameter("loop_sigma_r", 0.05);
       max_loop_disagree_m_ = declare_parameter("max_loop_disagree_m", 30.0);
-      pcm_tol_t_ = declare_parameter("pcm_tol_t", 0.30);
-      pcm_tol_r_ = declare_parameter("pcm_tol_r", 0.15);
-      pcm_consec_ = declare_parameter("pcm_consec", 3);
-      loop_cooldown_s_ = declare_parameter("loop_cooldown_s", 2.0);
+      slamko::LoopConsensusConfig gcfg;
+      gcfg.tol_t = declare_parameter("pcm_tol_t", gcfg.tol_t);
+      gcfg.tol_r = declare_parameter("pcm_tol_r", gcfg.tol_r);
+      gcfg.required_consec = declare_parameter("pcm_consec", gcfg.required_consec);
+      gcfg.cooldown_s = declare_parameter("loop_cooldown_s", gcfg.cooldown_s);
+      pcm_consec_ = gcfg.required_consec;
+      gate_ = slamko::LoopConsensusGate(gcfg);
+
+      // Cross-session: load a prior map; matches into it re-anchor this session
+      // into the prior's global frame (anchor-don't-weld — the session graph is
+      // untouched, only T_global<-map is estimated).
+      const auto prior_dir = declare_parameter("prior_map_dir", std::string(""));
+      if (!prior_dir.empty()) {
+        if (slamko::loadSubMaps(prior_submaps_, prior_dir)) {
+          for (const auto& sm : prior_submaps_) {
+            prior_ids_.insert(sm.id);
+            prior_anchor_[sm.id] = sm.anchor;
+            next_submap_id_ = std::max(next_submap_id_, sm.id + 1);
+          }
+          RCLCPP_INFO(get_logger(), "prior map loaded: %zu submaps from %s",
+                      prior_submaps_.size(), prior_dir.c_str());
+        } else {
+          RCLCPP_ERROR(get_logger(), "prior map FAILED to load: %s", prior_dir.c_str());
+        }
+      }
       // OKVIS rsD455 T_SC cam0 (body=S -> cam): identity rotation + this offset.
       const std::vector<double> btc = declare_parameter(
           "body_t_cam_xyz", std::vector<double>{-0.03022, 0.0074, 0.01602});
@@ -318,6 +341,16 @@ class ProviderFusionNode : public rclcpp::Node {
       toTransformMsg(last_sample_.T_OB, tf_ob.transform);
       tf_broadcaster_->sendTransform(tf_ob);
     }
+
+    // Cross-session re-anchor: prior-map global frame above the session map.
+    if (localized_) {
+      geometry_msgs::msg::TransformStamped tf_gm;
+      tf_gm.header.stamp = stamp;
+      tf_gm.header.frame_id = "slamko_global";
+      tf_gm.child_frame_id = map_frame_;
+      toTransformMsg(T_global_map_, tf_gm.transform);
+      tf_broadcaster_->sendTransform(tf_gm);
+    }
   }
 
   // ------------------------------------------------ P-B: images + VPR + sealing
@@ -383,9 +416,12 @@ class ProviderFusionNode : public rclcpp::Node {
       rcfg.min_inliers = reloc_min_inliers_;
       rcfg.use_bow = false;  // VPR per-KF ranking is the candidate stage (P-B verdict)
       reloc_ = std::make_unique<slamko::XFeatRelocalizer>(rcfg);
+      for (const auto& sm : prior_submaps_) reloc_->addSubMap(sm);
+      prior_submaps_.clear();  // registered; keep only ids/anchors
       RCLCPP_INFO(get_logger(),
-                  "reloc ready: fx=%.1f cx'=%.1f baseline=%.4f m crop_x=%d top-10 VPR + PnP",
-                  fx_, cx_ - crop_x_, baseline_, crop_x_);
+                  "reloc ready: fx=%.1f cx'=%.1f baseline=%.4f m crop_x=%d top-10 VPR + PnP"
+                  " (%zu prior submaps registered)",
+                  fx_, cx_ - crop_x_, baseline_, crop_x_, prior_ids_.size());
     }
   }
 
@@ -517,46 +553,50 @@ class ProviderFusionNode : public rclcpp::Node {
                            (unsigned long long)q_id, (unsigned long long)r.submap_id,
                            r.num_inliers);
     if (!r.found || r.num_inliers < reloc_min_inliers_) return;
-    const auto it = submap_last_t_.find(r.submap_id);
-    if (it == submap_last_t_.end() || t - it->second < min_loop_gap_s_) return;
+    const bool is_prior = prior_ids_.count(r.submap_id) > 0;
+    if (!is_prior) {
+      // In-session: only AGED submaps count as loops (adjacent corridor isn't a
+      // loop) + a loose teleport bound vs the graph (30 m default — NOT a tight
+      // absolute gate; see LoopConsensusGate header for why those are wrong).
+      const auto it = submap_last_t_.find(r.submap_id);
+      if (it == submap_last_t_.end() || t - it->second < min_loop_gap_s_) return;
+      const slamko::SE3 T_a_q_graph =
+          graph_.pose(submap_first_kf_.at(r.submap_id)).inverse() * graph_.pose(q_id);
+      if ((T_a_q_graph.inverse() * r.T_query_match).translation().norm() >
+          max_loop_disagree_m_)
+        return;
+    }
 
-    // Consensus gate (PCM-lite, the lesson of CASA1_Suave_loop3/4): an ABSOLUTE
-    // disagree-with-graph gate rejects exactly the loops that matter (the graph
-    // is wrong BY the drift the loop corrects — this run's provider drifted
-    // 6-10 m under GPU contention and every true return match got rejected).
-    // Instead require pcm_consec_ CONSECUTIVE matches to the same submap that
-    // are PAIRWISE consistent under the provider's relative odometry:
-    //   meas_k ≈ meas_{k-1} ∘ T_{q_{k-1} q_k}(provider).
-    // True matches track the motion; aliasing/PnP-on-self-similar-structure
-    // jitters and never builds a streak. Absolute gate stays only as a loose
-    // teleport bound (max_loop_disagree_m_, default 30 m).
-    const slamko::SE3 T_a_q_graph =
-        graph_.pose(submap_first_kf_.at(r.submap_id)).inverse() * graph_.pose(q_id);
-    if ((T_a_q_graph.inverse() * r.T_query_match).translation().norm() >
-        max_loop_disagree_m_)
-      return;
-    const slamko::SE3 T_OB_q = chain_.lastKeyframe().T_OB;
-    auto& c = loop_cands_[r.submap_id];
-    if (c.consec > 0) {
-      const slamko::SE3 pred = c.meas * (c.T_OB.inverse() * T_OB_q);
-      const slamko::SE3 d = pred.inverse() * r.T_query_match;
-      if (d.translation().norm() < pcm_tol_t_ && d.so3().log().norm() < pcm_tol_r_)
-        c.consec += 1;
-      else
-        c.consec = 1;  // inconsistent — restart the streak from this candidate
-    } else {
-      c.consec = 1;
-    }
-    c.q_id = q_id; c.t = t; c.meas = r.T_query_match; c.T_OB = T_OB_q;
-    if (c.consec < pcm_consec_) {
+    // Consensus gate (PCM-lite, slamko_core::LoopConsensusGate — unit-tested):
+    // pcm_consec_ consecutive same-target matches, pairwise-consistent under the
+    // provider's relative odometry. Drift-magnitude-agnostic by design.
+    const bool accept = gate_.feed(slamko::LoopCandidate{
+        r.submap_id, q_id, t, r.T_query_match, chain_.lastKeyframe().T_OB});
+    if (!accept) {
       RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
-                           "loop candidate: kf %llu -> submap %llu inliers=%d streak=%d/%d",
-                           (unsigned long long)q_id, (unsigned long long)r.submap_id,
-                           r.num_inliers, c.consec, pcm_consec_);
+                           "loop candidate: kf %llu -> %ssubmap %llu inliers=%d streak=%d/%d",
+                           (unsigned long long)q_id, is_prior ? "PRIOR " : "",
+                           (unsigned long long)r.submap_id, r.num_inliers,
+                           gate_.streak(r.submap_id), pcm_consec_);
       return;
     }
-    if (t - last_loop_add_t_ < loop_cooldown_s_) return;
-    last_loop_add_t_ = t;
+
+    if (is_prior) {
+      // Cross-session: re-anchor this session into the prior map's global frame
+      // (anchor-don't-weld — the session graph is untouched). T_global_map is
+      // re-estimated on every accepted match (later sessions can low-pass it).
+      const slamko::SE3 T_global_q = prior_anchor_.at(r.submap_id) * r.T_query_match;
+      T_global_map_ = T_global_q * graph_.pose(q_id).inverse();
+      const auto& gt = T_global_map_.translation();
+      RCLCPP_INFO(get_logger(),
+                  "%s in prior map: kf %llu -> prior submap %llu inliers=%d  "
+                  "T_global_map t=[%.3f %.3f %.3f]",
+                  localized_ ? "RE-ANCHORED" : "LOCALIZED",
+                  (unsigned long long)q_id, (unsigned long long)r.submap_id,
+                  r.num_inliers, gt.x(), gt.y(), gt.z());
+      localized_ = true;
+      return;
+    }
 
     const std::uint64_t a = submap_first_kf_.at(r.submap_id);
     // Submap-local frame == its first KF's body frame (sealing convention), so
@@ -688,17 +728,16 @@ class ProviderFusionNode : public rclcpp::Node {
   slamko::SE3 body_T_cam_;
   double min_loop_gap_s_ = 25.0, loop_sigma_t_ = 0.10, loop_sigma_r_ = 0.05;
   double max_loop_disagree_m_ = 30.0;
-  double pcm_tol_t_ = 0.30, pcm_tol_r_ = 0.15, loop_cooldown_s_ = 2.0;
   int pcm_consec_ = 3;
   int reloc_min_inliers_ = 25, max_kf_landmarks_ = 200;
-  struct LoopCand {
-    std::uint64_t q_id = 0;
-    double t = 0;
-    slamko::SE3 meas, T_OB;
-    int consec = 0;
-  };
-  std::unordered_map<std::uint64_t, LoopCand> loop_cands_;
-  double last_loop_add_t_ = -1e9;
+  slamko::LoopConsensusGate gate_;
+
+  // Cross-session prior map (anchor-don't-weld re-anchoring)
+  std::vector<slamko::SubMap> prior_submaps_;  // emptied after registration
+  std::unordered_set<std::uint64_t> prior_ids_;
+  std::unordered_map<std::uint64_t, slamko::SE3> prior_anchor_;
+  slamko::SE3 T_global_map_;
+  bool localized_ = false;
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_image_, sub_image_r_;

@@ -44,6 +44,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_submap_io test/test_submap_io.cpp)
   target_link_libraries(test_submap_io slamko_core)
+
+  ament_add_gtest(test_loop_consensus test/test_loop_consensus.cpp)
+  target_link_libraries(test_loop_consensus slamko_core)
 endif()
 
 ament_package()

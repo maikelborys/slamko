@@ -111,3 +111,32 @@ but realistic stress test):
 **Remaining for the full P-B gate:** cross-session (load a prior map at
 startup, reloc against it → anchor into the prior frame) on the casa bags;
 optimize() off the callback thread (P-C′ iSAM2).
+
+---
+
+## 2026-06-12 — P-B step 2c: CROSS-SESSION relocalization + LoopConsensusGate extracted & unit-tested
+
+- **`slamko_core/loop_consensus.hpp`** — the PCM-lite gate extracted as a pure,
+  unit-tested class (`test_loop_consensus.cpp`, **8/8 PASS**: true-streak,
+  drift-agnostic (the 6 m lesson), aliasing-jitter-never-accepts,
+  streak-reset, rotation-inconsistency, cooldown-burst, per-target
+  independence, stationary-robot). The node is now a shell around it.
+- **Cross-session**: `prior_map_dir` loads a prior smap archive at startup,
+  registers it into the relocalizer; consensus-accepted matches into PRIOR
+  submaps re-anchor the session (`T_global_map` estimated, `slamko_global`→map
+  TF) — anchor-don't-weld, session graph untouched.
+
+**Validated (CASA1_Suave bag vs the loop5 prior map):** prior loaded (9
+submaps) → **LOCALIZED at kf 2 (~2 s), 200 PnP inliers, T_global_map
+translation = 2 mm** (same physical start point → ~identity expected ✓);
+continuous re-anchors stable at mm-cm. Cross-DAY/cross-bag (Escaleras vs Suave
+prior, casa1↔casa2) = the remaining P-B gate matrix entry.
+
+**Supereight2 study (user question, agent-verified against the OKVIS2-X code):**
+OKVIS's dense submap alignment (`SubmapIcpError`: point-to-occupancy-field,
+σ-weighted) plays NO role in its loop-closure DECISION (that's DBoW2 + RANSAC +
+drift heuristic) — it refines poses AFTER acceptance, and only in the dense
+configs (the sparse 3.22 cm baseline has none). For slamko's loose layer the
+right analogue is **landmark-cloud overlap verification after an anchor**
+(Bosch-style reversible merge check, ~no new deps) — planned for P-C; copying
+supereight2 would couple us to the provider's dense backend for marginal gain.
