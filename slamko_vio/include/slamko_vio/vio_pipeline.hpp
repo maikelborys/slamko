@@ -156,6 +156,7 @@ class VioPipeline {
   int image_width_, image_height_;
   int max_corners_, redetect_thr_;
   double dedup_radius_;
+  double klt_epipolar_px_ = 0.0;  // prev→curr F-matrix RANSAC gate; <=0 = off
   int patch_size_, pyramid_lvls_;
   std::string timing_csv_;
   std::string landmark_dump_path_;

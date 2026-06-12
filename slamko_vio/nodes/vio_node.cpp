@@ -60,6 +60,7 @@ class VioNode : public rclcpp::Node {
     cfg.max_corners        = P("max_corners", cfg.max_corners);
     cfg.redetect_threshold = P("redetect_threshold", cfg.redetect_threshold);
     cfg.dedup_radius_px    = P("dedup_radius_px", cfg.dedup_radius_px);
+    cfg.klt_epipolar_px    = P("klt_epipolar_px", cfg.klt_epipolar_px);
     cfg.patch_size         = P("patch_size", cfg.patch_size);
     cfg.pyramid_levels     = P("pyramid_levels", cfg.pyramid_levels);
     cfg.timing_csv_path    = P("timing_csv_path", cfg.timing_csv_path);
@@ -195,7 +196,14 @@ class VioNode : public rclcpp::Node {
         std::placeholders::_1, std::placeholders::_2,
         std::placeholders::_3, std::placeholders::_4));
 
-    auto qos_imu = rclcpp::QoS(rclcpp::KeepLast(200)).reliable().durability_volatile();
+    // IMU QoS. Default RELIABLE (EuRoC/euroc_player). A RELIABLE subscriber is
+    // INCOMPATIBLE with a BEST_EFFORT publisher → the live RealSense D455 driver
+    // (IMU is BEST_EFFORT) would deliver ZERO IMU and every frame would drop.
+    // Set imu_best_effort:=true for live D455 / raw D455 bags (a BEST_EFFORT
+    // subscriber accepts both reliable and best-effort publishers).
+    const bool imu_best_effort = declare_parameter("imu_best_effort", false);
+    auto qos_imu = rclcpp::QoS(rclcpp::KeepLast(200)).durability_volatile();
+    if (imu_best_effort) qos_imu.best_effort(); else qos_imu.reliable();
     sub_imu_ = create_subscription<sensor_msgs::msg::Imu>(
         "imu", qos_imu, std::bind(&VioNode::on_imu, this, std::placeholders::_1));
 

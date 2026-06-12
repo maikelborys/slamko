@@ -23,6 +23,13 @@ struct VioConfig {
   int    max_corners        = 1500;
   int    redetect_threshold = 1500;
   double dedup_radius_px    = 5.0;
+  // Epipolar (fundamental-matrix) RANSAC gate on prev→curr KLT flow. Rejects
+  // tracks that drifted onto other structure (fast motion / blur / repetitive
+  // texture) BEFORE they reach stereo/PnP — the coherent mis-track clusters that
+  // survive PnP-RANSAC. Value = max epipolar distance in px; <=0 disables.
+  // Skipped automatically when it would reject >half the tracks (degenerate F:
+  // pure rotation / low parallax). Target: V1_03/V2_03 inlier_ratio 0.2-0.4.
+  double klt_epipolar_px    = 0.0;
   int    patch_size         = 9;
   int    pyramid_levels     = 4;
   std::string timing_csv_path;

@@ -14,6 +14,7 @@
 
 #include "slamko_vio/vio_pipeline.hpp"
 
+#include <opencv2/calib3d.hpp>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -43,6 +44,7 @@ VioPipeline::VioPipeline(const VioConfig& cfg,
     max_corners_  = cfg.max_corners;
     redetect_thr_ = cfg.redetect_threshold;
     dedup_radius_ = cfg.dedup_radius_px;
+    klt_epipolar_px_ = cfg.klt_epipolar_px;
     patch_size_   = cfg.patch_size;
     pyramid_lvls_ = cfg.pyramid_levels;
     timing_csv_   = cfg.timing_csv_path;
@@ -519,6 +521,38 @@ void VioPipeline::processStereo(const slamko::ImageView& left,
       }
       tracks_ = std::move(kept);
       n_active = (int)tracks_.size();
+
+      // Epipolar (fundamental-matrix) RANSAC gate on the prev→curr KLT flow.
+      // KLT drifts onto neighbouring structure under fast motion / blur /
+      // repetitive texture; a coherent mis-track CLUSTER then survives PnP-RANSAC
+      // (it agrees with itself) and biases the pose. An F-matrix RANSAC on the 2D
+      // flow rejects those geometrically BEFORE stereo/PnP. Skipped when it would
+      // reject >half the tracks — that signals a degenerate F (pure rotation / low
+      // parallax) where epipolar geometry is undefined and we must NOT prune.
+      if (klt_epipolar_px_ > 0.0 && (int)tracks_.size() >= 16) {
+        std::vector<cv::Point2f> p0, p1;
+        p0.reserve(tracks_.size());
+        p1.reserve(tracks_.size());
+        for (const auto& t : tracks_) {
+          p0.emplace_back(t.left_prev_x, t.left_prev_y);
+          p1.emplace_back(t.left_curr_x, t.left_curr_y);
+        }
+        std::vector<std::uint8_t> mask;
+        cv::findFundamentalMat(p0, p1, cv::FM_RANSAC,
+                               klt_epipolar_px_, 0.99, mask);
+        if (mask.size() == tracks_.size()) {
+          int rej = 0;
+          for (auto m : mask) if (!m) ++rej;
+          if (rej <= (int)tracks_.size() / 2) {   // not degenerate → apply
+            std::vector<StereoTrack> kept_epi;
+            kept_epi.reserve(tracks_.size());
+            for (std::size_t i = 0; i < tracks_.size(); ++i)
+              if (mask[i]) kept_epi.push_back(tracks_[i]);
+            tracks_ = std::move(kept_epi);
+            n_active = (int)tracks_.size();
+          }
+        }
+      }
     }
 
     // -------------------- Detect new corners (before stereo match + PnP) ----
