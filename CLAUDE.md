@@ -1,25 +1,27 @@
 # slamko — central orientation & instructions (the one authoritative doc)
 
-**slamko** is a modular, pluggable SLAM framework. Top priority: **never gets
-lost, never fails, super-recoverable — while staying SIMPLE and STABLE.** Strong
-like ORB-SLAM3 / OKVIS2-X / VILENS, but built from a small core where **every
-sensor / capability is a plugin behind a `slamko_core` contract, not a rewrite.**
+**slamko** is the **lifelong map + multi-session relocalization + multi-sensor
+loose-fusion layer over an EXTERNAL odometry provider** (OKVIS2-X default; klt_vo
+as future high-fps second provider via the same contract). slamko does NOT
+implement odometry. Top priority: **never gets lost, never fails,
+super-recoverable — while staying SIMPLE and STABLE.** Every sensor / capability
+is a plugin behind a `slamko_core` contract, not a rewrite. User criterion
+(verbatim): *"A mí me importa el resultado. Y que sea bien estable sin romperse"*
+— result + stability over novelty.
 
 This is the **single source of truth** (always loaded — you work from this repo
 root). Each package has only a short `README.md` (orientation) + `docs/`
-(validated detail). Details: [`MASTER_PLAN.md`](MASTER_PLAN.md),
-[`docs/DECOUPLING.md`](docs/DECOUPLING.md), [`docs/DOC_PROCESS.md`](docs/DOC_PROCESS.md).
+(validated detail). The authoritative plan: [`MASTER_PLAN.md`](MASTER_PLAN.md)
+(v2, migrated 2026-06-12 from the adopted
+[`docs/REBUILD_PROPOSAL_01.md`](docs/REBUILD_PROPOSAL_01.md), which keeps the full
+research provenance — anchor-don't-weld, iSAM2-poses-only, raw-mag-not-BNO-fused,
+GNSS init-then-re-anchor). Old own-VIO plan: `docs/archive/MASTER_PLAN_OWNVIO_01.md`.
+Also: [`docs/DECOUPLING.md`](docs/DECOUPLING.md), [`docs/DOC_PROCESS.md`](docs/DOC_PROCESS.md).
 
-> **⚠ STRATEGIC PIVOT ADOPTED 2026-06-12 — read
-> [`docs/REBUILD_PROPOSAL_01.md`](docs/REBUILD_PROPOSAL_01.md) FIRST** (now the
-> authoritative plan; MASTER_PLAN's own-VIO framing is obsolete pending
-> migration). slamko = lifelong map + multi-session reloc + loose-fusion layer
-> over an EXTERNAL odometry provider (OKVIS2-X default; klt_vo as future
-> high-fps second provider via the same contract). User criterion: **result +
-> stability over novelty**. Its §11 addendum holds the 2026-06-12 research
-> refresh (anchor-don't-weld confirmed; iSAM2 poses-only; raw-mag-not-BNO-fused;
-> GNSS init-then-re-anchor) + the reprioritized P-A..P-F roadmap whose gates run
-> on the real casa/blackout bags. §11.5 = the next session's task list.
+> **Current focus: roadmap P-A → P-F (MASTER_PLAN §8), gates on the real
+> casa/blackout bags.** P-A (active): OKVIS2-X provider adapter → relative KF
+> edges + covariance into the loose pose-graph fuser + map→odom slew; gate = live
+> pose tracks OKVIS on CASA1_Suave + Escaleras.
 
 ## Orientation (cold start — human or LLM)
 
@@ -89,9 +91,9 @@ DigiForest/VILENS decoupling.
 | Package | Role | Depends on |
 |---|---|---|
 | **slamko_core** | Contracts (`Factor`, `SensorFrontend`, `FactorGraphBackend`, `Relocalizer`) + types (SE3/manifold, `SubMap`, `EstimationFrame`, `NodeKey`, `RobustKernel`) + **cross-cutting infra**: time-sync/buffering (TimeKeeper, trajectory buffer, thread-safe queues), config + per-platform presets, structured logging, map serialization schema, frame conventions, **health-signal interfaces**. Thin on algorithms, rich on infra (GLIM `common/`+`util/` model). | — |
-| **slamko_vio** | Visual-inertial odometry S1 (XFeat / LiftFeat-m1 / Shi-Tomasi + KLT + IMU + dead-reckoning). **Re-entrant initialization** inside (NOT a one-shot latch — that's why OKVIS can't self-recover). Seeded by `~/coding/klt_vo`. | core |
-| **slamko_fusion** | Heterogeneous fixed-lag smoother: **GTSAM iSAM2** + **marginalization** (Schur+FEJ) + `FactorGraphBackend` adapters (gtsam default, ceres). The VILENS heart. Emits health probes (degeneracy eigenvalues, marginal covariance). | core |
-| **slamko_loop** | Global graph + loop-closure-as-factor + **relocalization** (LiftFeat-m1; libtorch isolated as an optional build target, not a package) + the **never-lost supervisor / health POLICY** (Good/Marginal/Lost state machine, watchdogs, recovery triggers; seal→branch→relocalize→merge, decoupled) + defensive numerics (catch-damp-rebuild). | core |
+| **slamko_vio** | **Thin provider adapters** wrapping external odometry (OKVIS2-X first; klt_vo/Basalt/cuVSLAM later) behind the `slamko_core` provider contract. The legacy own-VIO (XFeat/KLT/IMU, seeded by klt_vo) is **deprecated — slated for deletion** (klt_vo HEAD is strictly better; the fork has zero unique value). | core |
+| **slamko_fusion** | The **loose chain-pose-graph fixed-lag fuser**: relative provider edges + global constraints (reloc/GNSS), covariance-weighted. Global backend = **iSAM2 over poses/anchors ONLY — no landmarks ever** (metric smoothing stays inside the provider). Emits health probes. | core |
+| **slamko_loop** | **Atlas multi-map** + lifelong map mgmt + **relocalization** (EigenPlaces retrieval → XFeat+LighterGlue verify; libtorch isolated as an optional build target) + the **never-lost supervisor / health POLICY** (state machine, watchdogs; seal→branch→relocalize→**reversible gated anchor** — anchor-don't-weld) + GNSS anchoring + defensive numerics (catch-damp-rebuild). | core |
 | **slamko_msgs** | ROS 2 interface defs (map-server API, correspondences, status/lifecycle). | — |
 | **slamko_ros** | ROS 2 integration (composition root — the only package that knows all others): nodes, the `map→odom→base` bridge, launch, **and visualization** (rviz panels; offline Plotly lives in `scripts/`). | all + msgs |
 
@@ -105,10 +107,11 @@ in `slamko_loop` (it IS the never-lost supervisor). Split into its own package
 only if that policy outgrows loop.
 
 **Deferred packages** (split out when their phase's code crosses real boundaries —
-not pre-drawn): **slamko_mapping** (P4: submap persistence + map-server contract),
-**slamko_sensors** (P5: LiDAR/GPS/wheel frontends; split at the 2nd sensor / the
-LiDAR-pulls-PCL fault line), **slamko_semantic** (P6: object factors). Until then
-`SubMap` lives in `core`, the global graph in `loop`.
+not pre-drawn): **slamko_mapping** (promoted — the lifelong tiled map-server:
+out-of-core store, summarization, versioning, georeferencing; split during P-C),
+**slamko_sensors** (LiDAR/GPS/wheel/mag frontends; split at the 2nd sensor),
+**slamko_semantic** (P-F: semantic map layers). Until then `SubMap` lives in
+`core`, the global graph in `loop`.
 
 ## Dependency graph
 ```

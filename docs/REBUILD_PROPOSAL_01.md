@@ -4,8 +4,9 @@
 resultado. Y que sea bien estable sin romperse." Result + stability first; the paper door
 stays open via the provider contract (see §11 amendments). §11 also folds in the
 2026-06-12 research refresh (5-agent swarm, cross-verified) that re-validates §4's
-direction and corrects two points. NEXT SESSION'S FIRST TASK: migrate this into
-MASTER_PLAN.md + CLAUDE.md (per §0 framing) and start P-A. -->
+direction and corrects two points. MIGRATED 2026-06-12: this doc is now the
+research-provenance record; the operational plan lives in MASTER_PLAN.md (v2).
+P-A started same session. -->
 <!-- history: forks locked 2026-05-29; §4 originally folded from a research run whose
 verifier crashed (not independently re-verified then). The 2026-06-12 swarm re-verified
 the §4 claims — see §11.3. -->
