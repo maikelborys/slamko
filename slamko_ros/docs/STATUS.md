@@ -164,3 +164,30 @@ Also this block: klt_vo confirmed drop-in second provider (offline contract
 gate PASS 5.3e-14 on its MH_01 est.tum; its node already publishes
 nav_msgs/Odometry on /klt_vo/odometry) — P-E is a remap away. bench_pa.sh:
 PRIOR_MAP env + empty-arg fix.
+
+---
+
+## 2026-06-12 (night) — CROSS-BAG FUSION: Suave localized inside the Escaleras map (LighterGlue)
+
+The épico the user asked for: two different walks sharing a start point, fused.
+
+1. **Escaleras map built**: 17 submaps, 164k landmarks, 10 in-session loops;
+   provider drifted 9.24 m (stairs + GPU contention) → fused closure **0.07 m**.
+2. **Cross-bag fusion (Suave over the Escaleras prior)**: LOCALIZED at kf 2,
+   **53 LighterGlue inliers, T_global_map ≈ 3 cm** (shared start point);
+   14 re-anchors through the run; `global.tum` dumps the fused-frame trail.
+
+**Root-cause chain that got here (3 failed runs first):**
+- A single best-of-all relocalizer NEVER surfaces a prior map once own submaps
+  exist — same-session imagery always out-scores a different walk in inliers.
+  → **dual relocalizers** (session / prior), both feeding the same consensus gate.
+- Even then zero prior candidates: XFeat NN-brute verify can't cross walks
+  (VPR retrieval was FINE — cross-map diag `--map2`: Suave submap 0 → Escaleras
+  submap 0 at cos 0.712). → **LighterGlue ON for the prior relocalizer**
+  (slamko_loop now built with `-DSLAMKO_LOOP_WITH_TORCH=ON`), prior inlier bar
+  15 (consensus is the precision defense).
+- `vpr_recall_diag --map2 A --map2-queries B` = the cross-map retrieval diag.
+
+**Build note:** LighterGlue requires `colcon build --packages-select slamko_loop
+--cmake-args -DSLAMKO_LOOP_WITH_TORCH=ON` (libtorch at ~/libtorch); without it
+the prior verify silently falls back to NN and cross-bag fusion won't fire.

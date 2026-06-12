@@ -107,8 +107,10 @@ class ProviderFusionNode : public rclcpp::Node {
 
     const auto fused_path = declare_parameter("traj_fused_path", std::string(""));
     const auto provider_path = declare_parameter("traj_provider_path", std::string(""));
+    const auto global_path = declare_parameter("traj_global_path", std::string(""));
     if (!fused_path.empty()) fused_file_ = std::fopen(fused_path.c_str(), "w");
     if (!provider_path.empty()) provider_file_ = std::fopen(provider_path.c_str(), "w");
+    if (!global_path.empty()) global_file_ = std::fopen(global_path.c_str(), "w");
 
     pub_fused_ = create_publisher<nav_msgs::msg::Odometry>("~/fused_odometry", 50);
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
@@ -191,6 +193,12 @@ class ProviderFusionNode : public rclcpp::Node {
       // Cross-session: load a prior map; matches into it re-anchor this session
       // into the prior's global frame (anchor-don't-weld — the session graph is
       // untouched, only T_global<-map is estimated).
+      prior_min_inliers_ = declare_parameter("prior_min_inliers", 15);
+      lg_model_path_ = declare_parameter(
+          "lightglue_model_path",
+          onnx_default.empty() ? std::string()
+                               : onnx_default.substr(0, onnx_default.rfind('/')) +
+                                     "/lighterglue.pt");
       const auto prior_dir = declare_parameter("prior_map_dir", std::string(""));
       if (!prior_dir.empty()) {
         if (slamko::loadSubMaps(prior_submaps_, prior_dir)) {
@@ -252,6 +260,7 @@ class ProviderFusionNode : public rclcpp::Node {
     if (!pending_kfs_.empty() && !map_dir_.empty()) sealSubmap();
     if (fused_file_) std::fclose(fused_file_);
     if (provider_file_) std::fclose(provider_file_);
+    if (global_file_) std::fclose(global_file_);
   }
 
  private:
@@ -307,6 +316,9 @@ class ProviderFusionNode : public rclcpp::Node {
 
     dumpTum(fused_file_, s.t, T_map_B);
     dumpTum(provider_file_, s.t, s.T_OB);
+    // Pose in the PRIOR map's global frame — only meaningful once localized
+    // (cross-session fusion trail; before that the session frame is floating).
+    if (localized_) dumpTum(global_file_, s.t, T_global_map_ * T_map_B);
 
     last_sample_ = s;
     have_sample_ = true;
@@ -415,9 +427,26 @@ class ProviderFusionNode : public rclcpp::Node {
       rcfg.body_T_cam = body_T_cam_;
       rcfg.min_inliers = reloc_min_inliers_;
       rcfg.use_bow = false;  // VPR per-KF ranking is the candidate stage (P-B verdict)
+      // TWO relocalizers: same-session imagery always out-scores a prior map's
+      // (different day/light/walk) in PnP inliers, so a single best-of-all
+      // relocalizer NEVER surfaces the prior once own submaps exist (learned on
+      // fusion_suave_on_escaleras: every match went to the just-aged session
+      // submap). Querying session and prior separately gives each its own best;
+      // both feed the same consensus gate.
       reloc_ = std::make_unique<slamko::XFeatRelocalizer>(rcfg);
-      for (const auto& sm : prior_submaps_) reloc_->addSubMap(sm);
-      prior_submaps_.clear();  // registered; keep only ids/anchors
+      if (!prior_submaps_.empty()) {
+        // Cross-bag verify needs the viewpoint-robust matcher: XFeat NN-brute
+        // never reaches min_inliers across walks (proven: VPR cos 0.71 to the
+        // right submap, zero NN-PnP candidates). LighterGlue + a lower inlier
+        // bar (the consensus gate is the precision defense) fixes the verify.
+        auto rcfg_p = rcfg;
+        rcfg_p.min_inliers = prior_min_inliers_;
+        rcfg_p.use_lightglue = true;
+        rcfg_p.lightglue_model_path = lg_model_path_;
+        reloc_prior_ = std::make_unique<slamko::XFeatRelocalizer>(rcfg_p);
+        for (const auto& sm : prior_submaps_) reloc_prior_->addSubMap(sm);
+        prior_submaps_.clear();  // registered; keep only ids/anchors
+      }
       RCLCPP_INFO(get_logger(),
                   "reloc ready: fx=%.1f cx'=%.1f baseline=%.4f m crop_x=%d top-10 VPR + PnP"
                   " (%zu prior submaps registered)",
@@ -545,15 +574,22 @@ class ProviderFusionNode : public rclcpp::Node {
   // PnP inliers >= reloc_min_inliers_ AND the matched submap is older than
   // min_loop_gap_s_ (adjacent-corridor matches are not loops).
   void tryRelocalize(std::uint64_t q_id, double t, const slamko::Features& query) {
-    if (!reloc_ || reloc_->numSubMaps() == 0) return;
-    const auto r = reloc_->relocalize(query);
+    if (reloc_ && reloc_->numSubMaps() > 0)
+      processRelocResult(reloc_->relocalize(query), q_id, t);
+    if (reloc_prior_)
+      processRelocResult(reloc_prior_->relocalize(query), q_id, t);
+  }
+
+  void processRelocResult(const slamko::RelocResult& r, std::uint64_t q_id, double t) {
     if (r.found)
       RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
                            "reloc attempt: kf %llu best=submap %llu inliers=%d",
                            (unsigned long long)q_id, (unsigned long long)r.submap_id,
                            r.num_inliers);
-    if (!r.found || r.num_inliers < reloc_min_inliers_) return;
-    const bool is_prior = prior_ids_.count(r.submap_id) > 0;
+    const bool is_prior = r.found && prior_ids_.count(r.submap_id) > 0;
+    if (!r.found ||
+        r.num_inliers < (is_prior ? prior_min_inliers_ : reloc_min_inliers_))
+      return;
     if (!is_prior) {
       // In-session: only AGED submaps count as loops (adjacent corridor isn't a
       // loop) + a loose teleport bound vs the graph (30 m default — NOT a tight
@@ -703,12 +739,14 @@ class ProviderFusionNode : public rclcpp::Node {
 
   std::FILE* fused_file_ = nullptr;
   std::FILE* provider_file_ = nullptr;
+  std::FILE* global_file_ = nullptr;
 
   // P-B: image buffer + VPR + sealing (KfRec declared above the methods)
   std::deque<std::pair<double, cv::Mat>> img_buf_, img_buf_r_;
   EigenPlacesPtr vpr_;
   std::shared_ptr<XFeat> xfeat_;
-  std::unique_ptr<slamko::XFeatRelocalizer> reloc_;
+  std::unique_ptr<slamko::XFeatRelocalizer> reloc_;        // session submaps (in-session loops)
+  std::unique_ptr<slamko::XFeatRelocalizer> reloc_prior_;  // prior map (cross-session re-anchor)
   std::vector<KfRec> pending_kfs_;
   std::vector<std::uint64_t> sealed_ids_;
   std::deque<std::pair<slamko::SubMap, double>> sealed_unregistered_;
@@ -730,6 +768,8 @@ class ProviderFusionNode : public rclcpp::Node {
   double max_loop_disagree_m_ = 30.0;
   int pcm_consec_ = 3;
   int reloc_min_inliers_ = 25, max_kf_landmarks_ = 200;
+  int prior_min_inliers_ = 15;
+  std::string lg_model_path_;
   slamko::LoopConsensusGate gate_;
 
   // Cross-session prior map (anchor-don't-weld re-anchoring)

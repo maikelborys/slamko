@@ -83,6 +83,58 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "FAIL: loadSubMaps('%s')\n", map_dir.c_str());
     return 1;
   }
+
+  // Cross-map mode (--map2): DB = ALL keyframes of --map, queries = ALL
+  // keyframes of --map2, no distractors. Answers "can session B's frames
+  // retrieve session A's map at all?" — the retrieval half of cross-session.
+  std::string map2_dir;
+  for (int i = 1; i < argc - 1; ++i)
+    if (!std::strcmp(argv[i], "--map2")) map2_dir = argv[i + 1];
+  if (!map2_dir.empty()) {
+    std::vector<slamko::SubMap> maps2;
+    if (!slamko::loadSubMaps(maps2, map2_dir)) {
+      std::fprintf(stderr, "FAIL: loadSubMaps('%s')\n", map2_dir.c_str());
+      return 1;
+    }
+    std::vector<Eigen::VectorXf> dbv;
+    std::vector<std::pair<std::size_t, std::size_t>> dbidx;
+    for (std::size_t s = 0; s < maps.size(); ++s)
+      for (std::size_t k = 0; k < maps[s].kf_obs.size(); ++k)
+        if (maps[s].kf_obs[k].hasGlobalDescriptor()) {
+          dbv.push_back(maps[s].kf_obs[k].global_descriptor);
+          dbidx.emplace_back(s, k);
+        }
+    Eigen::MatrixXf DB(dbv.size(), dbv[0].size());
+    for (std::size_t i = 0; i < dbv.size(); ++i) DB.row(i) = dbv[i].transpose();
+    std::printf("cross-map: DB(%s)=%zu KF | queries(%s)\n", map_dir.c_str(),
+                dbv.size(), map2_dir.c_str());
+    std::FILE* csv = csv_path.empty() ? nullptr : std::fopen(csv_path.c_str(), "w");
+    if (csv) std::fprintf(csv, "q_submap,q_kf,best_cos,best_db_submap,best_db_kf\n");
+    std::vector<float> best_all;
+    for (std::size_t s = 0; s < maps2.size(); ++s) {
+      float best_sm = -1;
+      std::size_t bi = 0;
+      for (std::size_t k = 0; k < maps2[s].kf_obs.size(); ++k) {
+        if (!maps2[s].kf_obs[k].hasGlobalDescriptor()) continue;
+        Eigen::VectorXf cs = DB * maps2[s].kf_obs[k].global_descriptor;
+        int arg = 0;
+        const float b = cs.maxCoeff(&arg);
+        best_all.push_back(b);
+        if (b > best_sm) { best_sm = b; bi = (std::size_t)arg; }
+        if (csv)
+          std::fprintf(csv, "%zu,%zu,%.4f,%zu,%zu\n", s, k, b, dbidx[arg].first,
+                       dbidx[arg].second);
+      }
+      std::printf("  q submap %zu: best cos %.3f -> DB submap %zu kf %zu\n", s,
+                  best_sm, dbidx[bi].first, dbidx[bi].second);
+    }
+    std::sort(best_all.begin(), best_all.end());
+    std::printf("best-cos percentiles: p50=%.3f p90=%.3f max=%.3f\n",
+                best_all[best_all.size() / 2], best_all[(best_all.size() * 9) / 10],
+                best_all.back());
+    if (csv) std::fclose(csv);
+    return 0;
+  }
   if (maps.size() < db_first + query_last + 1) {
     std::fprintf(stderr, "FAIL: %zu submaps < db_first+query_last+1\n", maps.size());
     return 1;
