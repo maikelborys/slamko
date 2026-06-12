@@ -34,8 +34,9 @@ echo "== PASS 1: OKVIS alone (rate $RATE1), recording odometry"
 rm -rf "$OUT/odom_bag"
 setsid ros2 bag record /okvis/okvis_odometry -o "$OUT/odom_bag" > "$OUT/record.log" 2>&1 &
 REC_PID=$!
+OKVIS_CFG=${OKVIS_CFG:-$HOME/coding/OKVIS2-X/src/OKVIS2-X/config/rsD455_bno}  # 640x480 CASA1_BNO default
 setsid ros2 launch ~/coding/d455_setup/okvis_d455_casa2_odom.launch.py \
-  bag_path:="$BAG" rate:="$RATE1" rviz:=false csv_path:="$OUT/okvis/" \
+  bag_path:="$BAG" rate:="$RATE1" rviz:=false csv_path:="$OUT/okvis/" config_dir:="$OKVIS_CFG" \
   > "$OUT/pass1.log" 2>&1 &
 P1_PID=$!
 sleep 8; P1_PIDS=$(pgrep -f "$PATTERN" | tr '\n' ' ')

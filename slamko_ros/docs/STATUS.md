@@ -261,3 +261,34 @@ default, not the robot one. With xfeat: Escaleras raw 2.477→1.628 m, fused
 compression on the climb (±3 vs true 8 m) is klt_vo's documented open
 stairs-bias — its fix belongs in the klt_vo repo (bias carry-forward + gravity
 gate per the slamko stairs memory); the loop layer bounds it meanwhile.
+
+---
+
+## 2026-06-12 (FINAL) — ROOT CAUSE of the inflated maps: WRONG OKVIS CALIB CONFIG (848 on 640 bags)
+
+The user's "no es normal tanto desvío / parece doble más grande" was right, and
+it was NOT (only) GPU contention. The chain of elimination:
+1. Two-pass run on a verified-clean machine STILL gave provider scale 0.56 →
+   contention theory dead for scale.
+2. A live klt_vo sprint bench was found sharing the GPU all day (explains the
+   run-to-run variance and the 673 m outlier, but not the systematic scale).
+3. The launch hardcoded `rsD455_odom848` (848x480, fx=426.15) — but the
+   CASA1_*_BNO bags are **640x480 (fx=385.95)**. Wrong calibration -> ~1.7x
+   trajectory scale inflation, episodic drift, bent maps. ALL of today's casa
+   runs carried it.
+4. `rsD455_bno` is for the BNO055 external IMU (diverges with the camera IMU).
+   **`rsD455_map_odom` is the correct config**: 640x480, camera IMU, odom-only
+   (loops off — RTAB-Map/slamko does LC).
+
+**With rsD455_map_odom + the two-pass recipe (clean GPU):**
+provider Sim3 ATE **3.5 cm, scale 1.000**; slamko graph.tum **4.2 cm, scale
+1.000**; flat floor; inter-submap walls 42 cm median (residual = normal cm
+drift, no longer pathology). The map finally looks like the house.
+
+**RULES learned (hard):** (a) verify `config image_dimension == bag resolution`
+BEFORE any OKVIS run — it fails silently and tracks plausibly at the wrong
+scale; (b) evaluate on graph.tum with Umeyama SCALE printed — closure and even
+SE3-ATE can hide a scale error; (c) check `nvidia-smi`/pgrep for OTHER GPU
+tenants before blaming algorithms. Defaults fixed: pa_okvis_bag + map_two_pass
+use rsD455_map_odom; d455_setup launch grew a config_dir arg (default
+unchanged).

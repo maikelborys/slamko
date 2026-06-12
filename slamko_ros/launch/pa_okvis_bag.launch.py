@@ -45,6 +45,10 @@ def setup(context):
             'csv_path': out_dir + '/okvis/',
             'rviz':     LaunchConfiguration('rviz'),
             'bag_delay': '20.0' if vpr_pre else '10.0',
+            # CRITICAL (2026-06-12): the CASA1_*_BNO bags are 640x480 — the
+            # included launch's default config (rsD455_odom848, fx=426) is for
+            # the 848 casa2 bag and inflates the trajectory scale ~1.7x.
+            'config_dir': LaunchConfiguration('okvis_config').perform(context),
         }.items())
 
     # image_topic:='' keeps the P-A behavior; vpr:=true turns on the P-B path
@@ -80,5 +84,10 @@ def generate_launch_description():
             description='Capture KF images -> EigenPlaces -> sealed VPR submaps (P-B).'),
         DeclareLaunchArgument('prior_map_dir', default_value='',
             description='Prior smap dir for cross-session relocalization (re-anchor).'),
+        DeclareLaunchArgument('okvis_config',
+            default_value=os.path.expanduser(
+                '~/coding/OKVIS2-X/src/OKVIS2-X/config/rsD455_map_odom'),
+            description='OKVIS calib config dir — MUST match the bag resolution '
+                        '(rsD455_map_odom: 640x480 CASA1_BNO; rsD455_odom848: 848 casa2).'),
         OpaqueFunction(function=setup),
     ])
