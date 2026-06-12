@@ -19,10 +19,13 @@
 
   <depend>slamko_core</depend>
   <depend>slamko_loop</depend>
+  <depend>slamko_vio</depend>
   <depend>rclcpp</depend>
   <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>tf2_ros</depend>
+  <depend>ament_index_cpp</depend>
 
   <exec_depend>ros2launch</exec_depend>
 

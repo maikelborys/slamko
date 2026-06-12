@@ -41,6 +41,9 @@ def setup(context):
             'rviz':     LaunchConfiguration('rviz'),
         }.items())
 
+    # image_topic:='' keeps the P-A behavior; vpr:=true turns on the P-B path
+    # (KF images -> EigenPlaces -> sealed VPR submaps in <out_dir>/map).
+    vpr_on = LaunchConfiguration('vpr').perform(context).lower() == 'true'
     fusion = Node(
         package='slamko_ros', executable='provider_fusion_node',
         name='provider_fusion_node', output='screen',
@@ -48,6 +51,8 @@ def setup(context):
             'odom_topic': '/okvis/okvis_odometry',
             'traj_fused_path':    out_dir + '/fused.tum',
             'traj_provider_path': out_dir + '/provider.tum',
+            'image_topic': '/camera/camera/infra1/image_rect_raw' if vpr_on else '',
+            'map_dir': (out_dir + '/map') if vpr_on else '',
         }])
 
     return [okvis, fusion]
@@ -62,5 +67,7 @@ def generate_launch_description():
         DeclareLaunchArgument('imu_rate', default_value='0.0',
             description='OKVIS IMU-propagated odometry rate (0 = per-frame ~26 Hz).'),
         DeclareLaunchArgument('rviz', default_value='false'),
+        DeclareLaunchArgument('vpr', default_value='false',
+            description='Capture KF images -> EigenPlaces -> sealed VPR submaps (P-B).'),
         OpaqueFunction(function=setup),
     ])

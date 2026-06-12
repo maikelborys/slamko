@@ -54,9 +54,15 @@ done
 echo "bag finished (waited ${elapsed}s); draining 10 s then tearing down"
 sleep 10
 
-# Teardown: our process group first, then exactly the node PIDs we recorded.
+# Teardown: SIGINT first (clean rclcpp shutdown — the fusion node's destructor
+# seals the trailing partial submap), wait, then escalate to exactly our PIDs.
+kill -INT -- -"$LAUNCH_PID" 2>/dev/null
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  pgrep -f "$PATTERN" > /dev/null || break
+  sleep 1
+done
 kill -- -"$LAUNCH_PID" 2>/dev/null
-sleep 3
+sleep 2
 for pid in $OUR_PIDS; do kill -9 "$pid" 2>/dev/null; done
 sleep 2
 if pgrep -af "$PATTERN" > /dev/null; then

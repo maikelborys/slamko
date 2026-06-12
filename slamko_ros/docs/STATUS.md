@@ -49,3 +49,28 @@ global constraint landed when none should.
 
 **Next (P-B):** EigenPlaces reloc as the first global-constraint source into
 this same pose-graph; then optimize() moves off the callback thread.
+
+---
+
+## 2026-06-12 — P-B step 2a: KF images + EigenPlaces + sealed VPR submaps in the provider chain
+
+`provider_fusion_node` grew the P-B capture path (param-gated, `image_topic`
+empty = pure P-A): infra1 image ring buffer (0.6 s) → nearest image per chain
+keyframe (±60 ms) → **EigenPlaces TRT** (wrapper reused from slamko_vio_core —
+composition-root privilege; `slamko_vio` now exports the vendored
+tensorrtbuffer headers) → per-KF `global_descriptor` → **sealed SMP submaps**
+(`kf_per_submap`=50, anchor = first KF of segment, manifest maintained,
+trailing partial sealed in the destructor on clean SIGINT).
+
+**Live validation (CASA1_Suave bag, `vpr:=true`):** 5 submaps / 250 KF /
+**VPR coverage 100%** (`smap_info` hard gate OK), sane anchors. Caveats found
+and handled: (a) first run pays ~30 s building the EigenPlaces TRT engine
+(GPU contention delays OKVIS init) — one-time, cache at
+`/tmp/slamko_vio_eigenplaces_512.engine`; (b) bench teardown now SIGINTs
+before killing so the trailing submap seals (bench_pa.sh).
+
+**The architectural point:** keyframe capture starts seconds after bag start
+(OKVIS init), so the 133 s start-room data hole that killed the old
+magistrale bridge cannot recur. **Next (P-B step 2b):** XFeat features per KF
+→ retrieval top-10 (per the step-1 verdict) + LighterGlue/PnP verify →
+reversible gated anchor edge → optimize off-thread.

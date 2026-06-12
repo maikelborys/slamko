@@ -109,6 +109,9 @@ install(TARGETS slamko_vio_core
   EXPORT slamko_vio_coreTargets
   LIBRARY DESTINATION lib ARCHIVE DESTINATION lib RUNTIME DESTINATION bin)
 install(DIRECTORY include/ DESTINATION include)
+# eigenplaces.h/xfeat.h include "buffers.h" from the vendored tensorrtbuffer —
+# export it too so the composition root (slamko_ros) can use the TRT wrappers.
+install(DIRECTORY 3rdparty/tensorrtbuffer/include/ DESTINATION include)
 
 # --------------------------------------------------------------------- tests
 if(BUILD_TESTING AND SLAMKO_VIO_BUILD_TESTS)
