@@ -51,6 +51,7 @@ def setup(context):
             'traj_fused_path':    out_dir + '/fused.tum',
             'traj_provider_path': out_dir + '/provider.tum',
             'traj_global_path':   out_dir + '/global.tum',
+            'traj_graph_path':    out_dir + '/graph.tum',
             'image_topic': '/camera/camera/infra1/image_rect_raw' if vpr_on else '',
             'map_dir': (out_dir + '/map') if vpr_on else '',
             'prior_map_dir': prior,

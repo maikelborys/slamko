@@ -108,6 +108,7 @@ class ProviderFusionNode : public rclcpp::Node {
     const auto fused_path = declare_parameter("traj_fused_path", std::string(""));
     const auto provider_path = declare_parameter("traj_provider_path", std::string(""));
     const auto global_path = declare_parameter("traj_global_path", std::string(""));
+    graph_path_ = declare_parameter("traj_graph_path", std::string(""));
     if (!fused_path.empty()) fused_file_ = std::fopen(fused_path.c_str(), "w");
     if (!provider_path.empty()) provider_file_ = std::fopen(provider_path.c_str(), "w");
     if (!global_path.empty()) global_file_ = std::fopen(global_path.c_str(), "w");
@@ -260,6 +261,34 @@ class ProviderFusionNode : public rclcpp::Node {
   ~ProviderFusionNode() override {
     // Seal the trailing partial submap so a bag-end map is complete.
     if (!pending_kfs_.empty() && !map_dir_.empty()) sealSubmap();
+    // AUDIT FIX: export the OPTIMIZED graph trajectory (the honest shape — the
+    // per-sample fused.tum is the causal online trail, never retro-corrected)
+    // and refresh every sealed submap's anchor from the final graph so the
+    // persisted map is internally consistent (kills the doubled walls the
+    // optimization already knew how to fix).
+    if (!graph_path_.empty()) {
+      if (std::FILE* f = std::fopen(graph_path_.c_str(), "w")) {
+        for (const auto& [id, T] : graph_.poses()) {
+          const auto it = node_time_.find(id);
+          if (it != node_time_.end()) dumpTum(f, it->second, T);
+        }
+        std::fclose(f);
+      }
+    }
+    if (!map_dir_.empty()) {
+      int refreshed = 0;
+      for (auto sid : sealed_ids_) {
+        const std::string path = map_dir_ + "/submap_" + std::to_string(sid) + ".smap";
+        slamko::SubMap sm;
+        if (!slamko::loadSubMap(sm, path)) continue;
+        const auto it = submap_first_kf_.find(sid);
+        if (it == submap_first_kf_.end() || !graph_.hasNode(it->second)) continue;
+        sm.anchor = graph_.pose(it->second);
+        if (slamko::saveSubMap(sm, path)) ++refreshed;
+      }
+      RCLCPP_INFO(get_logger(), "shutdown: refreshed %d/%zu sealed anchors from the graph",
+                  refreshed, sealed_ids_.size());
+    }
     if (fused_file_) std::fclose(fused_file_);
     if (provider_file_) std::fclose(provider_file_);
     if (global_file_) std::fclose(global_file_);
@@ -279,6 +308,7 @@ class ProviderFusionNode : public rclcpp::Node {
       // Keyframe 0 seeds the graph; map == odom at start (correction identity).
       graph_.addKeyframe(0, s.T_OB);
       graph_.setAnchor(0);
+      node_time_[0] = s.t;
       T_map_odom_target_ = slamko::SE3();
       have_correction_ = true;
       onKeyframe(0, s.t, s.T_OB);
@@ -288,6 +318,7 @@ class ProviderFusionNode : public rclcpp::Node {
       // optimize() correction propagates to all later nodes automatically.
       const slamko::SE3 T_map_to = graph_.pose(edge->from) * edge->T_from_to;
       graph_.addKeyframe(edge->to, T_map_to);
+      node_time_[edge->to] = s.t;
       graph_.addEdge(edge->from, edge->to, edge->T_from_to, edge->information, false);
       // map->odom correction target from the latest keyframe pair.
       T_map_odom_target_ = T_map_to * chain_.lastKeyframe().T_OB.inverse();
@@ -494,15 +525,17 @@ class ProviderFusionNode : public rclcpp::Node {
   // EigenPlaces + XFeat run HERE, at keyframe rate (~1-5 Hz), never per frame.
   void onKeyframe(std::uint64_t id, double t, const slamko::SE3& T_map) {
     if (!vpr_) return;
-    auto nearest = [&](const std::deque<std::pair<double, cv::Mat>>& buf) -> const cv::Mat* {
+    auto nearest = [](const std::deque<std::pair<double, cv::Mat>>& buf, double tq,
+                      double tol) -> const std::pair<double, cv::Mat>* {
       double best_dt = 1e9;
-      const cv::Mat* best = nullptr;
-      for (const auto& [it, img] : buf)
-        if (std::abs(it - t) < best_dt) { best_dt = std::abs(it - t); best = &img; }
-      return (best && best_dt <= image_tol_s_) ? best : nullptr;
+      const std::pair<double, cv::Mat>* best = nullptr;
+      for (const auto& e : buf)
+        if (std::abs(e.first - tq) < best_dt) { best_dt = std::abs(e.first - tq); best = &e; }
+      return (best && best_dt <= tol) ? best : nullptr;
     };
-    const cv::Mat* left = nearest(img_buf_);
-    if (!left) { ++kf_no_image_; return; }
+    const auto* left_e = nearest(img_buf_, t, image_tol_s_);
+    if (!left_e) { ++kf_no_image_; return; }
+    const cv::Mat* left = &left_e->second;
     Eigen::VectorXf g;
     if (!vpr_->infer(*left, g)) return;
 
@@ -511,10 +544,12 @@ class ProviderFusionNode : public rclcpp::Node {
     if (reloc_enabled_ && have_calib_ && xfeat_) {
       slamko::Features ql;
       if (detect(*left, ql)) {
-        // Stereo: XFeat on the right view, NN match row-constrained, triangulate.
-        const cv::Mat* right = nearest(img_buf_r_);
+        // Stereo: the right image must be the SAME hardware-synced frame as the
+        // left (AUDIT FIX: matching both independently to the KF stamp could
+        // pair left N with right N±1 — cm of motion parallax = ghost depth).
+        const auto* right_e = nearest(img_buf_r_, left_e->first, 0.005);
         slamko::Features qr;
-        if (right && detect(*right, qr)) stereoLandmarks(ql, qr, rec);
+        if (right_e && detect(right_e->second, qr)) stereoLandmarks(ql, qr, rec);
         ql.global_descriptor = rec.g;
         // Reloc THROTTLE (the GPU-contention fix): attempting on EVERY chain KF
         // (5-9 Hz walking) starves a co-running provider — the verify stage
@@ -705,7 +740,11 @@ class ProviderFusionNode : public rclcpp::Node {
   void sealSubmap() {
     slamko::SubMap sm;
     sm.id = next_submap_id_++;
-    sm.anchor = pending_kfs_.front().T_map;  // local frame = first KF of the segment
+    // AUDIT FIX (2026-06-12): seal from the LIVE graph poses, never the cached
+    // KfRec.T_map — when a loop optimizes mid-segment the cache mixes pre/post
+    // correction poses inside one submap (smeared landmarks, corrupted
+    // submap-local frame, poisoned future PnP against this submap).
+    sm.anchor = graph_.pose(pending_kfs_.front().id);
     const slamko::SE3 anchor_inv = sm.anchor.inverse();
     sm.keyframes.reserve(pending_kfs_.size());
     sm.kf_obs.resize(pending_kfs_.size());
@@ -717,7 +756,7 @@ class ProviderFusionNode : public rclcpp::Node {
     int row = 0;
     for (std::size_t k = 0; k < pending_kfs_.size(); ++k) {
       const auto& r = pending_kfs_[k];
-      const slamko::SE3 T_local_b = anchor_inv * r.T_map;
+      const slamko::SE3 T_local_b = anchor_inv * graph_.pose(r.id);
       sm.keyframes.push_back(slamko::KeyframePose{r.id, r.t, T_local_b});
       sm.kf_obs[k].global_descriptor = r.g;
       mean += r.g;
@@ -783,6 +822,8 @@ class ProviderFusionNode : public rclcpp::Node {
   std::FILE* fused_file_ = nullptr;
   std::FILE* provider_file_ = nullptr;
   std::FILE* global_file_ = nullptr;
+  std::string graph_path_;
+  std::unordered_map<std::uint64_t, double> node_time_;
 
   // P-B: image buffer + VPR + sealing (KfRec declared above the methods)
   std::deque<std::pair<double, cv::Mat>> img_buf_, img_buf_r_;

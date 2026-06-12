@@ -61,6 +61,7 @@ def setup(context):
             'map_dir': (out_dir + '/map') if vpr_on else '',
             'prior_map_dir': LaunchConfiguration('prior_map_dir').perform(context),
             'traj_global_path': out_dir + '/global.tum',
+            'traj_graph_path':  out_dir + '/graph.tum',
         }])
 
     return [okvis, fusion]

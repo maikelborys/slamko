@@ -18,7 +18,7 @@ MAX_WAIT=${MAX_WAIT:-900}   # hard cap on the whole run [s]
 VPR=${VPR:-false}           # true => P-B path (KF images + EigenPlaces + reloc + sealed map)
 
 PROVIDER=${PROVIDER:-okvis}   # okvis | kltvo
-PATTERN='okvis2x_stereo_network_node_subscriber|provider_fusion_node|klt_vo_node'
+PATTERN='^[^ ]*(okvis2x_stereo_network_node_subscriber|provider_fusion_node|klt_vo_node)'
 LAUNCH_FILE=pa_okvis_bag.launch.py
 [ "$PROVIDER" = kltvo ] && LAUNCH_FILE=pa_kltvo_bag.launch.py
 

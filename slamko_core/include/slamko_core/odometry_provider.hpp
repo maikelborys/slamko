@@ -61,15 +61,23 @@ struct ProviderChainConfig {
   double kf_min_rotation    = 0.10;  // rad (~5.7 deg)
   double kf_max_dt          = 1.0;   // s; <=0 disables the time arm
 
-  // Edge covariance = cov_from + cov_to (independence approximation — slightly
-  // conservative, which is the safe direction for a provider whose covariance is
-  // itself heuristic, like OKVIS's quality-scaled diagonal). Only the diagonal is
-  // used. Floored below; when the provider reports all-zero covariance the
-  // defaults are used instead (PoseGraph's trusted-odometry sigmas).
-  double default_sigma_t = 0.05;  // m
-  double default_sigma_r = 0.02;  // rad
-  double floor_sigma_t   = 0.005; // m
-  double floor_sigma_r   = 0.002; // rad
+  // Edge covariance: MOTION-PROPORTIONAL (audit 2026-06-12). Summing the two
+  // endpoints' ABSOLUTE covariances made per-edge stiffness wildly non-uniform:
+  // quality-dipped (10x/100x) edges became free hinges and optimize() dumped the
+  // whole loop residual into them (kinks), while stationary kf_max_dt edges
+  // (relative motion ~0, should be near-rigid) got the same weak covariance.
+  // Relative-motion noise scales with the motion: sigma = k * motion + floor,
+  // and the provider's reported quality enters as a BOUNDED variance multiplier
+  // (so degradation still down-weights, Hard Rule #3, without creating hinges).
+  double motion_k_t    = 0.05;   // sigma_t per metre travelled
+  double motion_k_r    = 0.05;   // sigma_r per rad rotated
+  double floor_sigma_t = 0.005;  // m
+  double floor_sigma_r = 0.002;  // rad
+  double nominal_var_t = 2e-3;   // provider trans var (sum of 2 poses) at quality=Good
+  double quality_mult_max = 25.0;
+  // kept for parameter compatibility; no longer used by edgeInformation
+  double default_sigma_t = 0.05;
+  double default_sigma_r = 0.02;
 };
 
 class ProviderChain {
@@ -100,7 +108,7 @@ class ProviderChain {
     e.t_from = last_kf_.t;
     e.t_to = s.t;
     e.T_from_to = T_rel;
-    e.information = edgeInformation(last_kf_, s);
+    e.information = edgeInformation(last_kf_, s, trans, rot);
     last_kf_ = s;
     ++next_id_;
     return e;
@@ -113,17 +121,21 @@ class ProviderChain {
 
  private:
   Eigen::Matrix<double, 6, 6> edgeInformation(const ProviderSample& a,
-                                              const ProviderSample& b) const {
-    Eigen::Matrix<double, 6, 6> info = Eigen::Matrix<double, 6, 6>::Zero();
+                                              const ProviderSample& b,
+                                              double trans, double rot) const {
+    // Quality multiplier from the provider's reported covariance (bounded so a
+    // Lost-quality stretch is down-weighted, never a free hinge).
     const Eigen::Matrix<double, 6, 1> var_sum =
         (a.cov.diagonal() + b.cov.diagonal()).cwiseMax(0.0);
-    const bool has_cov = var_sum.sum() > 1e-15;
-    for (int i = 0; i < 6; ++i) {
-      const double def = (i < 3) ? cfg_.default_sigma_t : cfg_.default_sigma_r;
-      const double flo = (i < 3) ? cfg_.floor_sigma_t : cfg_.floor_sigma_r;
-      const double var = has_cov ? std::max(var_sum[i], flo * flo) : def * def;
-      info(i, i) = 1.0 / var;
-    }
+    double q = 1.0;
+    if (var_sum.sum() > 1e-15)
+      q = std::min(std::max(var_sum.head<3>().mean() / cfg_.nominal_var_t, 1.0),
+                   cfg_.quality_mult_max);
+    const double st = cfg_.motion_k_t * trans + cfg_.floor_sigma_t;
+    const double sr = cfg_.motion_k_r * rot + cfg_.floor_sigma_r;
+    Eigen::Matrix<double, 6, 6> info = Eigen::Matrix<double, 6, 6>::Zero();
+    for (int i = 0; i < 3; ++i) info(i, i) = 1.0 / (st * st * q);
+    for (int i = 3; i < 6; ++i) info(i, i) = 1.0 / (sr * sr * q);
     return info;
   }
 
