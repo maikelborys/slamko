@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>slamko_ros</name>
+  <version>0.0.1</version>
+  <description>slamko ROS 2 integration (composition root — the only package that
+    knows all others). P-A: provider_fusion_node — loose chain-pose-graph fusion
+    over an external odometry provider (OKVIS2-X default): relative KF edges +
+    covariance into the thin global pose-graph, map→odom slewed correction.
+    Apache-2.0.</description>
+
+  <maintainer email="maikelborys@gmail.com">Maikel Borys</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <build_depend>eigen3_cmake_module</build_depend>
+  <build_depend>eigen</build_depend>
+
+  <depend>slamko_core</depend>
+  <depend>slamko_loop</depend>
+  <depend>rclcpp</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2_ros</depend>
+
+  <exec_depend>ros2launch</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
