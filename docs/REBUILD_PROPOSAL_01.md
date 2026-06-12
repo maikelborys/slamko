@@ -1,6 +1,14 @@
 # slamko — Rebuild proposal: lifelong loose-fusion SLAM over external odometry
 
-<!-- status: PROPOSAL / under review — not yet adopted. Forks locked 2026-05-29; Atlas/lifelong section §4 folded from research (primary-sourced; that run's verifier crashed so not independently re-verified — confirm at impl). Do NOT touch code or CLAUDE.md/MASTER_PLAN until the user approves this doc. -->
+<!-- status: ADOPTED 2026-06-12 — user decision, criterion verbatim: "A mí me importa el
+resultado. Y que sea bien estable sin romperse." Result + stability first; the paper door
+stays open via the provider contract (see §11 amendments). §11 also folds in the
+2026-06-12 research refresh (5-agent swarm, cross-verified) that re-validates §4's
+direction and corrects two points. NEXT SESSION'S FIRST TASK: migrate this into
+MASTER_PLAN.md + CLAUDE.md (per §0 framing) and start P-A. -->
+<!-- history: forks locked 2026-05-29; §4 originally folded from a research run whose
+verifier crashed (not independently re-verified then). The 2026-06-12 swarm re-verified
+the §4 claims — see §11.3. -->
 
 **What this is:** the design proposal for the strategic pivot decided in the
 2026-05-29 session. It supersedes the "slamko implements its own VIO" framing of
@@ -293,3 +301,132 @@ EigenPlaces (MIT), GTSAM (BSD-3) are all clean.
 - **P-E — Extra providers + depth-submap factor:** cuVSLAM/Basalt loose adapters;
   optional stereo-depth submap-alignment.
 - **P-F (future) — Semantic layers:** sidewalks/roads/lanes as map layers.
+
+---
+
+## 11. Addendum 2026-06-12 — adoption, amendments, research refresh
+
+### 11.1 The decision and its criterion
+
+Adopted as written, with the amendments below. The user's criterion: **result +
+stability ("que sea bien estable sin romperse")** outranks paper novelty. OKVIS2-X
+is the default provider because it is the mature, already-validated choice (user's
+own magistrale run: OKVIS 5.91 cm vs slamko-own-VIO 10.06 m; stairs/multi-floor
+solved; BSD-3). Every hour not spent hardening an own VIO goes into the layer that
+actually delivers "never breaks".
+
+### 11.2 Amendments
+
+1. **klt_vo = second provider via the SAME contract (future, not now).** Do not
+   read §7's "DELETE the own VIO" as abandoning klt_vo — it lives and improves in
+   its own repo (`~/coding/klt_vo`). Its 2026-06-12 watershed state: FB-check
+   (+30% mean ATE), LocalBA revived (the dead-prune bug slamko_vio still carries
+   was FIXED there), Schur+FEJ marginalization working (MH_05 0.092 median),
+   clean-room XFeat TRT detector (MH_01 0.040 median, beats local cuVSLAM;
+   190 fps @640×480 on the real D455 casa bag), three median-of-3-validated
+   configs. When the high-fps robot regime needs it, klt_vo plugs in as a thin
+   adapter — slamko_vio's stale fork of it should still be deleted as §7 says.
+2. **slamko_vio's diagnosis is partially superseded.** The "own VIO drifts on
+   stairs" motivation (§0) predates the klt_vo 2026-06-12 fixes (part of that
+   drift was the dead-BA bug). This does NOT change the decision — OKVIS2-X is
+   still the stable choice — but it removes any urgency to salvage slamko_vio's
+   VIO code: klt_vo HEAD is strictly better, so the fork has zero unique value.
+3. **Paper framing preserved, deprioritized.** The 2026-06-12 novelty check found
+   three EMPTY claims: (a) no system combines >100 fps embedded-GPU front-end +
+   incremental factor-graph backend + never-lost multi-map; (b) no published
+   4-modality fusion (cam+IMU+wheel+magnetometer) in one graph; (c) no
+   recovery-first framing in 2024–2026 stereo-inertial literature. All three are
+   reachable LATER by swapping the provider to klt_vo + P5 sensors. cuVSLAM
+   (arXiv:2506.04359) has speed + LC but no multi-map, no appearance reloc, no
+   extra sensors, restrictive NVIDIA license.
+
+### 11.3 Research refresh (2026-06-12 swarm — supersedes the crashed-verifier caveat on §4)
+
+**Anchor-don't-weld is now multiply confirmed; §4's ORB-SLAM3 welding mechanics
+are reference-only, NOT the plan:**
+- Hydra-Multi (arXiv:2304.13487) has the ablation: removing anchoring is
+  catastrophic; removing node merging costs only modestly.
+- maplab 2.0 (arXiv:2212.00654): anchoring-first staged design (solve `T_G_M`
+  only; landmark merge = offline refinement). Kimera-Multi (arXiv:2106.14386) +
+  RTAB-Map (arXiv:2301.00050): never fuse landmarks at all, anchor-only works
+  for 10+ km / 11 sessions.
+- CudaSIFT-SLAM (arXiv:2405.16932, Tardós 2024): +70% mapped frames purely from
+  better place-recognition recall → **the Atlas bottleneck is RECALL, not merge
+  machinery**. Directly validates spending P-B on the VPR/reloc layer.
+- **Merge as reversible transaction** (Bosch lifelong, arXiv:2211.03423): merge →
+  post-hoc map-agreement check → undo if bad. ROVER (arXiv:2508.13488):
+  trajectory/inertial-consistency gating of candidates. → slamko's anchor edges
+  must be **covariance-gated, inertially sanity-checked, and reversible**.
+  4-DoF anchors suffice (both maps gravity-aligned).
+- Documented Atlas failure modes to design against: wrong merges under aliasing;
+  recall-too-low → permanent fragmentation (the dominant one); immature-map VI
+  scale error (~5% at 2 s, ~1% at 15 s — don't anchor a too-young branch);
+  merge-time compute spikes; unbounded multi-session graph growth.
+
+**GTSAM/iSAM2 — keep, but poses-only and pinned:**
+- iSAM2 remains the only production incremental backend (no GPU incremental
+  solver exists anywhere; MegBA/DeepLM/Graphite/SymForce are all batch).
+- Known structural pitfalls: unbounded memory with landmarks in long sessions;
+  `marginalizeLeaves` fragility; smart factors break inside
+  IncrementalFixedLagSmoother; TBB can be slower (parallelizes linearization
+  only); relinearization spikes on big loops.
+- → The GLIM/Kimera split: metric fixed-lag smoothing stays INSIDE the provider;
+  slamko's global graph = **iSAM2 over poses/anchors only, no landmarks ever**.
+  Pin GTSAM 4.2.1 (or GLIM's tested 4.3a0), benchmark with TBB off. GPU effort,
+  if any, goes to factor evaluation (gtsam_points pattern, Jetson-validated).
+- This also explains slamko_fusion's own 2026-05-29 finding (GTSAM local smoother
+  15× worse than Ceres): wrong altitude for GTSAM, not a GTSAM defect.
+
+**Magnetometer (P5, the casa bags already carry the data):**
+- BNO055 **fused orientation is NOT usable as a factor**: ~180° heading re-snaps,
+  calibration collapses in motion, no calibration persistence, silent yaw
+  re-snaps poison a smooth-measurement factor.
+- Correct path: **raw `/bno055/mag`** (already recorded @~66 Hz in
+  CASA1_*_BNO bags) + Kok-Schön ellipsoid calibration (arXiv:1601.05257) done
+  on-robot WITH MOTORS RUNNING + unary yaw factor (GTSAM `MagPoseFactor` pattern,
+  WMM/IGRF field vector for true north) + norm/dip gating + Cauchy kernel.
+- Indoor: **gated OFF by default** — 6.9–25.9° yaw errors documented near
+  steel/equipment; both reference mag-VIO systems restrict to outdoor. No
+  published quadruped-actuator mag study exists (gap AND warning).
+- Hardware note: BNO085/086 (calibration persistence, better dynamics) is a
+  drop-in robustness upgrade.
+
+**GNSS/RTK (P-D):**
+- Loosely-coupled is fully covered by GTSAM `GPSFactor`/`GPSFactorArm` (lever arm
+  makes attitude observable), unary in ENU with per-fix covariance.
+- **Gauge-correct pattern (Lee et al., ICRA 2020): do NOT keep the VIO↔ENU 4-DoF
+  transform as a state (stays unobservable) — initialize it over a window, then
+  re-anchor the estimator into ENU** and use plain unary factors.
+- Robustness ladder: Huber/Cauchy for RTK-fixed; switchable constraints / GNC
+  (arXiv:2109.00667) only if ingesting float/SPP multipath fixes.
+- OKVIS2-X itself ships yaw-observability-gated 4-DoF GNSS alignment
+  (arXiv:2510.04612) — read it before building anything.
+
+### 11.4 Roadmap, reprioritized for stability-first (gates on the user's REAL bags)
+
+| Phase | What | Gate (must be reproducible, not single-run) |
+|---|---|---|
+| **P-A** | OKVIS2-X adapter → relative KF edges + cov into the loose fuser; map→odom slew | Live pose tracks OKVIS on CASA1_Suave + Escaleras bags |
+| **P-B** | Reloc recall: EigenPlaces per-KF diagnostic on magistrale return (dump per-KF cosines + attempt counts); SALAD/CosPlace fallback if needed | Cross-session reloc on casa bags; magistrale start↔end bridge closes (today: 14%) |
+| **P-C** | Never-lost end-to-end: stale-gap → seal → branch → reloc → **reversible gated anchor** | `CASA1_Suave_blackout` + `blackout4`: clean recovery, zero crashes, un-aligned divergence bounded |
+| **P-C′** | Swap slamko_loop's batch Ceres pose-graph → iSAM2 poses-only incremental | Escaleras multi-floor with real-time incremental global correction |
+| **P-D/E/F** | Georef (init-then-re-anchor) / extra providers (klt_vo!) / semantics | unchanged |
+
+Validation data inventory: EuRoC (full GT, median-of-3 on V1 — single runs are
+±50% noise, klt_vo-proven), `/mnt/data/bno_ab/CASA1_{Suave,Escaleras,extremeFinal}_
+Stereo60_RGB30_BNO` (+`_strim`/`_trim` variants, raw BNO mag included),
+`CASA1_Suave_blackout{,4}` (the kidnap/recovery protocol bags), c1/c2/c3a/c3b
+series, TUM-VI magistrale (CAUTION: GT is room-only — ATE-gated evals on it are
+meaningless; use masked segments or the bridge-closure criterion). OKVIS reference
+TUMs: `~/coding/klt_vo/results/d455/okvis_{Suave,Escaleras}.tum`.
+
+### 11.5 What the next session should do, in order
+
+1. Migrate this doc → `MASTER_PLAN.md` (+ CLAUDE.md focus update); archive the
+   old own-VIO MASTER_PLAN framing.
+2. Resolve the uncommitted slamko_vio work-in-progress (health-trace edits +
+   `vio_d455.launch.py`, present in the tree on 2026-06-12) — commit, harvest,
+   or drop; don't leave it dirty.
+3. Start P-A (smallest end-to-end loop). Open question §9.1 (adopt-vs-reimplement
+   maplab's map-server) should be answered DURING P-A/P-C design, not before —
+   data first.

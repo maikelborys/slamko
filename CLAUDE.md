@@ -10,6 +10,17 @@ root). Each package has only a short `README.md` (orientation) + `docs/`
 (validated detail). Details: [`MASTER_PLAN.md`](MASTER_PLAN.md),
 [`docs/DECOUPLING.md`](docs/DECOUPLING.md), [`docs/DOC_PROCESS.md`](docs/DOC_PROCESS.md).
 
+> **⚠ STRATEGIC PIVOT ADOPTED 2026-06-12 — read
+> [`docs/REBUILD_PROPOSAL_01.md`](docs/REBUILD_PROPOSAL_01.md) FIRST** (now the
+> authoritative plan; MASTER_PLAN's own-VIO framing is obsolete pending
+> migration). slamko = lifelong map + multi-session reloc + loose-fusion layer
+> over an EXTERNAL odometry provider (OKVIS2-X default; klt_vo as future
+> high-fps second provider via the same contract). User criterion: **result +
+> stability over novelty**. Its §11 addendum holds the 2026-06-12 research
+> refresh (anchor-don't-weld confirmed; iSAM2 poses-only; raw-mag-not-BNO-fused;
+> GNSS init-then-re-anchor) + the reprioritized P-A..P-F roadmap whose gates run
+> on the real casa/blackout bags. §11.5 = the next session's task list.
+
 ## Orientation (cold start — human or LLM)
 
 **Reading order:** this file → [`MASTER_PLAN.md`](MASTER_PLAN.md) →

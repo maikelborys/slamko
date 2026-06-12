@@ -2,6 +2,16 @@
 
 <!-- validated: (scaffold) 2026-05-27 · tests: n/a -->
 
+> **⚠ SUPERSEDED 2026-06-12:** the user ADOPTED
+> [`docs/REBUILD_PROPOSAL_01.md`](docs/REBUILD_PROPOSAL_01.md) (lifelong
+> loose-fusion layer over external odometry, OKVIS2-X default provider, klt_vo as
+> future second provider). Criterion: result + stability first. The "slamko
+> implements its own VIO" framing below is OBSOLETE — the never-lost/loop/reloc/
+> persistence layers and their validated status remain accurate. **First task of
+> the next session: migrate the adopted proposal (incl. its §11 addendum:
+> amendments, 2026-06-12 research refresh, reprioritized P-A..P-F roadmap with
+> gates on the casa/blackout bags) into this file + CLAUDE.md.**
+
 The top-level plan. Per-module detailed plans derive from this and live in each
 module's `docs/PLAN_*.md` (produced in plan mode when work on that module starts).
 Technical deep-dive + research provenance: `~/coding/klt_vo/docs/14_slam_master_plan.md`
