@@ -18,10 +18,16 @@ research provenance — anchor-don't-weld, iSAM2-poses-only, raw-mag-not-BNO-fus
 GNSS init-then-re-anchor). Old own-VIO plan: `docs/archive/MASTER_PLAN_OWNVIO_01.md`.
 Also: [`docs/DECOUPLING.md`](docs/DECOUPLING.md), [`docs/DOC_PROCESS.md`](docs/DOC_PROCESS.md).
 
-> **Current focus: roadmap P-A → P-F (MASTER_PLAN §8), gates on the real
-> casa/blackout bags.** P-A (active): OKVIS2-X provider adapter → relative KF
-> edges + covariance into the loose pose-graph fuser + map→odom slew; gate = live
-> pose tracks OKVIS on CASA1_Suave + Escaleras.
+> **Current focus: roadmap P-A → P-F (MASTER_PLAN §8). Cold-start →
+> [`docs/PIPELINE_STATUS_01.md`](docs/PIPELINE_STATUS_01.md)** (consolidated
+> status + canonical commands + load-bearing gotchas + queue). Done as of
+> 2026-06-13: P-A ✅, P-B ✅ (in-session loops + cross-session reloc + cross-bag
+> fusion — Escaleras 8.1 cm, Suave-on-Escaleras LOCALIZED kf 3 / 4 cm), P-C 🟢
+> (blackout auto-recovery 3.1→0.16 m), P-E started (klt_vo as 2nd provider).
+> Next: anchor-edges in the graph + landmark-overlap merge check + health
+> monitor. **Two hard gotchas: bno_ab bags are 640×480 (config rsD455_map_odom,
+> NOT odom848) with DOUBLED camera-IMU accel (use ~/coding/BNO055/ab launch);
+> evaluate graph.tum with Umeyama scale, never the closure number.**
 
 ## Orientation (cold start — human or LLM)
 

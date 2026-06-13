@@ -2,13 +2,15 @@
 
 <!-- validated: 2026-05-27 (P2 CLOSED · P4a) · tests: core 26 + fusion 4 + vio 24 + loop 32 gtest 0 fail · gtsam tracks MH_01 · never-lost seal→branch→WELD→recover + MULTI-SUBMAP pose-graph merge (2 disjoint sealed) validated live on V1_01 (XFeat, auto-check 7/7) · SE3 pose-graph + stress + weld-once + disjoint submaps + SubMap serialization (P4a) -->
 
-> **⚠ PIVOT 2026-06-12 (MASTER_PLAN v2):** slamko is now the lifelong
-> loose-fusion layer over an EXTERNAL odometry provider (OKVIS2-X default) —
-> the own-VIO framing in the table below is historical. P-A shipped the first
-> slice: `slamko_ros/provider_fusion_node` (provider → relative KF edges →
-> `slamko_loop::PoseGraph` → map→odom slew), gated on the real casa bags.
-> This map gets a full rewrite when P-B/P-C land; until then trust
-> `../MASTER_PLAN.md` §7/§8 for the per-package direction.
+> **⚠ PIVOT 2026-06-12/13 (MASTER_PLAN v2) — for the CURRENT pipeline read
+> [`PIPELINE_STATUS_01.md`](PIPELINE_STATUS_01.md) FIRST** (the consolidated
+> cold-start: phase status, canonical commands, load-bearing gotchas, queue).
+> slamko is now the lifelong loose-fusion layer over an EXTERNAL odometry
+> provider (OKVIS2-X default; klt_vo 2nd). P-A ✅, P-B ✅ (in-session +
+> cross-session + cross-bag fusion: Escaleras 8.1 cm, fusion LOCALIZED kf 3 /
+> 4 cm), P-C 🟢 (blackout auto-recovery). The own-VIO package table below is
+> HISTORICAL — `slamko_ros/provider_fusion_node` is the whole live pipeline now.
+> Per-package direction: `../MASTER_PLAN.md` §7/§8.
 
 The one-page projection of the whole system. A **map, not a textbook** — it states
 what's true now + where it's headed, and is corrected as code lands. Deep detail
