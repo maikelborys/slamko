@@ -1,5 +1,7 @@
 # slamko_loop — P2 plan (the never-lost supervisor)
 
+> **STATUS (2026-06-19): SUPERSEDED. Phases P2a–P2.5 shipped 2026-05-27, then the supervisor/anchor/pose-graph/archive machinery was DELETED 2026-05-29 (pure VIO already OKVIS-class). The relocalizer front-end (XFeatRelocalizer + BoW + LighterGlue) survives DORMANT, to be re-wired in R1 of [`PLAN_ROBUSTNESS_01.md`](../../docs/PLAN_ROBUSTNESS_01.md). Documents the never-lost architecture for reference.**
+
 <!-- validated: (P2.5+hardening) 2026-05-27 · 32 gtest 0 fail (5 pose-graph + 10 stress + 2 supervisor pose-graph + weld-once) + never-lost cycle (seal→branch→WELD→recover) validated end-to-end on V1_01 XFeat forced-loss replay -->
 
 Read [`../../docs/SYSTEM.md`](../../docs/SYSTEM.md) (never-lost spine) +

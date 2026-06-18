@@ -24,8 +24,13 @@ Also: [`docs/DECOUPLING.md`](docs/DECOUPLING.md), [`docs/DOC_PROCESS.md`](docs/D
 > 2026-06-13: P-A ✅, P-B ✅ (in-session loops + cross-session reloc + cross-bag
 > fusion — Escaleras 8.1 cm, Suave-on-Escaleras LOCALIZED kf 3 / 4 cm), P-C 🟢
 > (blackout auto-recovery 3.1→0.16 m), P-E started (klt_vo as 2nd provider).
-> Next: anchor-edges in the graph + landmark-overlap merge check + health
-> monitor. **Two hard gotchas: bno_ab bags are 640×480 (config rsD455_map_odom,
+> **Active robustness plan (authoritative for the remaining work):
+> [`docs/PLAN_ROBUSTNESS_01.md`](docs/PLAN_ROBUSTNESS_01.md)** — reorders the work
+> to GATES-before-anchor-edges (a code review found the graph has no input gates;
+> propagating corrections through ungated garbage spreads corruption). Next:
+> R0.1 empirical campaign (observe garbage modes) → R0 gates → R1.1 anchor edges.
+> OKVIS measured (2026-06-19): never auto-resets, holds warm state, bridges loss
+> with IMU — the "12 s reset" was an external restart, not OKVIS. **Two hard gotchas: bno_ab bags are 640×480 (config rsD455_map_odom,
 > NOT odom848) with DOUBLED camera-IMU accel (use ~/coding/BNO055/ab launch);
 > evaluate graph.tum with Umeyama scale, never the closure number.**
 

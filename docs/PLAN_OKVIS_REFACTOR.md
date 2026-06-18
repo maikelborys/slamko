@@ -1,5 +1,7 @@
 # PLAN — OKVIS-style architectural refactor
 
+> **STATUS (2026-06-19): SUPERSEDED. The P0 bench finding was adopted (pure VIO is already OKVIS-class; the supervisor anchor layer was destroying ~6.7× of precision) — live trajectory is now pure VIO; the supervisor/SessionGraph were deleted (commit b55d093). Kept for diagnostic provenance only. Active plan: [`PLAN_ROBUSTNESS_01.md`](PLAN_ROBUSTNESS_01.md).**
+
 Branch: `okvis-arch-refactor` (off main @ 8294225).
 Target: replace the multi-submap-anchor live trajectory layer with an OKVIS-class
 single-graph architecture. Stable trajectory FIRST (no boundary jumps, no vertical

@@ -1,5 +1,7 @@
 # PLAN — Global landmark BA (OKVIS-class alignment, the 1.9 m → cm gap)
 
+> **STATUS (2026-06-19): ACTIVE (accuracy track). Phases A/B.1/C.1/V.1 shipped; Phase B.2 (IMU factors) is load-bearing and pending; cm-class ATE blocked on B.2 + D.1 re-run. Parallel to the robustness track — [`PLAN_ROBUSTNESS_01.md`](PLAN_ROBUSTNESS_01.md) — which has priority.**
+
 <!-- status: A+B v1 implemented + tested (synthetic green); D validated on V1_03 (visual-only BA DEGRADES ATE → IMU factors B.2 required) · 2026-05-28 -->
 
 **Read first:** `docs/PLAN_VPR_RELOC.md` (the LighterGlue verifier — landed),

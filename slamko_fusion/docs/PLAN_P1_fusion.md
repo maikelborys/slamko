@@ -1,5 +1,7 @@
 # slamko_fusion — P1 plan (GTSAM fixed-lag smoother + marginalization)
 
+> **STATUS (2026-06-19): DONE 2026-05-29 — all phases P1a–P1c shipped. Ceres is the production backend (default); GTSAM hardened but ~15× worse on real data, reserved for Phase D global loop-closure BA. Reference only. Robustness track: [`PLAN_ROBUSTNESS_01.md`](../../docs/PLAN_ROBUSTNESS_01.md).**
+
 <!-- validated: (P1c) 2026-05-27 · tests: fusion 4 + vio 24 gtest 0 fail · gtsam tracks MH_01 end-to-end 0 smoother-fails -->
 
 Read [`../../docs/SYSTEM.md`](../../docs/SYSTEM.md) + [`../../docs/DECOUPLING.md`](../../docs/DECOUPLING.md)

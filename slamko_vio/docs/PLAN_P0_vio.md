@@ -1,5 +1,7 @@
 # slamko_vio — P0 plan (the swappable learned-feature VIO)
 
+> **STATUS (2026-06-19): DONE 2026-05-27 — all phases B1–B4 shipped (XFeat-detect + KLT-track ~240 fps, Shi-Tomasi fallback, VioPipeline ROS-agnostic). Reference only; no active planning. Robustness track: [`PLAN_ROBUSTNESS_01.md`](../../docs/PLAN_ROBUSTNESS_01.md).**
+
 <!-- validated: 8498021 2026-05-27 · tests: P0 shipped — equal-cov MH_01 ShiTomasi 0.078 / XFeat-TRT 0.049 -->
 
 Detailed plan for Milestone B. Read [`../../CLAUDE.md`](../../CLAUDE.md) +

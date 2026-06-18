@@ -1,5 +1,7 @@
 # PLAN — TUM VI fisheye→pinhole rectification + first mapping test (then multi-part merge)
 
+> **STATUS (2026-06-19): ACTIVE (partial). Step 1 (room1) SHIPPED 2026-05-27. Steps 2–3 (magistrale single + cross-session merge) blocked pending VPR recall — see [`PLAN_VPR_RELOC.md`](PLAN_VPR_RELOC.md). Rectified datasets at /mnt/data/datasets/tumvi_rect/.**
+
 <!-- status: STEP 1 DONE (room1 maps green) · magistrale rectified · 2026-05-27 -->
 
 ## PROGRESS (2026-05-27)

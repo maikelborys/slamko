@@ -4,6 +4,12 @@
 research provenance + §11 addendum live there) · previous own-VIO plan archived at
 docs/archive/MASTER_PLAN_OWNVIO_01.md -->
 
+> **Robustness track (active, authoritative for remaining work):**
+> [`docs/PLAN_ROBUSTNESS_01.md`](docs/PLAN_ROBUSTNESS_01.md) — invariants-first
+> (never ingest garbage / never false-merge / never permanently lost), reorders
+> §8 to **gates before anchor-edges**, and folds in the S1–S9 stress battery +
+> the differential golden-map test method.
+
 **What slamko is now:** slamko **does not implement odometry**. It is the
 **lifelong map + multi-session relocalization + multi-sensor loose-fusion layer**
 on top of a mature external odometry provider (**OKVIS2-X** default; klt_vo as a

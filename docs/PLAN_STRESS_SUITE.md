@@ -1,5 +1,7 @@
 # PLAN — Stress-test suite (the "never breaks" battery)
 
+> **STATUS (2026-06-19): FOLDED INTO [`PLAN_ROBUSTNESS_01.md`](PLAN_ROBUSTNESS_01.md) §7 (scenarios S1–S9 + the differential golden-map method). Retained as the detailed harness/chaos-tool spec; the robustness plan is the source of truth for ordering and gates.**
+
 <!-- status: DESIGNED 2026-06-12 (user directive: "sistema fuerte estable →
 varios diferentes stress tests"). Implemented incrementally: S1-S3 land with
 P-C, S5 with the reversible anchor, S7-S8 with the lifelong map-server. -->
