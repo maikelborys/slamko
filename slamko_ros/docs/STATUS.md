@@ -21,6 +21,27 @@ the VPR model is NOT the fix. **EigenPlaces stays** (best aggregate). The blind-
 **DENSE matcher (LoFTR/RoMa)** on the borderline-cosine candidates — it can match low-overlap pairs
 no global descriptor recognizes. `results/r08_vpr/ab.png`. Saves a wasted C++ model-swap.
 
+**ROOT-CAUSE REFRAME (the recall "cliff" is a VIEWPOINT artifact, NOT descriptor quality).**
+`scripts/vpr_dense_rescue.py` (LoFTR indoor on the blind-spot pairs) + a heading-gated re-pairing
+overturned the descriptor framing. The pose-GT "same-place" pairs were matched by POSITION only;
+splitting them by HEADING (yaw from the OKVIS quaternion):
+
+| pose-GT pairing | n | EigenPlaces cos median | min | % < 0.5 (fail) |
+|---|---|---|---|---|
+| same pos, any heading | 3138 | 0.889 | -0.01 | 5% |
+| **same pos + heading <45° (real revisit)** | 3042 | 0.889 | **0.426** | **3%** |
+| same pos, OPPOSITE heading >120° | 81 | 0.303 | 0.108 | **93%** |
+
+The low-cosine "blind spots" are almost entirely **OPPOSITE-FACING pairs** (same spot, looking the
+other way = NO visual overlap). LoFTR rescued **0/15** of them (max 17 inliers) — because there is
+no overlap to match (control: a true same-view pair gets **4167** LoFTR inliers; a different-place
+pair gets 7). **Same-HEADING revisits relocalize fine** (EigenPlaces floor 0.426, 97% above 0.5).
+⇒ recall is NOT a descriptor-quality or matcher problem; it is **viewpoint coverage**. The fix is
+**multi-direction map coverage** (store descriptors of each place from several headings) and/or
+accept that opposite-facing revisits don't relocalize (physically correct) and coast on odometry
+until facing a mapped direction. `results/r08_vpr/viewpoint.png`. This cancels BOTH the model-swap
+AND the dense-matcher C++ builds for this purpose — a major redirect, measured not assumed.
+
 ## 2026-06-19 — Compass instrument: field-norm-gated raw-mag heading (task #3)
 
 Instrument-first (like the DR gate): subscribe `/bno055/mag` (RAW mag, NOT the BNO fused
