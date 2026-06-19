@@ -266,6 +266,10 @@ class ProviderFusionNode : public rclcpp::Node {
       anchor_soft_lm_ = declare_parameter("anchor_soft_lm", 7000);
       // R0.2 ingestion gate: bar degraded-tracking submaps from being reloc match targets.
       gate_degraded_reloc_ = declare_parameter("gate_degraded_reloc", true);
+      // DR-gate reject threshold: a stale-gap whose gyro-vs-OKVIS rotation disagreement exceeds
+      // this (deg) means OKVIS's IMU-bridge is untrustworthy -> bar the submap as a reloc target.
+      // R0.1 measured d_rot 1.3-4.2 deg for sound bridges up to 6 s, so 15 deg has wide margin.
+      dr_gate_reject_deg_ = declare_parameter("dr_gate_reject_deg", 15.0);
       loop_sigma_t_ = declare_parameter("loop_sigma_t", 0.10);
       loop_sigma_r_ = declare_parameter("loop_sigma_r", 0.05);
       max_loop_disagree_m_ = declare_parameter("max_loop_disagree_m", 30.0);
@@ -451,7 +455,12 @@ class ProviderFusionNode : public rclcpp::Node {
       }
       if (!map_dir_.empty() && pending_kfs_.size() >= 2) sealSubmap();
       loss_in_segment_ = true;
-      seg_hard_loss_ = true;  // a TRUE stale-gap loss (poses dead-reckoned) -> R0 reloc gate
+      // R0 DR-GATE as a real gate (not just instrument): bar the post-gap submap as a reloc
+      // target ONLY if the independent gyro DR disagrees with OKVIS's across-gap motion beyond
+      // dr_gate_reject_deg — i.e. OKVIS's IMU-bridge is suspect. A small d_rot means OKVIS
+      // bridged the gap correctly (proven sound <=6 s), so its geometry is trustworthy -> keep
+      // it as a valid reloc target. This turns the R0.1 measurement into the R0 decision.
+      if (d_rot_deg > dr_gate_reject_deg_) seg_hard_loss_ = true;
     }
     last_odom_t_ = s.t;
     // snapshot the last trustworthy state for the NEXT gap's DR comparison.
@@ -1322,6 +1331,7 @@ class ProviderFusionNode : public rclcpp::Node {
   std::unordered_set<std::int64_t> occ_;
   // R0.2 seal-quality gate: submaps sealed during degraded tracking are barred as reloc targets.
   bool gate_degraded_reloc_ = true;
+  double dr_gate_reject_deg_ = 15.0;
   int gated_reloc_targets_ = 0;
   std::unordered_set<std::uint64_t> degraded_submaps_;
   int kf_no_image_ = 0, loops_closed_ = 0;

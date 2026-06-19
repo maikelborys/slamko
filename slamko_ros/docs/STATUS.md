@@ -20,6 +20,13 @@ the broader `loss_in_segment_` incl. the covariance-marginal trigger and barred 
 0 loops; fixed by gating on stale-gap only). **CASA1_Suave_blackout4** — barred the 1 blackout-
 degraded submap, system still recovered (2 re-anchors). First R0 ingestion gate shipped.
 
+**DR-INFORMED refinement (commit 0e... below) — bar only when OKVIS's bridge is actually suspect.**
+A stale-gap alone isn't wrong geometry: OKVIS IMU-bridges a short loss soundly (R0.1: d_rot 1.3–4.2°
+≤6 s). The gate now bars the post-gap submap ONLY if gyro-vs-OKVIS `d_rot > dr_gate_reject_deg`=15°
+(bridge untrustworthy); small d_rot keeps it as a valid reloc target. Turns the R0.1 measurement
+into the R0 decision (DR-gate: measure → reject with criterion). Validated: clean Suave's natural
+stale-gap (d_rot=2°) is now NOT barred → gated 0, loops 6 (cleaner than bar-all).
+
 
 <!-- validated: 2026-06-19 · tests: GAP-2 CULL BACKSTOP — revisit grows 0 submaps (was 9), fresh pass culls 0; the immortality plateau -->
 
