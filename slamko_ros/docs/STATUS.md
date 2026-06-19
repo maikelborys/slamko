@@ -1,5 +1,26 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
+## 2026-06-19 — VPR-model A/B: de-risks the recall fix (EigenPlaces stays; tail needs dense matcher)
+
+The recall bottleneck is the VPR cosine cliff (failures at low cosine). Before swapping the
+global descriptor in C++/TRT (expensive), A/B'd candidate models OFFLINE on real casa1 frames
+(`scripts/vpr_ab_casa.py`, venv `/tmp/vprvenv` with torchvision — system Python untouched).
+Ground truth from OKVIS poses: a frame pair is SAME-PLACE if positions ≤0.6 m and ≥8 s apart
+(a true revisit), DIFFERENT-PLACE if ≥3 m. 191 frames → **3138 revisit pairs, 7530 diff pairs**.
+
+| model | same-cos median | **min (blind-spot floor)** | separation | recall@diff-p95 |
+|---|---|---|---|---|
+| **EigenPlaces (current)** | **0.918** | 0.024 | **+0.670** | **0.98** |
+| SALAD (DINOv2, SOTA) | 0.826 | **0.132** (5.5×) | +0.604 | 0.97 |
+| CosPlace | 0.858 | 0.256 | +0.369 | 0.90 |
+
+**Finding (decisive):** no model dominates — EigenPlaces wins the aggregate (median/sep/recall),
+SALAD wins the worst-case floor (5.5× higher on the blind-spot tail) but **still ~0.13, far below
+the ~0.6 verification cliff**. So **NO global descriptor clears the hardest blind spots** → swapping
+the VPR model is NOT the fix. **EigenPlaces stays** (best aggregate). The blind-spot tail needs a
+**DENSE matcher (LoFTR/RoMa)** on the borderline-cosine candidates — it can match low-overlap pairs
+no global descriptor recognizes. `results/r08_vpr/ab.png`. Saves a wasted C++ model-swap.
+
 ## 2026-06-19 — Compass instrument: field-norm-gated raw-mag heading (task #3)
 
 Instrument-first (like the DR gate): subscribe `/bno055/mag` (RAW mag, NOT the BNO fused
