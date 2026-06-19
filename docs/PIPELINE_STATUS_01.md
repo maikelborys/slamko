@@ -1,12 +1,56 @@
-# slamko — Pipeline status & cold-start (2026-06-13)
+# slamko — Pipeline status & cold-start (2026-06-13, major update 2026-06-19)
 
-<!-- validated: 2026-06-13 · the consolidated "where we are NOW" snapshot of the
+<!-- validated: 2026-06-19 · the consolidated "where we are NOW" snapshot of the
 loose-fusion pipeline. Chronological detail: slamko_ros/docs/STATUS.md.
 Plan: MASTER_PLAN.md §8. Research provenance: docs/REBUILD_PROPOSAL_01.md. -->
 
 **Read this first if you're starting cold.** It is the one-page truth of what
 runs today, the exact commands, the load-bearing gotchas, and the queue.
 Everything below was validated on the real D455 casa bags.
+
+---
+
+## 0. 2026-06-19 — THE IMMORTALITY PUSH (read this for the latest state)
+
+A long session took the map from "grows without bound" to **ORB-SLAM3-style bounded +
+never-lost + gated**, all measured on casa1 bags. The immortal core is now in place; what
+remains is scope-expansion (GPS, out-of-core, real-robot stress). Detail in
+`slamko_ros/docs/STATUS.md` (11 dated entries) + the memories below.
+
+**What got built + validated (all in `provider_fusion_node.cpp`):**
+- **Map bounded by AREA, not by visits** (the headline). ORB-SLAM data-association adapted to
+  poses-fixed submaps: per-KF voxel dedup → **per-landmark cross-submap cull** (a known point is
+  dropped, only NEW points kept) → **drift-tolerant 0.15 m occupancy voxel** → **viewpoint-aware**
+  (cull same-view revisits, KEEP new-direction ones as omni-directional reloc anchors). Result:
+  revisiting a house plateaus (~1.5 submaps/visit residual, was 3.5; landmark growth +3%/visit,
+  was +100%). 10 vs 1000 visits converge to the same bounded map (finite house voxels).
+- **R0 "never ingest garbage" gates:** (a) seal-quality — a submap sealed during a TRUE stale-gap
+  loss is kept in the map but BARRED as a reloc target (no garbage match source → no I2 corruption);
+  (b) DR-informed — bar only when the gyro DR disagrees with OKVIS's across-gap motion >15°
+  (small d_rot = OKVIS bridged fine = trustworthy). Clean bag: loops intact (6).
+- **Never-lost:** branch supervisor (stale-gap → seal+branch+soft edge) + DR-gate instrument
+  (gyro-vs-OKVIS; OKVIS IMU-bridges ≤6 s, d_rot ≤4°, proven sound) + cross-session re-anchor.
+- **I2 never-false-merge: VALIDATED** across 162 hard welds (max 1.01 m, 0 teleports) —
+  `scripts/audit_i2.py`. PCM 3-vote + 30 m teleport gate + VPR cliff.
+- **Compass instrument:** field-norm-gated raw-mag heading (`/bno055/mag`), 96% in-band on casa1.
+- **RECALL ROOT-CAUSE REFRAME (the big finding):** the cosine "cliff" is a **VIEWPOINT** artifact,
+  NOT descriptor quality. Same-heading revisits already match (EigenPlaces floor 0.426, 97% OK);
+  the low tail is OPPOSITE-facing pairs (no overlap → unmatchable by ANY model/dense-matcher,
+  correctly). Offline A/B (`scripts/vpr_ab_casa.py`, `vpr_dense_rescue.py`, venv `/tmp/vprvenv`):
+  EigenPlaces beats SALAD/CosPlace on aggregate; LoFTR rescued 0/15 blind spots (no overlap).
+  **CANCELLED two planned C++ builds** (EigenPlaces→SALAD swap; LoFTR cascade) — the fix is
+  viewpoint COVERAGE (shipped: viewpoint-aware cull), not a better matcher.
+
+**New offline tools (run under the venv):** `vpr_ab_casa.py` (model A/B), `vpr_dense_rescue.py`
+(LoFTR rescue + heading split), `audit_i2.py` (false-merge audit), `lifelong_visits.sh` (N-visit
+growth), `plot_{dr_gate,immortal,reloc_funnel,dense}.py`. Venv: `python3 -m venv --system-site-packages
+/tmp/vprvenv && /tmp/vprvenv/bin/pip install torchvision kornia pytorch_lightning pytorch_metric_learning`
+(system Python is PEP668-managed — NEVER pip into it; ROS depends on it).
+
+**Immortality scorecard:** never-lost ✅ · map-bounded ✅ · never-garbage ✅ (R0 gates) ·
+never-false-merge ✅ (162 welds) · recall ✅ (solved + understood: viewpoint coverage). Remaining =
+scope-expansion only: GPS/compass-yaw factor 🟡 · out-of-core map (RAM-bound today) 🔴 ·
+real-robot / extreme-stress bags 🟡.
 
 ---
 
@@ -140,21 +184,32 @@ PROVIDER=kltvo VPR=true scripts/bench_pa.sh <bag> results/<out> 0.5   # klt_vo p
 
 ---
 
-## 6. The queue (next session, in order)
+## 6. The queue (next session, in order — refreshed 2026-06-19)
 
-1. **Anchor-edges in the pose-graph** — re-anchors as graph edges + refresh
-   sealed anchors post-optimize, so corrections distribute through the whole
-   trajectory (kills the mid-run drift between re-anchors; the P-C′ headline).
-2. **Landmark-cloud overlap merge-verification** — the geometric 4th defense
-   layer (after VPR→PnP→consensus): transform a submap's cloud by the accepted
-   anchor, reject if it doesn't overlap the target (Bosch reversible-merge;
-   the principled answer to "would geometry align better" — no new deps).
-3. **Explicit seal/branch state machine** + **`/slamko/health` topic + rviz
-   panel** (the permanent monitor: Good/Marginal/Lost, streaks, re-anchors).
-4. **provider_chaos.py + stress S2–S4** (provider death/restart, covariance
-   storm, rate abuse — `docs/PLAN_STRESS_SUITE.md`).
-5. **Multi-prior Atlas** — load N prior maps at once, localize in any, bridge
-   A↔B when one session sees both (the user's full A/B/A scenario).
-6. **klt_vo hardening** — its stairs z-compression (own repo: bias
-   carry-forward + gravity gate); reproducibility median-of-3 on the gates.
+**NEXT TASK (user-chosen): RECORD NEW BRUTAL STRESS BAGS.** The immortal core is built
++ validated on casa1, but the EXTREME failure modes can't be stressed without data we
+don't have (the c2/c3 dirs are output folders, NOT rosbags; only CASA1_* are valid bags).
+Record bags that hit the modes we've only theorized:
+- **IMU-blackout** (cover lens AND a hard bump = visual+IMU loss together = the true
+  unobservable interval — does OKVIS finally go fully stale? does the DR-gate bar it?).
+- **Wall-pointing / degraded** (long stretch facing a featureless wall = covariance-marginal
+  → exercises the degraded policy + the seal-quality gate).
+- **A genuinely DIFFERENT place** (another house/floor) → the strict I2 false-merge test
+  (prior=casa1, query=other → expect 0 LOCALIZED).
+- **Multi-DIRECTION revisit** (traverse a place, leave, return facing the OPPOSITE way) →
+  the only way to demonstrate the viewpoint-aware cull's positive recall gain (shipped but
+  unproven for lack of this bag).
+- **Rough-terrain / fast / flip** (the user's drone-flip / rocky-car scenario) → stress the
+  branch supervisor + soft edges under real tracking loss.
+Then re-run `bench_pa.sh` + `lifelong_visits.sh` + `audit_i2.py` on them.
+
+**Then, the remaining immortal scope-expansion:**
+1. **GPS/compass yaw factor in the pose-graph** (P-D) — compass is instrumented (field-norm
+   gate); add the unary yaw factor + Kok-Schön ellipsoid calib + (outdoor) GNSS anchor.
+2. **Out-of-core map** (lifelong at city/years scale) — page submaps to disk, bounded
+   Working Memory + LTM (RTAB-Map pattern). Today the whole map + reloc DB is in RAM.
+3. **Multi-prior Atlas** — load N prior maps, localize in any, bridge A↔B (the full A/B/A).
+4. **Anchor-edges in the pose-graph** (P-C′) — re-anchors as graph edges so corrections
+   distribute through the trajectory (kills mid-run drift between re-anchors).
+5. **`/slamko/health` topic + rviz panel** — the permanent Good/Marginal/Lost monitor.
 7. **iSAM2 poses-only** swap for the global graph (P-C′, real-time incremental).

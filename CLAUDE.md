@@ -18,21 +18,27 @@ research provenance — anchor-don't-weld, iSAM2-poses-only, raw-mag-not-BNO-fus
 GNSS init-then-re-anchor). Old own-VIO plan: `docs/archive/MASTER_PLAN_OWNVIO_01.md`.
 Also: [`docs/DECOUPLING.md`](docs/DECOUPLING.md), [`docs/DOC_PROCESS.md`](docs/DOC_PROCESS.md).
 
-> **Current focus: roadmap P-A → P-F (MASTER_PLAN §8). Cold-start →
-> [`docs/PIPELINE_STATUS_01.md`](docs/PIPELINE_STATUS_01.md)** (consolidated
-> status + canonical commands + load-bearing gotchas + queue). Done as of
-> 2026-06-13: P-A ✅, P-B ✅ (in-session loops + cross-session reloc + cross-bag
-> fusion — Escaleras 8.1 cm, Suave-on-Escaleras LOCALIZED kf 3 / 4 cm), P-C 🟢
-> (blackout auto-recovery 3.1→0.16 m), P-E started (klt_vo as 2nd provider).
-> **Active robustness plan (authoritative for the remaining work):
-> [`docs/PLAN_ROBUSTNESS_01.md`](docs/PLAN_ROBUSTNESS_01.md)** — reorders the work
-> to GATES-before-anchor-edges (a code review found the graph has no input gates;
-> propagating corrections through ungated garbage spreads corruption). Next:
-> R0.1 empirical campaign (observe garbage modes) → R0 gates → R1.1 anchor edges.
-> OKVIS measured (2026-06-19): never auto-resets, holds warm state, bridges loss
-> with IMU — the "12 s reset" was an external restart, not OKVIS. **Two hard gotchas: bno_ab bags are 640×480 (config rsD455_map_odom,
-> NOT odom848) with DOUBLED camera-IMU accel (use ~/coding/BNO055/ab launch);
-> evaluate graph.tum with Umeyama scale, never the closure number.**
+> **Current focus (2026-06-19): the IMMORTALITY CORE is BUILT + validated on casa1.
+> Cold-start → [`docs/PIPELINE_STATUS_01.md`](docs/PIPELINE_STATUS_01.md) §0** (refreshed)
+> + memory `slamko-immortality-push`. Done today (~26 commits): **map BOUNDED-by-AREA**
+> (ORB data-association: per-landmark cross-submap cull + drift-tolerant 0.15 m voxel +
+> viewpoint-aware → revisiting plateaus, landmark growth +100%→+3%/visit); **R0
+> "never ingest garbage" gates** (seal-quality + DR-informed bar degraded submaps as reloc
+> targets); **I2 never-false-merge VALIDATED** (162 welds, 0 teleports, `scripts/audit_i2.py`);
+> compass instrument; and the big **RECALL REFRAME** — the cosine "cliff" is VIEWPOINT
+> coverage, NOT descriptor quality (same-heading revisits match; opposite-facing is no-overlap,
+> unmatchable by any model/dense-matcher) → CANCELLED the SALAD-swap + LoFTR C++ builds after
+> offline A/B (`scripts/vpr_ab_casa.py`, venv `/tmp/vprvenv`).
+> Scorecard: never-lost ✅ map-bounded ✅ never-garbage ✅ never-false-merge ✅ recall ✅.
+> Remaining = scope-expansion: GPS/compass-yaw 🟡 · out-of-core map 🔴 · real-robot stress 🟡.
+> **NEXT TASK (user-chosen): RECORD NEW BRUTAL STRESS BAGS** (IMU-blackout, wall-pointing,
+> a DIFFERENT place, multi-DIRECTION revisit, rough-terrain/flip) — the extreme modes can't be
+> stressed without data (c2/c3 dirs are OUTPUT folders, not bags; only CASA1_* are valid).
+> **Method that paid off: de-risk by MEASURING OFFLINE before building.** Older plan
+> [`docs/PLAN_ROBUSTNESS_01.md`](docs/PLAN_ROBUSTNESS_01.md) (R0 gates now partly shipped).
+> **Hard gotchas: bno_ab bags are 640×480 (config rsD455_map_odom, NOT odom848) with DOUBLED
+> camera-IMU accel (use ~/coding/BNO055/ab launch); evaluate graph.tum with Umeyama scale, never
+> the closure number; NEVER pip into system Python (PEP668; ROS depends on it) — use the venv.**
 
 ## Orientation (cold start — human or LLM)
 
