@@ -1,6 +1,33 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
-<!-- validated: 2026-06-12 · tests: offline gate PASS (Suave+Escaleras TUMs) · live gate PASS (CASA1_Suave, CASA1_Escaleras bags) -->
+<!-- validated: 2026-06-19 · tests: live gate PASS (CASA1_Suave golden, dedup) · 80k->13k lm, 6 loops closed (vs 2), inliers 75-123 (vs 59-63) -->
+
+## 2026-06-19 — R0.1 map cleanup: ORB-SLAM dedup+cull adopted (task #9)
+
+Adopted ORB-SLAM3's map-quality techniques into `sealSubmap()`, adapted to
+slamko's loose-over-OKVIS poses-FIXED architecture (structure-only, NO joint BA —
+the metric estimation stays in the provider). The R0.1 campaign had shown
+slamko's per-KF one-shot stereo triangulation produces **2-4x duplicates** (same
+feature triangulated independently each KF) + **"ray" artifacts** (far,
+depth-uncertain points smeared along the camera ray, σ_z ∝ z²).
+
+**What landed** (`provider_fusion_node.cpp` sealSubmap; params `lm_dedup_voxel_m`
+=0.06, `lm_min_obs`=2): voxel-hash dedup of submap-local landmarks — the same
+physical feature from N keyframes lands in ONE voxel → merged to its **centroid**
+(multi-view refine) with obs count N; a "ray" has its per-KF depth noise SPREAD
+across voxels → 1 hit each → **culled** by `lm_min_obs`. One O(N) pass at seal
+(per-KF path untouched → speed unchanged). Provider-agnostic (uses `graph_.pose()`,
+not OKVIS internals → works for any future provider).
+
+**Validated** (CASA1_Suave golden, rate 0.5): per-submap ~10k→~1.5k lm (**~6.2x
+dedup**), run total **79,945 → 12,855**. Reloc recall NOT hurt — **improved**:
+6 loops closed (vs 2), inliers 75-123 (vs 59-63) — cleaner unique points match
+better in PnP. Rays visually gone (`results/r0/dedup_before_after.png`). vs
+ORB-SLAM3+XFeat on the same bag (44k, but stereo-only / not gravity-aligned).
+
+**Next (task #9 phase 2):** optional DLT multi-view re-triangulation per merged
+point + σ_z weighting (robust far-landmarks indoor AND outdoor, unlike a depth
+gate). Tune `lm_min_obs` if coverage on short-visibility features drops.
 
 ## 2026-06-12 — P-A shipped: provider_fusion_node + loose chain over OKVIS2-X
 

@@ -37,6 +37,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <array>
+#include <cmath>
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
@@ -180,6 +182,10 @@ class ProviderFusionNode : public rclcpp::Node {
       min_loop_gap_s_ = declare_parameter("min_loop_gap_s", 25.0);
       reloc_min_inliers_ = declare_parameter("reloc_min_inliers", 25);
       max_kf_landmarks_ = declare_parameter("max_kf_landmarks", 200);
+      // ORB-SLAM-style structure-only map cleanup at seal (task #9): voxel size for
+      // landmark dedup, and min observations to survive culling (the one-off rays).
+      lm_dedup_voxel_ = declare_parameter("lm_dedup_voxel_m", 0.06);
+      lm_min_obs_ = declare_parameter("lm_min_obs", 2);
       loop_sigma_t_ = declare_parameter("loop_sigma_t", 0.10);
       loop_sigma_r_ = declare_parameter("loop_sigma_r", 0.05);
       max_loop_disagree_m_ = declare_parameter("max_loop_disagree_m", 30.0);
@@ -749,34 +755,86 @@ class ProviderFusionNode : public rclcpp::Node {
     sm.keyframes.reserve(pending_kfs_.size());
     sm.kf_obs.resize(pending_kfs_.size());
     Eigen::VectorXf mean = Eigen::VectorXf::Zero(pending_kfs_.front().g.size());
+
+    // Phase 1 — gather the raw per-KF stereo landmarks in submap-local frame.
+    // raw landmarks are created in (k outer, i inner) order; raw_ki keeps (k,i) so
+    // we can pick a representative descriptor and rebuild per-KF observations.
+    std::vector<Eigen::Vector3d> raw_p;
+    std::vector<std::pair<int, int>> raw_ki;
     int total_lms = 0;
     for (const auto& r : pending_kfs_) total_lms += (int)r.lm_pcam.size();
-    sm.landmarks.reserve(total_lms);
-    sm.descriptors.resize(total_lms, 64);
-    int row = 0;
+    raw_p.reserve(total_lms);
+    raw_ki.reserve(total_lms);
     for (std::size_t k = 0; k < pending_kfs_.size(); ++k) {
       const auto& r = pending_kfs_[k];
       const slamko::SE3 T_local_b = anchor_inv * graph_.pose(r.id);
       sm.keyframes.push_back(slamko::KeyframePose{r.id, r.t, T_local_b});
       sm.kf_obs[k].global_descriptor = r.g;
       mean += r.g;
-      // Stereo landmarks: camera frame -> submap-local (body-anchor) frame.
       const slamko::SE3 T_local_cam = T_local_b * body_T_cam_;
-      const int m = (int)r.lm_pcam.size();
-      sm.kf_obs[k].landmark_ids.reserve(m);
-      sm.kf_obs[k].uv.resize(m, 2);
-      for (int i = 0; i < m; ++i) {
-        const std::uint64_t lid = next_landmark_id_++;
-        sm.landmarks.push_back(
-            slamko::MapLandmark{lid, T_local_cam * r.lm_pcam[i], row});
-        sm.descriptors.row(row) = r.lm_desc.row(i);
-        sm.kf_obs[k].landmark_ids.push_back(lid);
-        sm.kf_obs[k].uv.row(i) = r.lm_uv.row(i);
-        ++row;
+      for (int i = 0; i < (int)r.lm_pcam.size(); ++i) {
+        raw_p.push_back(T_local_cam * r.lm_pcam[i]);
+        raw_ki.emplace_back((int)k, i);
       }
     }
     mean.normalize();
     sm.global_descriptor = mean;  // submap-level representative (coarse stage)
+
+    // Phase 2 — ORB-SLAM-style data association as voxel dedup + culling
+    // (structure-only, OKVIS poses FIXED; task #9 / PLAN_ROBUSTNESS_01). The SAME
+    // physical feature triangulated from N keyframes lands in ONE voxel -> merge to
+    // its centroid (multi-view refine) with obs count N. A far/uncertain "ray" has
+    // its per-KF depth noise SPREAD across voxels -> 1 hit each -> culled by
+    // lm_min_obs_. One pass dedups ~3-4x AND removes the rays. No BA: the metric
+    // estimation stays in the provider; here we only de-duplicate structure.
+    const double vox = lm_dedup_voxel_;
+    auto vkey = [vox](const Eigen::Vector3d& p) -> std::int64_t {
+      auto q = [vox](double x) { return (std::int64_t)std::llround(std::floor(x / vox)); };
+      const std::int64_t a = q(p.x()) & 0x1FFFFF, b = q(p.y()) & 0x1FFFFF, c = q(p.z()) & 0x1FFFFF;
+      return (a << 42) | (b << 21) | c;
+    };
+    std::unordered_map<std::int64_t, std::vector<int>> cells;
+    for (int idx = 0; idx < (int)raw_p.size(); ++idx) cells[vkey(raw_p[idx])].push_back(idx);
+
+    std::vector<int> raw_row(raw_p.size(), -1);   // raw idx -> merged row (-1 = culled)
+    std::vector<std::pair<int, int>> rep;         // merged row -> representative (k,i)
+    int row = 0;
+    for (auto& kv : cells) {
+      auto& idxs = kv.second;
+      if ((int)idxs.size() < lm_min_obs_) continue;     // CULL: seen < lm_min_obs_ times
+      Eigen::Vector3d c = Eigen::Vector3d::Zero();
+      for (int ri : idxs) c += raw_p[ri];
+      c /= (double)idxs.size();                          // centroid = multi-view refine
+      sm.landmarks.push_back(slamko::MapLandmark{next_landmark_id_++, c, row});
+      rep.push_back(raw_ki[idxs[0]]);
+      for (int ri : idxs) raw_row[ri] = row;
+      ++row;
+    }
+    sm.descriptors.resize(row, 64);
+    for (int rr = 0; rr < row; ++rr)
+      sm.descriptors.row(rr) = pending_kfs_[rep[rr].first].lm_desc.row(rep[rr].second);
+
+    // Phase 3 — per-KF observations against the merged landmarks (re-walk raw order).
+    int raw_idx = 0;
+    for (std::size_t k = 0; k < pending_kfs_.size(); ++k) {
+      const auto& r = pending_kfs_[k];
+      const int m = (int)r.lm_pcam.size();
+      auto& ids = sm.kf_obs[k].landmark_ids;
+      std::vector<std::array<float, 2>> uvs;
+      std::unordered_set<int> rows_seen;
+      for (int i = 0; i < m; ++i, ++raw_idx) {
+        const int mrow = raw_row[raw_idx];
+        if (mrow < 0 || !rows_seen.insert(mrow).second) continue;
+        ids.push_back(sm.landmarks[(std::size_t)mrow].id);
+        uvs.push_back({r.lm_uv(i, 0), r.lm_uv(i, 1)});
+      }
+      sm.kf_obs[k].uv.resize((int)uvs.size(), 2);
+      for (int j = 0; j < (int)uvs.size(); ++j) {
+        sm.kf_obs[k].uv(j, 0) = uvs[j][0];
+        sm.kf_obs[k].uv(j, 1) = uvs[j][1];
+      }
+    }
+    const int raw_n = (int)raw_p.size();
     const std::string path = map_dir_.empty()
         ? std::string()
         : map_dir_ + "/submap_" + std::to_string(sm.id) + ".smap";
@@ -789,8 +847,9 @@ class ProviderFusionNode : public rclcpp::Node {
         for (auto sid : sealed_ids_) mf << sid << "\n";
       }
     }
-    RCLCPP_INFO(get_logger(), "sealed submap %llu (%zu KF, %zu lm, VPR)%s",
-                (unsigned long long)sm.id, sm.keyframes.size(), sm.landmarks.size(),
+    RCLCPP_INFO(get_logger(), "sealed submap %llu (%zu KF, %d->%zu lm %.1fx dedup, VPR)%s",
+                (unsigned long long)sm.id, sm.keyframes.size(), raw_n, sm.landmarks.size(),
+                sm.landmarks.empty() ? 1.0 : (double)raw_n / (double)sm.landmarks.size(),
                 kf_no_image_ ? (" [" + std::to_string(kf_no_image_) + " KF w/o image]").c_str()
                              : "");
     // Defer relocalizer registration until the submap is older than the loop gap.
@@ -852,6 +911,8 @@ class ProviderFusionNode : public rclcpp::Node {
   double max_loop_disagree_m_ = 30.0;
   int pcm_consec_ = 3;
   int reloc_min_inliers_ = 25, max_kf_landmarks_ = 200;
+  double lm_dedup_voxel_ = 0.06;   // voxel [m] for landmark dedup at seal (task #9)
+  int lm_min_obs_ = 2;             // min observations to survive culling (kills rays)
   int prior_min_inliers_ = 15;
   double min_reloc_period_s_ = 0.5, last_reloc_attempt_t_ = -1e18;
   std::string lg_model_path_;
