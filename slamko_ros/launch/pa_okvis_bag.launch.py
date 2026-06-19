@@ -70,6 +70,8 @@ def setup(context):
             'force_loss_end':   float(LaunchConfiguration('force_loss_end').perform(context)),
             'imu_topic':    '/camera/camera/imu',
             'dr_gate_path': out_dir + '/dr_gate.csv',
+            'mag_topic':    '/bno055/mag',
+            'compass_csv_path': out_dir + '/compass.csv',
             'mature_out_dir': out_dir + '/matured_prior',
         }])
 

@@ -1,5 +1,20 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
+## 2026-06-19 — Compass instrument: field-norm-gated raw-mag heading (task #3)
+
+Instrument-first (like the DR gate): subscribe `/bno055/mag` (RAW mag, NOT the BNO fused
+orientation which silently re-snaps ~180°), compute |B| + heading, GATE on field-norm — a
+reading is trusted only if |B| ∈ Earth's band [`mag_norm_min_ut`=25, `mag_norm_max_ut`=65] µT.
+Logs `<out>/compass.csv` (t, norm_ut, heading_deg, gated_ok) + shutdown availability %.
+
+**Validated** (CASA1_Suave, rate 0.5): regression clean (loops 6, no behaviour change — pure
+instrument). **96% of 7959 readings passed the norm gate** (field median 26.9 µT, min 21.5,
+max 41.0). **Finding (contradicts the "indoors always disturbed" assumption):** this casa's
+field is mostly CLEAN — only 4% rejected as transient disturbances → the compass is potentially
+usable here. **Caveat:** norm-in-band ≠ heading-trustworthy (hard/soft-iron bias can rotate the
+heading while |B| stays in band) — the norm gate is the FIRST filter; Kok-Schön ellipsoid
+calibration + WMM declination + a yaw factor in the graph are the next steps to actually USE it.
+
 ## 2026-06-19 — R0.2 seal-quality gate: never ingest garbage as a reloc match source (task #7)
 
 **The gap (PLAN_ROBUSTNESS top concern):** the graph had no input gate on what becomes a

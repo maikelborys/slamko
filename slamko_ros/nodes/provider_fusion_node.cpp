@@ -48,6 +48,7 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <sensor_msgs/msg/magnetic_field.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 
@@ -158,6 +159,33 @@ class ProviderFusionNode : public rclcpp::Node {
       }
       RCLCPP_INFO(get_logger(), "DR gate instrument on: imu=%s csv=%s",
                   imu_topic_.c_str(), dr_gate_path_.c_str());
+    }
+
+    // ----- COMPASS instrument (task #3, instrument-first like the DR gate). Raw magnetometer
+    // (NOT the BNO fused orientation — it silently re-snaps ~180°), heading + FIELD-NORM GATE:
+    // a reading is trusted ONLY when |B| sits in Earth's band (~25-65 uT). Indoors (rebar,
+    // motors, electronics) the field is disturbed -> |B| out of band -> REJECTED, which is the
+    // correct behaviour (the plan: gate the compass OFF where it's unreliable). This pass
+    // measures availability + logs the gated heading; a yaw factor wiring is the next step.
+    mag_topic_ = declare_parameter("mag_topic", std::string("/bno055/mag"));
+    compass_csv_path_ = declare_parameter("compass_csv_path", std::string(""));
+    mag_norm_min_ut_ = declare_parameter("mag_norm_min_ut", 25.0);
+    mag_norm_max_ut_ = declare_parameter("mag_norm_max_ut", 65.0);
+    if (!mag_topic_.empty()) {
+      auto mag_qos = rclcpp::QoS(rclcpp::KeepLast(50)).durability_volatile();
+      if (declare_parameter("mag_best_effort", true)) mag_qos.best_effort();
+      else mag_qos.reliable();
+      sub_mag_ = create_subscription<sensor_msgs::msg::MagneticField>(
+          mag_topic_, mag_qos,
+          std::bind(&ProviderFusionNode::onMag, this, std::placeholders::_1));
+      if (!compass_csv_path_.empty()) {
+        compass_file_ = std::fopen(compass_csv_path_.c_str(), "w");
+        if (compass_file_)
+          std::fprintf(compass_file_, "t,norm_ut,heading_deg,gated_ok\n");
+      }
+      RCLCPP_INFO(get_logger(), "compass instrument on: mag=%s gate=[%.0f,%.0f]uT csv=%s",
+                  mag_topic_.c_str(), mag_norm_min_ut_, mag_norm_max_ut_,
+                  compass_csv_path_.c_str());
     }
 
     const double tf_rate = declare_parameter("tf_rate_hz", 30.0);
@@ -397,9 +425,32 @@ class ProviderFusionNode : public rclcpp::Node {
     if (provider_file_) std::fclose(provider_file_);
     if (global_file_) std::fclose(global_file_);
     if (dr_gate_file_) std::fclose(dr_gate_file_);
+    if (mag_total_ > 0)
+      RCLCPP_INFO(get_logger(),
+                  "compass instrument: %ld/%ld readings passed the field-norm gate (%.0f%%) "
+                  "— low %% indoors = field disturbed, compass correctly gated OFF",
+                  mag_accepted_, mag_total_, 100.0 * (double)mag_accepted_ / (double)mag_total_);
+    if (compass_file_) std::fclose(compass_file_);
   }
 
  private:
+  // COMPASS instrument: field-norm-gated raw-magnetometer heading. |B| in Tesla -> uT; a
+  // reading is trusted only if |B| sits in Earth's band. Heading from the horizontal
+  // components (sensor frame; absolute alignment needs extrinsics + WMM declination later).
+  void onMag(const sensor_msgs::msg::MagneticField::SharedPtr m) {
+    const double t = rclcpp::Time(m->header.stamp).seconds();
+    const double bx = m->magnetic_field.x, by = m->magnetic_field.y, bz = m->magnetic_field.z;
+    const double norm_ut = std::sqrt(bx * bx + by * by + bz * bz) * 1e6;  // T -> uT
+    const bool ok = norm_ut >= mag_norm_min_ut_ && norm_ut <= mag_norm_max_ut_;
+    const double heading_deg = std::atan2(by, bx) * 180.0 / M_PI;
+    ++mag_total_;
+    if (ok) ++mag_accepted_;
+    if (compass_file_) {
+      std::fprintf(compass_file_, "%.3f,%.2f,%.2f,%d\n", t, norm_ut, heading_deg, ok ? 1 : 0);
+      std::fflush(compass_file_);
+    }
+  }
+
   // Independent gyro-only orientation integration (world<-body). Drifts slowly
   // (gyro bias), but across a SHORT loss gap (<~3 s) the integrated rotation is
   // accurate — that is exactly the window we gate. Accel is NOT touched (doubled
@@ -1306,6 +1357,12 @@ class ProviderFusionNode : public rclcpp::Node {
   // R0.1 independent DR-gate channel (gyro-only orientation + coasting translation).
   std::string imu_topic_, dr_gate_path_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
+  // Compass instrument (task #3): field-norm-gated raw-mag heading.
+  std::string mag_topic_, compass_csv_path_;
+  rclcpp::Subscription<sensor_msgs::msg::MagneticField>::SharedPtr sub_mag_;
+  std::FILE* compass_file_ = nullptr;
+  double mag_norm_min_ut_ = 25.0, mag_norm_max_ut_ = 65.0;
+  long mag_total_ = 0, mag_accepted_ = 0;
   std::FILE* dr_gate_file_ = nullptr;
   slamko::SO3 dr_R_;                 // integrated world<-body orientation (gyro)
   slamko::SO3 dr_R_at_last_odom_;    // its value at the last accepted odom sample
