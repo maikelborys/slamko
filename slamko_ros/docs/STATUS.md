@@ -1,6 +1,42 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
-<!-- validated: 2026-06-19 · tests: DR-gate instrument live on CASA1_Suave (3 gaps 1/3/6 s) · OKVIS bridge d_rot <=4.2deg even @6 s loss -->
+<!-- validated: 2026-06-19 · tests: GAP-2 dup-suppression on CASA1_Suave revisit · -54% landmark growth (12.9k->5.9k), reloc intact (28 re-anchors) -->
+
+## 2026-06-19 — GAP-2 immortality brick: "don't re-map what you already see" (task #4)
+
+**The problem (measured, the immortality blocker):** replaying CASA1_Suave with its
+OWN pass-1 map as prior, the system RELOCALIZED PERFECTLY — 28 re-anchors, inliers
+280-301, sub-cm — yet still sealed **9 duplicate submaps (+12.9k lm)** of the same
+house. The merge info was served by every reloc match but UNUSED. 10× replay → 90
+submaps, ~128k lm, all one house (architecture audit, `docs/architecture_is_vs_should.dot`).
+
+**What landed** (`provider_fusion_node.cpp`): a coverage tally + duplicate-seal
+suppression. Each confident match to an EXISTING submap (`markCoverage`, inliers ≥
+`dup_min_inliers`=60) extends a "covered" window (`dup_cover_window_s`=4 s); a KF that
+arrives inside it counts as covered. At the seal trigger, if ≥ `dup_cover_frac`=0.6 of
+the segment's KFs were covered AND a prior map exists, the seal is **SUPPRESSED** (the
+pending KFs are dropped, no submap persisted, no relocalizer registration) instead of
+baking a duplicate. `dup_suppress`=false restores old behavior. The live trajectory /
+TF are untouched (graph nodes stay; only the redundant submap is not persisted).
+
+**Validated** (CASA1_Suave revisit, prior = own pass-1 map, rate 0.5):
+
+| revisit | new submaps | new landmarks | reloc |
+|---|---|---|---|
+| WITHOUT suppression | 9 | ~12,870 | 28 re-anchors |
+| WITH suppression | **4** (4 suppressed) | **~5,870** | 28 re-anchors |
+
+**−54% map growth on revisited ground, reloc & trajectory intact** (fused max 0.15 m;
+the P-A fused-vs-provider "FAIL" is by-design with VPR on). The 4 suppressed segments
+were recognized as already covered by prior submaps 2/3/7. Viz `scripts/plot_immortal.py`
+(`results/r01/lifelong/immortal.png`).
+
+**Honest limit (first brick, not the whole package):** suppression is conservative —
+it only fires where re-anchor confidence is SUSTAINED (≥60% of the segment). The 4
+sealed submaps are where matches went sparse (coverage lapsed) — kept rather than risk
+dropping genuinely-new territory. Full bounded growth needs the richer step: **merge**
+new observations into the matched prior submap (maturation), which also handles partial
+coverage. That is the `slamko_mapping` summarization work (P-C′+).
 
 ## 2026-06-19 — R0.1 DR-gate instrument: OKVIS across-gap motion vs independent DR (task #10)
 

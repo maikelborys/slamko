@@ -225,6 +225,17 @@ class ProviderFusionNode : public rclcpp::Node {
       // landmark dedup, and min observations to survive culling (the one-off rays).
       lm_dedup_voxel_ = declare_parameter("lm_dedup_voxel_m", 0.06);
       lm_min_obs_ = declare_parameter("lm_min_obs", 2);
+      // GAP-2 immortality (task #4 first brick): "don't re-map what you already see".
+      // When the current segment is already EXPLAINED by an existing submap — i.e. we
+      // stayed confidently re-anchored/loop-matched (>= dup_min_inliers) over >= dup_cover_frac
+      // of its keyframes — sealing another submap just duplicates the map (10x replay
+      // = 10x landmarks of the SAME room, even though reloc KNOWS we are there). So we
+      // SUPPRESS the duplicate seal. A KF counts as "covered" if it arrives within
+      // dup_cover_window_s of a confident match. dup_suppress=false restores old behavior.
+      dup_suppress_ = declare_parameter("dup_suppress", true);
+      dup_min_inliers_ = declare_parameter("dup_min_inliers", 60);
+      dup_cover_window_s_ = declare_parameter("dup_cover_window_s", 4.0);
+      dup_cover_frac_ = declare_parameter("dup_cover_frac", 0.6);
       // Inter-map anchor edges (R1.1 hard / R1.3 soft): chain edge sigma between
       // consecutive submaps (good odometry) vs SOFT sigma when the segment crossed
       // a visual loss (dead-reckoning — approximate placement only). Hard = loop sigma.
@@ -343,6 +354,10 @@ class ProviderFusionNode : public rclcpp::Node {
                   refreshed, sealed_ids_.size());
     }
     if (fused_file_) std::fclose(fused_file_);
+    if (suppressed_dups_ > 0)
+      RCLCPP_INFO(get_logger(),
+                  "GAP-2 immortality: suppressed %d duplicate submap(s) of known ground "
+                  "(map did not grow on revisited territory)", suppressed_dups_);
     if (provider_file_) std::fclose(provider_file_);
     if (global_file_) std::fclose(global_file_);
     if (dr_gate_file_) std::fclose(dr_gate_file_);
@@ -677,8 +692,29 @@ class ProviderFusionNode : public rclcpp::Node {
     }
 
     pending_kfs_.push_back(std::move(rec));
+    // GAP-2 coverage tally: this KF is "covered" if a confident match to an existing
+    // submap is still fresh (within dup_cover_window_s of the last one).
+    ++seg_total_kfs_;
+    if (covered_until_t_ >= 0.0 && t <= covered_until_t_) ++seg_covered_kfs_;
     registerAgedSubmaps(t);
-    if (!map_dir_.empty() && (int)pending_kfs_.size() >= kf_per_submap_) sealSubmap();
+    if (!map_dir_.empty() && (int)pending_kfs_.size() >= kf_per_submap_) {
+      // "Don't re-map what you already see": if this whole segment is explained by an
+      // existing submap (sustained confident re-anchor), don't persist a duplicate.
+      const bool covered = dup_suppress_ && have_prev_anchor_ && seg_total_kfs_ > 0 &&
+                           seg_covered_kfs_ >= dup_cover_frac_ * seg_total_kfs_;
+      if (covered) {
+        RCLCPP_INFO(get_logger(),
+                    "SUPPRESSED duplicate submap: %d/%d KFs already covered by submap "
+                    "%llu (immortal: map NOT grown, %d dups suppressed so far)",
+                    seg_covered_kfs_, seg_total_kfs_,
+                    (unsigned long long)covered_by_submap_, suppressed_dups_ + 1);
+        ++suppressed_dups_;
+        pending_kfs_.clear();
+        seg_total_kfs_ = seg_covered_kfs_ = 0;
+      } else {
+        sealSubmap();
+      }
+    }
   }
 
   // Mutual-best NN stereo match (row tolerance 2 px, disparity 0.5..200 px) ->
@@ -822,6 +858,8 @@ class ProviderFusionNode : public rclcpp::Node {
                   "T_global_map t=[%.3f %.3f %.3f]",
                   tag, (unsigned long long)q_id, (unsigned long long)r.submap_id,
                   r.num_inliers, gt.x(), gt.y(), gt.z());
+      markCoverage(node_time_.count(q_id) ? node_time_[q_id] : 0.0, r.submap_id,
+                   r.num_inliers);
       return;
     }
 
@@ -838,6 +876,8 @@ class ProviderFusionNode : public rclcpp::Node {
                 (unsigned long long)a, r.num_inliers, (int)res.converged,
                 res.iterations, res.initial_cost, res.final_cost);
     ++loops_closed_;
+    markCoverage(node_time_.count(q_id) ? node_time_[q_id] : 0.0, r.submap_id,
+                 r.num_inliers);
     // R1.1 HARD inter-map edge: the building submap (its future id == next_submap_id_)
     // is verified-connected to target submap r.submap_id. Recorded for the anchor
     // graph + the multi-map viz (reversible: it is just an entry we can drop).
@@ -869,6 +909,15 @@ class ProviderFusionNode : public rclcpp::Node {
       if (reloc_) reloc_->addSubMap(sealed_unregistered_.front().first);
       sealed_unregistered_.pop_front();
     }
+  }
+
+  // GAP-2: a confident match to an EXISTING submap proves we are on known ground.
+  // Extend the "covered" window so the keyframes around here count as duplicates of
+  // submap `sm` (used to suppress a redundant seal). Only confident matches count.
+  void markCoverage(double t, std::uint64_t sm, int inliers) {
+    if (inliers < dup_min_inliers_) return;
+    covered_until_t_ = t + dup_cover_window_s_;
+    covered_by_submap_ = sm;
   }
 
   void sealSubmap() {
@@ -1008,6 +1057,7 @@ class ProviderFusionNode : public rclcpp::Node {
     sealed_unregistered_.emplace_back(std::move(sm), pending_kfs_.back().t);
     dumpAnchorEdges();
     pending_kfs_.clear();
+    seg_total_kfs_ = seg_covered_kfs_ = 0;  // GAP-2: new segment starts fresh
   }
 
   static void dumpTum(std::FILE* f, double t, const slamko::SE3& T) {
@@ -1062,6 +1112,11 @@ class ProviderFusionNode : public rclcpp::Node {
   Eigen::Vector3d last_odom_v_ = Eigen::Vector3d::Zero();  // last OKVIS body velocity
   double last_imu_t_ = -1.0;
   bool loss_in_segment_ = false;   // a stale-gap occurred -> next chain edge is SOFT
+  // GAP-2 "don't re-map what you already see" (task #4 first brick).
+  bool dup_suppress_ = true;
+  int dup_min_inliers_ = 60, seg_total_kfs_ = 0, seg_covered_kfs_ = 0, suppressed_dups_ = 0;
+  double dup_cover_window_s_ = 4.0, dup_cover_frac_ = 0.6, covered_until_t_ = -1.0;
+  std::uint64_t covered_by_submap_ = 0;
   int kf_no_image_ = 0, loops_closed_ = 0;
   double image_tol_s_ = 0.06, image_buffer_s_ = 0.6;
 
