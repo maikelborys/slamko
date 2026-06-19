@@ -74,6 +74,17 @@ class PoseGraph {
   void addLoopEdge(std::uint64_t from, std::uint64_t to, const SE3& T_from_to,
                    double sigma_t = 0.10, double sigma_r = 0.05);
 
+  // UNARY prior on a node's absolute pose (the "GPS-/cross-session-as-per-node-
+  // prior" factor): pulls node `id` toward `T_W_body_target` with isotropic
+  // sigmas. This is how a CROSS-SESSION reloc bends the session onto a prior map
+  // WITHOUT a rigid re-base — multiple priors along the trajectory redistribute
+  // the drift (error flows to the lowest-information edges). `robust` wraps it in
+  // a Huber kernel so a single aliased match can't tear the graph (PCM already
+  // gates which matches get here). Re-adding for the same id accumulates priors
+  // (each confident revisit pulls harder) — dedup at the call site if undesired.
+  void addPriorFactor(std::uint64_t id, const SE3& T_W_body_target,
+                      double sigma_t, double sigma_r, bool robust = true);
+
   // Gauge fix: this node's pose is held constant. If never set, the smallest id
   // is anchored automatically.
   void setAnchor(std::uint64_t id) { anchor_id_ = id; has_anchor_ = true; }
@@ -95,12 +106,20 @@ class PoseGraph {
     bool is_loop = false;
   };
 
+  struct Prior {
+    std::uint64_t id = 0;
+    SE3 target;
+    Eigen::Matrix<double, 6, 6> sqrt_info = Eigen::Matrix<double, 6, 6>::Identity();
+    bool robust = true;
+  };
+
   static Eigen::Matrix<double, 6, 6> sqrtInfoFromSigmas(double sigma_t, double sigma_r);
 
   PoseGraphConfig cfg_;
   // pose storage: [tx, ty, tz, qx, qy, qz, qw] (Eigen quaternion coeff order).
   std::map<std::uint64_t, std::array<double, 7>> nodes_;
   std::vector<Edge> edges_;
+  std::vector<Prior> priors_;
   std::uint64_t anchor_id_ = 0;
   bool has_anchor_ = false;
 };

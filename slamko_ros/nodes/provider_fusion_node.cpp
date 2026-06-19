@@ -318,6 +318,17 @@ class ProviderFusionNode : public rclcpp::Node {
       // untouched, only T_global<-map is estimated).
       prior_min_inliers_ = declare_parameter("prior_min_inliers", 15);
       reanchor_jump_m_ = declare_parameter("reanchor_jump_m", 0.5);
+      // Cross-session DRIFT correction (research RESEARCH_LIFELONG_FUSION_01): after
+      // the first rigid re-anchor establishes the session->global frame, each further
+      // confident prior match adds a UNARY PRIOR FACTOR on its keyframe (pulling it
+      // toward the prior-implied pose) and re-optimizes — so the graph BENDS the
+      // session onto the prior instead of a rigid re-base that leaves a doubled copy.
+      xsession_prior_factor_ = declare_parameter("xsession_prior_factor", true);
+      xsession_prior_sigma_t_ = declare_parameter("xsession_prior_sigma_t", 0.15);
+      xsession_prior_sigma_r_ = declare_parameter("xsession_prior_sigma_r", 0.08);
+      // Jumps below this apply as a prior factor (legit drift correction); bigger jumps
+      // fall through to the 2-vote rigid-rebase alias defense (cross-FLOOR = 2.6-8 m).
+      xsession_prior_jump_max_ = declare_parameter("xsession_prior_jump_max", 2.0);
       min_reloc_period_s_ = declare_parameter("min_reloc_period_s", 0.5);
       lg_model_path_ = declare_parameter(
           "lightglue_model_path",
@@ -915,15 +926,21 @@ class ProviderFusionNode : public rclcpp::Node {
     // Consensus gate (PCM-lite, slamko_core::LoopConsensusGate — unit-tested):
     // pcm_consec_ consecutive same-target matches, pairwise-consistent under the
     // provider's relative odometry. Drift-magnitude-agnostic by design.
-    const bool accept = gate_.feed(slamko::LoopCandidate{
-        r.submap_id, q_id, t, r.T_query_match, chain_.lastKeyframe().T_OB});
-    if (!accept) {
-      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
-                           "loop candidate: kf %llu -> %ssubmap %llu inliers=%d streak=%d/%d",
-                           (unsigned long long)q_id, is_prior ? "PRIOR " : "",
-                           (unsigned long long)r.submap_id, r.num_inliers,
-                           gate_.streak(r.submap_id), pcm_consec_);
-      return;
+    // IN-SESSION loops only: cross-session matches legitimately jump between ADJACENT
+    // prior submaps (the prior map is tiled), so a same-submap streak is the wrong
+    // gate for them — they starve to 0-1 factors. Cross-session is guarded instead by
+    // the inlier threshold (above) + the jump consensus + the robust Huber on the prior
+    // factor. (Strict never-false-merge vs a DIFFERENT place still needs the other-place bag.)
+    if (!is_prior) {
+      const bool accept = gate_.feed(slamko::LoopCandidate{
+          r.submap_id, q_id, t, r.T_query_match, chain_.lastKeyframe().T_OB});
+      if (!accept) {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+                             "loop candidate: kf %llu -> submap %llu inliers=%d streak=%d/%d",
+                             (unsigned long long)q_id, (unsigned long long)r.submap_id,
+                             r.num_inliers, gate_.streak(r.submap_id), pcm_consec_);
+        return;
+      }
     }
 
     if (is_prior) {
@@ -942,28 +959,60 @@ class ProviderFusionNode : public rclcpp::Node {
       if (!localized_) {
         T_global_map_ = T_new;
         localized_ = true;
-      } else {
-        const double jump = (T_global_map_.inverse() * T_new).translation().norm();
-        if (jump < reanchor_jump_m_) {
-          T_global_map_ = T_new;
+      } else if (xsession_prior_factor_) {
+        // A (RESEARCH_LIFELONG_FUSION_01): T_global_map_ stays FROZEN after the first
+        // re-anchor; each further confident match adds a per-keyframe PRIOR pulling q
+        // toward the prior-implied pose, then re-optimizes -> the graph BENDS the session
+        // onto the prior. (A rigid re-base has 6 DOF and cannot absorb path-length-growing
+        // internal drift -> the doubled/offset copy.) Big jumps (cross-floor alias, 2.6-8 m)
+        // still fall through to the 2-vote rigid alias defense.
+        const slamko::SE3 target_session = T_global_map_.inverse() * T_global_q;
+        const double jump =
+            (graph_.pose(q_id).inverse() * target_session).translation().norm();
+        if (jump < xsession_prior_jump_max_) {
+          graph_.addPriorFactor(q_id, target_session, xsession_prior_sigma_t_,
+                                xsession_prior_sigma_r_, /*robust=*/true);
+          const auto res = graph_.optimize();
+          T_map_odom_target_ = graph_.pose(q_id) * chain_.lastKeyframe().T_OB.inverse();
+          ++xsession_priors_added_;
           have_big_cand_ = false;
-          tag = "RE-ANCHORED";
-        } else if (have_big_cand_ &&
-                   (T_big_cand_.inverse() * T_new).translation().norm() <
-                       reanchor_jump_m_) {
-          T_global_map_ = T_new;
-          have_big_cand_ = false;
+          RCLCPP_INFO(get_logger(),
+              "X-SESSION prior #%d: kf %llu -> prior submap %llu inl=%d jump=%.2fm "
+              "cost %.2e->%.2e",
+              xsession_priors_added_, (unsigned long long)q_id,
+              (unsigned long long)r.submap_id, r.num_inliers, jump,
+              res.initial_cost, res.final_cost);
+          markCoverage(node_time_.count(q_id) ? node_time_[q_id] : 0.0, r.submap_id,
+                       r.num_inliers);
+          return;
+        }
+        if (have_big_cand_ &&
+            (T_big_cand_.inverse() * T_new).translation().norm() < reanchor_jump_m_) {
+          T_global_map_ = T_new; have_big_cand_ = false;
           tag = "BIG CORRECTION applied (2-vote)";
         } else {
-          T_big_cand_ = T_new;
-          have_big_cand_ = true;
+          T_big_cand_ = T_new; have_big_cand_ = true;
+          RCLCPP_WARN(get_logger(),
+              "x-session JUMP held (%.2f m, needs 2nd vote): kf %llu -> prior submap %llu inl=%d",
+              jump, (unsigned long long)q_id, (unsigned long long)r.submap_id, r.num_inliers);
+          return;
+        }
+      } else {
+        // legacy rigid re-anchor (xsession_prior_factor disabled)
+        const double jump = (T_global_map_.inverse() * T_new).translation().norm();
+        if (jump < reanchor_jump_m_) {
+          T_global_map_ = T_new; have_big_cand_ = false; tag = "RE-ANCHORED";
+        } else if (have_big_cand_ &&
+                   (T_big_cand_.inverse() * T_new).translation().norm() < reanchor_jump_m_) {
+          T_global_map_ = T_new; have_big_cand_ = false;
+          tag = "BIG CORRECTION applied (2-vote)";
+        } else {
+          T_big_cand_ = T_new; have_big_cand_ = true;
           RCLCPP_WARN(get_logger(),
                       "re-anchor JUMP held (%.2f m, needs a 2nd agreeing vote): "
-                      "kf %llu -> prior submap %llu inliers=%d t=[%.2f %.2f %.2f]",
+                      "kf %llu -> prior submap %llu inliers=%d",
                       jump, (unsigned long long)q_id,
-                      (unsigned long long)r.submap_id, r.num_inliers,
-                      T_new.translation().x(), T_new.translation().y(),
-                      T_new.translation().z());
+                      (unsigned long long)r.submap_id, r.num_inliers);
           return;
         }
       }
@@ -1137,21 +1186,21 @@ class ProviderFusionNode : public rclcpp::Node {
     // landmark geometry is untrustworthy. Used both for the SOFT chain edge AND (R0.2) to
     // BAR this submap from becoming a relocalization target — a garbage match source would
     // false-anchor the session and propagate corruption through the graph (the I2 violation).
-    int seg_lms = 0;
-    for (const auto& r : pending_kfs_) seg_lms += (int)r.lm_pcam.size();
-    // The reloc-target gate fires ONLY on an actual tracking loss (loss_in_segment_): that is
-    // when the poses are dead-reckoned and the landmark geometry is genuinely wrong. A clean
-    // but sparse/low-yield submap still has CORRECT (if fewer) landmarks -> a valid reloc
-    // target, so it is NOT gated (only marked soft for the chain edge below).
-    const bool degraded = loss_in_segment_ || seg_lms < anchor_soft_lm_ ||
-                          (kf_no_image_ - seg_kf_no_image_) > 0;
     // Reloc-target bar fires ONLY on a TRUE stale-gap loss (dead-reckoned poses = wrong
     // geometry) — NOT on the covariance-marginal trigger (still-usable geometry, valid
     // reloc target). Conflating them barred clean-marginal submaps and killed loop closure.
+    const bool seg_was_hard_loss = seg_hard_loss_;   // capture before the reset below
     if (gate_degraded_reloc_ && seg_hard_loss_) degraded_submaps_.insert(sm.id);
     seg_hard_loss_ = false;
     if (have_prev_anchor_) {
-      const bool soft = degraded;
+      // B (RESEARCH_LIFELONG_FUSION_01): the CHAIN edge is SOFT (high cov, the optimizer
+      // yields here) ONLY on a TRUE odometry stale-gap — when the placement is genuinely
+      // dead-reckoned. NOT on missing-VPR-images or low-landmark-count: OKVIS's relative
+      // pose is still accurate there, so the chain geometry stays STIFF. (Using `degraded`
+      // mislabeled every segment with a dropped image as soft -> the whole chain went loose
+      // = 0 odom / all-soft edges, and the map couldn't hold OKVIS's metric shape.) The
+      // reloc-TARGET bar above still uses the broader degraded signal — that's correct.
+      const bool soft = seg_was_hard_loss;
       anchor_edges_.push_back(AnchorEdge{
           prev_anchor_id_, sm.id, prev_anchor_.inverse() * sm.anchor,
           soft ? anchor_soft_sigma_t_ : anchor_chain_sigma_t_,
@@ -1453,6 +1502,11 @@ class ProviderFusionNode : public rclcpp::Node {
   double reanchor_jump_m_ = 0.5;
   slamko::SE3 T_big_cand_;
   bool have_big_cand_ = false;
+  // cross-session drift correction via per-keyframe prior factors (A: fix doubling)
+  bool xsession_prior_factor_ = true;
+  double xsession_prior_sigma_t_ = 0.15, xsession_prior_sigma_r_ = 0.08;
+  double xsession_prior_jump_max_ = 2.0;
+  int xsession_priors_added_ = 0;
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_image_, sub_image_r_;

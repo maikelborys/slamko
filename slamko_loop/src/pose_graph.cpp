@@ -56,6 +56,33 @@ struct BetweenFactor {
   Eigen::Matrix<double, 6, 6> sqrt_info_;
 };
 
+// Unary absolute-pose prior: residual = sqrt_info · [t - t_target; 2·(q_target⁻¹ q).vec()].
+// Used by cross-session re-anchoring to pull a keyframe toward the pose a prior-map
+// match implies, letting the optimizer bend (not rigidly re-base) the session.
+struct PriorFactor {
+  PriorFactor(const SE3& target, const Eigen::Matrix<double, 6, 6>& sqrt_info)
+      : q_t_(target.so3().unit_quaternion()),
+        t_t_(target.translation()),
+        sqrt_info_(sqrt_info) {}
+
+  template <typename T>
+  bool operator()(const T* const p, const T* const q_ptr, T* residuals_ptr) const {
+    Eigen::Map<const Eigen::Matrix<T, 3, 1>> t(p);
+    Eigen::Map<const Eigen::Quaternion<T>>   q(q_ptr);
+    const Eigen::Quaternion<T> dq = q_t_.template cast<T>().conjugate() * q;
+    Eigen::Matrix<T, 6, 1> raw;
+    raw.template head<3>() = t - t_t_.template cast<T>();
+    raw.template tail<3>() = T(2.0) * dq.vec();
+    Eigen::Map<Eigen::Matrix<T, 6, 1>> residuals(residuals_ptr);
+    residuals = sqrt_info_.template cast<T>() * raw;
+    return true;
+  }
+
+  Eigen::Quaterniond q_t_;
+  Eigen::Vector3d t_t_;
+  Eigen::Matrix<double, 6, 6> sqrt_info_;
+};
+
 std::array<double, 7> toBlock(const SE3& T) {
   const Eigen::Quaterniond q = T.so3().unit_quaternion();
   const Eigen::Vector3d t = T.translation();
@@ -103,16 +130,34 @@ void PoseGraph::addLoopEdge(std::uint64_t from, std::uint64_t to,
   edges_.push_back(Edge{from, to, T_from_to, sqrtInfoFromSigmas(sigma_t, sigma_r), true});
 }
 
+void PoseGraph::addPriorFactor(std::uint64_t id, const SE3& T_W_body_target,
+                               double sigma_t, double sigma_r, bool robust) {
+  priors_.push_back(Prior{id, T_W_body_target, sqrtInfoFromSigmas(sigma_t, sigma_r), robust});
+}
+
 PoseGraph::Result PoseGraph::optimize() {
   Result res;
   res.num_nodes = static_cast<int>(nodes_.size());
   for (const auto& e : edges_) (e.is_loop ? res.num_loops : res.num_odom)++;
-  if (nodes_.size() < 2 || edges_.empty()) return res;
+  if (nodes_.empty() || (edges_.empty() && priors_.empty())) return res;
 
   ceres::Problem problem;
   for (auto& [id, blk] : nodes_) {
     problem.AddParameterBlock(blk.data(), 3);
     problem.AddParameterBlock(blk.data() + 3, 4, new ceres::EigenQuaternionManifold);
+  }
+
+  // Unary cross-session/GPS priors (robust by default — an aliased match must not
+  // tear the graph; PCM already gated which matches reach here).
+  for (const auto& pr : priors_) {
+    auto it = nodes_.find(pr.id);
+    if (it == nodes_.end()) continue;
+    auto* cost = new ceres::AutoDiffCostFunction<PriorFactor, 6, 3, 4>(
+        new PriorFactor(pr.target, pr.sqrt_info));
+    ceres::LossFunction* loss =
+        (pr.robust && cfg_.loop_huber_delta > 0.0) ? new ceres::HuberLoss(cfg_.loop_huber_delta)
+                                                   : nullptr;
+    problem.AddResidualBlock(cost, loss, it->second.data(), it->second.data() + 3);
   }
 
   for (const auto& e : edges_) {
