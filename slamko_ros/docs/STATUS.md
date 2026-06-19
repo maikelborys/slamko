@@ -77,7 +77,9 @@ needs more GPU / INT8 / two-pass.
 **Caveat / next (task #10):** the soft edge's relative pose is still the
 (degraded) OKVIS odom across the gap; a TRUE odom-stale branch needs a separate DR
 source (raw IMU / wheel / GPS) — the soft edge would otherwise be identity+huge-cov.
-Loss signal is the stale-gap; wire the covariance/tracking-quality probe too.
+Loss signals now: stale-gap + low-landmark + **OKVIS covariance trace > `cov_soft_thresh`
+(0.01)** = Marginal/Lost (the principled probe). [compile+logic validated; empirical
+re-run on a degraded bag pending — deferred for context budget.]
 
 ## 2026-06-12 — P-A shipped: provider_fusion_node + loose chain over OKVIS2-X
 

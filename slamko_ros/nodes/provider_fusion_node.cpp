@@ -144,6 +144,9 @@ class ProviderFusionNode : public rclcpp::Node {
     // Never-lost branch (R-C): odom stale-gap that counts as tracking loss, and a
     // force-loss TEST window [start,end] (bag-relative s) that drops odom to simulate it.
     stale_thresh_ = declare_parameter("stale_gap_s", 0.5);
+    // OKVIS pos-covariance trace above this = Marginal/Lost tracking (base ~3e-3,
+    // x10 Marginal, x100 Lost) -> the segment's placement is soft (principled signal).
+    cov_soft_thresh_ = declare_parameter("cov_soft_thresh", 0.01);
     force_loss_start_ = declare_parameter("force_loss_start", -1.0);
     force_loss_end_ = declare_parameter("force_loss_end", -1.0);
     image_tol_s_ = declare_parameter("image_tol_s", 0.06);
@@ -338,6 +341,9 @@ class ProviderFusionNode : public rclcpp::Node {
       loss_in_segment_ = true;
     }
     last_odom_t_ = s.t;
+    // OKVIS-reported degraded tracking (covariance inflated, Marginal/Lost) also
+    // marks the segment SOFT — the principled signal (not just a landmark proxy).
+    if (s.cov(0, 0) + s.cov(1, 1) + s.cov(2, 2) > cov_soft_thresh_) loss_in_segment_ = true;
 
     const bool first = !chain_.hasKeyframe();
     const auto edge = chain_.feed(s);
@@ -974,6 +980,7 @@ class ProviderFusionNode : public rclcpp::Node {
   std::string map_dir_;
   int kf_per_submap_ = 50;
   double stale_thresh_ = 0.5, force_loss_start_ = -1.0, force_loss_end_ = -1.0;
+  double cov_soft_thresh_ = 0.01;  // OKVIS pos-cov trace -> degraded (Marginal/Lost)
   double t0_ = -1.0, last_odom_t_ = -1.0;
   bool loss_in_segment_ = false;   // a stale-gap occurred -> next chain edge is SOFT
   int kf_no_image_ = 0, loops_closed_ = 0;
