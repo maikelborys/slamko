@@ -29,6 +29,34 @@ ORB-SLAM3+XFeat on the same bag (44k, but stereo-only / not gravity-aligned).
 point + σ_z weighting (robust far-landmarks indoor AND outdoor, unlike a depth
 gate). Tune `lm_min_obs` if coverage on short-visibility features drops.
 
+## 2026-06-19 — R1 inter-map anchor edges (soft + hard) recorded + visualized
+
+The "federation of islands" connections (PLAN_ROBUSTNESS_01 R1.1/R1.3), the user's
+two-edge design: *don't propagate a bad pose into the map, but propagate the
+dead-reckoning APART as a SOFT inter-map connection; HARD when there are good
+visual matches.* `provider_fusion_node` now records `AnchorEdge`s between submap
+anchors and persists them to `<map>/anchor_edges.csv`:
+- **CHAIN-ODOM** (type 0) — consecutive submaps, good odometry (tight σ 0.05/0.02).
+- **SOFT** (type 1) — consecutive submaps where the segment was visually degraded
+  (raw landmark yield < `anchor_soft_lm`=7000, or images missing) → the odom across
+  it is less trustworthy → high σ (1.0/0.3): approximate placement only, don't trust
+  its geometry.
+- **HARD** (type 2) — verified weld (reloc passed consensus), σ = loop sigma.
+
+`scripts/plot_multimap.py` draws the Atlas: islands (colored) + anchors + gray/odom,
+orange-dashed/SOFT, green/HARD edges. Validated: CASA1_Suave_blackout → 8 islands,
+5 odom + 2 soft (4→5 is the real degraded blackout segment, 6→7 the trailing
+partial) + 1 hard (7→0 reconnect). Additive — does not touch the live map→odom path.
+
+**Caveat / next:** the edges are RECORDED + visualized; they are NOT yet fed into an
+anchor-graph optimization (corrections still propagate via the existing keyframe
+graph). Next (R1.1/R1.2): optimize the submap-anchor graph from these edges
+(covariance-weighted → soft barely moves geometry, hard pins it) + reversibility
+(drop a bad edge). Soft-edge trigger is a landmark-yield proxy; the principled
+signal is the provider covariance/tracking-quality (Marginal/Lost) — wire when the
+health probe is plumbed. A true odom-stale branch (cam+IMU both out) hasn't been
+exercised yet (the bno_ab blackouts are ~1.15s, OKVIS IMU-bridges them).
+
 ## 2026-06-12 — P-A shipped: provider_fusion_node + loose chain over OKVIS2-X
 
 First real content of the composition root (MASTER_PLAN v2 §8 P-A — the

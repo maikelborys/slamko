@@ -186,6 +186,14 @@ class ProviderFusionNode : public rclcpp::Node {
       // landmark dedup, and min observations to survive culling (the one-off rays).
       lm_dedup_voxel_ = declare_parameter("lm_dedup_voxel_m", 0.06);
       lm_min_obs_ = declare_parameter("lm_min_obs", 2);
+      // Inter-map anchor edges (R1.1 hard / R1.3 soft): chain edge sigma between
+      // consecutive submaps (good odometry) vs SOFT sigma when the segment crossed
+      // a visual loss (dead-reckoning — approximate placement only). Hard = loop sigma.
+      anchor_chain_sigma_t_ = declare_parameter("anchor_chain_sigma_t", 0.05);
+      anchor_chain_sigma_r_ = declare_parameter("anchor_chain_sigma_r", 0.02);
+      anchor_soft_sigma_t_ = declare_parameter("anchor_soft_sigma_t", 1.0);
+      anchor_soft_sigma_r_ = declare_parameter("anchor_soft_sigma_r", 0.3);
+      anchor_soft_lm_ = declare_parameter("anchor_soft_lm", 7000);
       loop_sigma_t_ = declare_parameter("loop_sigma_t", 0.10);
       loop_sigma_r_ = declare_parameter("loop_sigma_r", 0.05);
       max_loop_disagree_m_ = declare_parameter("max_loop_disagree_m", 30.0);
@@ -731,6 +739,27 @@ class ProviderFusionNode : public rclcpp::Node {
                 (unsigned long long)a, r.num_inliers, (int)res.converged,
                 res.iterations, res.initial_cost, res.final_cost);
     ++loops_closed_;
+    // R1.1 HARD inter-map edge: the building submap (its future id == next_submap_id_)
+    // is verified-connected to target submap r.submap_id. Recorded for the anchor
+    // graph + the multi-map viz (reversible: it is just an entry we can drop).
+    anchor_edges_.push_back(AnchorEdge{next_submap_id_, r.submap_id, r.T_query_match,
+                                       loop_sigma_t_, loop_sigma_r_, 2});
+    dumpAnchorEdges();
+  }
+
+  // Persist the inter-map anchor edges (federation-of-islands connections) so the
+  // multi-map viz (scripts/plot_multimap.py) can draw soft vs hard connections.
+  void dumpAnchorEdges() {
+    if (map_dir_.empty()) return;
+    std::ofstream f(map_dir_ + "/anchor_edges.csv");
+    f << "from,to,type,tx,ty,tz,qx,qy,qz,qw,sigma_t,sigma_r\n";
+    for (const auto& e : anchor_edges_) {
+      const auto p = e.T_from_to.translation();
+      const auto q = e.T_from_to.so3().unit_quaternion();
+      f << e.from << ',' << e.to << ',' << e.type << ',' << p.x() << ',' << p.y()
+        << ',' << p.z() << ',' << q.x() << ',' << q.y() << ',' << q.z() << ','
+        << q.w() << ',' << e.sigma_t << ',' << e.sigma_r << '\n';
+    }
   }
 
   // Register sealed submaps into the relocalizer only once they are OLDER than
@@ -752,6 +781,26 @@ class ProviderFusionNode : public rclcpp::Node {
     // submap-local frame, poisoned future PnP against this submap).
     sm.anchor = graph_.pose(pending_kfs_.front().id);
     const slamko::SE3 anchor_inv = sm.anchor.inverse();
+    // R1.3/R1.1 CHAIN anchor edge: connect the previous sealed submap to this one.
+    // SOFT (high cov) if the segment crossed a visual loss (placement is
+    // dead-reckoned, approximate — don't trust its geometry); else a tight ODOM
+    // edge. The HARD verified edges come from welds (processRelocResult).
+    if (have_prev_anchor_) {
+      int seg_lms = 0;
+      for (const auto& r : pending_kfs_) seg_lms += (int)r.lm_pcam.size();
+      // SOFT if the segment was visually degraded — low landmark yield (the odom
+      // across it is less trustworthy, OKVIS covariance was inflated) or images
+      // missing → placement is approximate, don't trust its geometry. Else tight ODOM.
+      const bool soft = seg_lms < anchor_soft_lm_ || (kf_no_image_ - seg_kf_no_image_) > 0;
+      anchor_edges_.push_back(AnchorEdge{
+          prev_anchor_id_, sm.id, prev_anchor_.inverse() * sm.anchor,
+          soft ? anchor_soft_sigma_t_ : anchor_chain_sigma_t_,
+          soft ? anchor_soft_sigma_r_ : anchor_chain_sigma_r_, soft ? 1 : 0});
+    }
+    prev_anchor_ = sm.anchor;
+    prev_anchor_id_ = sm.id;
+    have_prev_anchor_ = true;
+    seg_kf_no_image_ = kf_no_image_;
     sm.keyframes.reserve(pending_kfs_.size());
     sm.kf_obs.resize(pending_kfs_.size());
     Eigen::VectorXf mean = Eigen::VectorXf::Zero(pending_kfs_.front().g.size());
@@ -856,6 +905,7 @@ class ProviderFusionNode : public rclcpp::Node {
     submap_first_kf_[sm.id] = sm.keyframes.front().id;
     submap_last_t_[sm.id] = pending_kfs_.back().t;
     sealed_unregistered_.emplace_back(std::move(sm), pending_kfs_.back().t);
+    dumpAnchorEdges();
     pending_kfs_.clear();
   }
 
@@ -913,6 +963,21 @@ class ProviderFusionNode : public rclcpp::Node {
   int reloc_min_inliers_ = 25, max_kf_landmarks_ = 200;
   double lm_dedup_voxel_ = 0.06;   // voxel [m] for landmark dedup at seal (task #9)
   int lm_min_obs_ = 2;             // min observations to survive culling (kills rays)
+  // Inter-map anchor-graph edges (R1.1/R1.3) — the federation-of-islands connections.
+  struct AnchorEdge {
+    std::uint64_t from, to;
+    slamko::SE3 T_from_to;
+    double sigma_t, sigma_r;
+    int type;  // 0=chain-odom, 1=chain-soft (DR across a loss), 2=hard (verified weld)
+  };
+  std::vector<AnchorEdge> anchor_edges_;
+  slamko::SE3 prev_anchor_;
+  std::uint64_t prev_anchor_id_ = 0;
+  bool have_prev_anchor_ = false;
+  int seg_kf_no_image_ = 0;
+  double anchor_chain_sigma_t_ = 0.05, anchor_chain_sigma_r_ = 0.02;
+  double anchor_soft_sigma_t_ = 1.0, anchor_soft_sigma_r_ = 0.3;
+  int anchor_soft_lm_ = 7000;      // segment raw-landmark floor below which the chain edge is SOFT
   int prior_min_inliers_ = 15;
   double min_reloc_period_s_ = 0.5, last_reloc_attempt_t_ = -1e18;
   std::string lg_model_path_;

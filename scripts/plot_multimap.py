@@ -32,13 +32,27 @@ def main():
         subs[i] = p
         cents[i] = p.mean(axis=0) if len(p) else np.zeros(3)
 
-    welds = []  # (query_submap, target_submap) — HARD edges
-    if a.log and os.path.exists(a.log):
+    # edges: prefer the persisted anchor_edges.csv (from,to,type); else parse the
+    # log (all hard). type 0=chain-odom, 1=SOFT (dead-reckoning across a loss),
+    # 2=HARD (verified weld).
+    import csv
+    edges = []  # (from, to, type)
+    ecsv = os.path.join(a.map_dir, "anchor_edges.csv")
+    if os.path.exists(ecsv):
+        with open(ecsv) as fh:
+            for rr in csv.DictReader(fh):
+                f_, t_, ty = int(rr["from"]), int(rr["to"]), int(rr["type"])
+                if f_ in cents and t_ in cents and f_ != t_:
+                    edges.append((f_, t_, ty))
+    elif a.log and os.path.exists(a.log):
         for m in re.finditer(r"LOOP CLOSED: kf (\d+) -> submap (\d+)", open(a.log).read()):
             qs, tgt = int(m.group(1)) // a.kf_per_submap, int(m.group(2))
             if qs in cents and tgt in cents and qs != tgt:
-                welds.append((qs, tgt))
-    welds = sorted(set(welds))
+                edges.append((qs, tgt, 2))
+    edges = sorted(set(edges))
+    n_by = {0: 0, 1: 0, 2: 0}
+    for _, _, ty in edges:
+        n_by[ty] += 1
 
     colors = cm.tab20(np.linspace(0, 1, 20))
     rgb = lambda c: f"rgb({int(c[0]*255)},{int(c[1]*255)},{int(c[2]*255)})"
@@ -57,17 +71,23 @@ def main():
         x=[cents[i][0] for i in ids], y=[cents[i][1] for i in ids], z=[cents[i][2] for i in ids],
         mode="markers+text", marker=dict(size=6, color="white", symbol="diamond"),
         text=[str(i) for i in ids], textposition="top center", name="anchors"))
-    for (qs, ts) in welds:
+    estyle = {0: ("#888888", 2, "solid", f"chain-odom ({n_by[0]})"),
+              1: ("#ff7f0e", 5, "dash", f"SOFT dead-reckoning ({n_by[1]})"),
+              2: ("#2ca02c", 6, "solid", f"HARD verified weld ({n_by[2]})")}
+    shown = set()
+    for (f_, t_, ty) in edges:
+        col, w, dash, nm = estyle[ty]
         fig.add_trace(go.Scatter3d(
-            x=[cents[qs][0], cents[ts][0]], y=[cents[qs][1], cents[ts][1]],
-            z=[cents[qs][2], cents[ts][2]], mode="lines",
-            line=dict(width=6, color="#2ca02c"), showlegend=False))
-    fig.add_trace(go.Scatter3d(x=[None], y=[None], z=[None], mode="lines",
-        line=dict(width=6, color="#2ca02c"), name=f"HARD edges ({len(welds)})"))
-    fig.update_layout(title=f"Multi-map Atlas: {len(ids)} islands, {len(welds)} hard edges",
-                      scene=dict(aspectmode="data"), template="plotly_dark")
+            x=[cents[f_][0], cents[t_][0]], y=[cents[f_][1], cents[t_][1]],
+            z=[cents[f_][2], cents[t_][2]], mode="lines",
+            line=dict(width=w, color=col, dash=dash),
+            name=nm, showlegend=(ty not in shown)))
+        shown.add(ty)
+    fig.update_layout(
+        title=f"Multi-map Atlas: {len(ids)} islands · {n_by[0]} odom / {n_by[1]} soft / {n_by[2]} hard edges",
+        scene=dict(aspectmode="data"), template="plotly_dark")
     fig.write_html(a.out)
-    print(f"wrote {a.out}  ({len(ids)} submaps, {len(welds)} welds)")
+    print(f"wrote {a.out}  ({len(ids)} submaps · {n_by[0]} odom / {n_by[1]} soft / {n_by[2]} hard)")
 
     # ---- static top-down PNG ----
     png = a.out.rsplit(".", 1)[0] + ".png"
@@ -77,15 +97,18 @@ def main():
         if len(p) > 20000:
             p = p[::len(p) // 20000]
         ax.scatter(p[:, 0], p[:, 1], s=0.5, color=colors[n % 20], alpha=0.5)
-    for (qs, ts) in welds:
-        ax.plot([cents[qs][0], cents[ts][0]], [cents[qs][1], cents[ts][1]],
-                "-", color="#2ca02c", lw=2.0, zorder=4)
+    pstyle = {0: ("#888888", 1.2, "-"), 1: ("#ff7f0e", 2.6, "--"), 2: ("#2ca02c", 2.6, "-")}
+    for (f_, t_, ty) in edges:
+        col, lw, ls = pstyle[ty]
+        ax.plot([cents[f_][0], cents[t_][0]], [cents[f_][1], cents[t_][1]],
+                ls, color=col, lw=lw, zorder=4)
     for i in ids:
         ax.scatter(cents[i][0], cents[i][1], s=130, c="k", marker="D", zorder=5)
         ax.annotate(str(i), (cents[i][0], cents[i][1]), color="w", fontsize=8,
                     ha="center", va="center", zorder=6)
     ax.set_aspect("equal"); ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
-    ax.set_title(f"Multi-map Atlas: {len(ids)} islands (color) + {len(welds)} HARD welds (green)")
+    ax.set_title(f"Multi-map Atlas: {len(ids)} islands · gray=odom orange-dash=SOFT(DR) "
+                 f"green=HARD  ({n_by[0]}/{n_by[1]}/{n_by[2]})")
     ax.grid(alpha=0.2); f2.tight_layout(); f2.savefig(png)
     print(f"wrote {png}")
 
