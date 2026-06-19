@@ -63,6 +63,15 @@ The drift envelope still saturates (bounded) but the plateau is higher + noisier
 lever: reduce drift (better per-submap re-anchor) or a modestly coarser cull voxel (drift-tolerant
 without the 30 cm 3×3×3 over-cull that was rejected).
 
+**DRIFT-TOLERANT VOXEL 0.10→0.15 (2026-06-19, commit f193c1a) — cuts the leak ~64%.** Coarsening
+ONLY the redundancy-test voxel (stored-map dedup stays 0.06) tolerates the ~10 cm frame drift.
+Validated CASA1_Suave 4-visit: landmark growth **+8.7%/visit (0.10) → +3.1%/visit (0.15)**; submaps
+1.5→1.25/visit; **reloc fully healthy (35 re-anchors/visit)**. Fresh pass culls 1 end segment = the
+bag's in-session loop return (correct, not false-cull; map keeps 8 submaps/8794 lm, 6 loops).
+`results/r04_v15/bounded.png`. The map is now ORB-SLAM-style bounded by AREA (data-association +
+drift-tolerant occupancy); the small remaining +3%/visit is residual drift that saturates (finite
+voxels). 3×3×3 neighbour-dilation stays rejected (over-culls); 0.15 single-cell is the sweet spot.
+
 ## 2026-06-19 — GAP-2 maturation V1: prior map REFINED on revisit (task #4)
 
 **5-visit growth study first** (`scripts/lifelong_visits.sh`, `results/r01/lifelong/growth.png`):
