@@ -264,6 +264,8 @@ class ProviderFusionNode : public rclcpp::Node {
       anchor_soft_sigma_t_ = declare_parameter("anchor_soft_sigma_t", 1.0);
       anchor_soft_sigma_r_ = declare_parameter("anchor_soft_sigma_r", 0.3);
       anchor_soft_lm_ = declare_parameter("anchor_soft_lm", 7000);
+      // R0.2 ingestion gate: bar degraded-tracking submaps from being reloc match targets.
+      gate_degraded_reloc_ = declare_parameter("gate_degraded_reloc", true);
       loop_sigma_t_ = declare_parameter("loop_sigma_t", 0.10);
       loop_sigma_r_ = declare_parameter("loop_sigma_r", 0.05);
       max_loop_disagree_m_ = declare_parameter("max_loop_disagree_m", 30.0);
@@ -383,6 +385,10 @@ class ProviderFusionNode : public rclcpp::Node {
       RCLCPP_INFO(get_logger(),
                   "GAP-2 cull backstop: culled %d redundant submap(s) — map bounded by AREA, "
                   "not by visits", culled_submaps_);
+    if (gated_reloc_targets_ > 0)
+      RCLCPP_INFO(get_logger(),
+                  "R0 seal-quality gate: barred %d degraded submap(s) from being reloc targets "
+                  "(never ingest garbage as a match source)", gated_reloc_targets_);
     finalizeMaturation();
     if (provider_file_) std::fclose(provider_file_);
     if (global_file_) std::fclose(global_file_);
@@ -445,6 +451,7 @@ class ProviderFusionNode : public rclcpp::Node {
       }
       if (!map_dir_.empty() && pending_kfs_.size() >= 2) sealSubmap();
       loss_in_segment_ = true;
+      seg_hard_loss_ = true;  // a TRUE stale-gap loss (poses dead-reckoned) -> R0 reloc gate
     }
     last_odom_t_ = s.t;
     // snapshot the last trustworthy state for the NEXT gap's DR comparison.
@@ -950,7 +957,19 @@ class ProviderFusionNode : public rclcpp::Node {
   void registerAgedSubmaps(double now_t) {
     while (!sealed_unregistered_.empty() &&
            now_t - sealed_unregistered_.front().second > min_loop_gap_s_) {
-      if (reloc_) reloc_->addSubMap(sealed_unregistered_.front().first);
+      const auto& sm = sealed_unregistered_.front().first;
+      // R0.2 SEAL-QUALITY GATE: a submap sealed during degraded tracking has untrustworthy
+      // geometry -> keep it in the map (chain/viz) but DON'T register it as a reloc target,
+      // so a future query can never false-match against garbage and corrupt the graph (I2).
+      if (reloc_ && !degraded_submaps_.count(sm.id)) {
+        reloc_->addSubMap(sm);
+      } else if (degraded_submaps_.count(sm.id)) {
+        ++gated_reloc_targets_;
+        RCLCPP_INFO(get_logger(),
+                    "R0 gate: submap %llu sealed degraded -> NOT a reloc target "
+                    "(no garbage match source; %d gated so far)",
+                    (unsigned long long)sm.id, gated_reloc_targets_);
+      }
       sealed_unregistered_.pop_front();
     }
   }
@@ -1049,14 +1068,26 @@ class ProviderFusionNode : public rclcpp::Node {
     // SOFT (high cov) if the segment crossed a visual loss (placement is
     // dead-reckoned, approximate — don't trust its geometry); else a tight ODOM
     // edge. The HARD verified edges come from welds (processRelocResult).
+    // DEGRADED-segment signal (R0 ingestion gate): the segment crossed a tracking loss,
+    // yielded too few landmarks, or missed images -> its odom is dead-reckoned and its
+    // landmark geometry is untrustworthy. Used both for the SOFT chain edge AND (R0.2) to
+    // BAR this submap from becoming a relocalization target — a garbage match source would
+    // false-anchor the session and propagate corruption through the graph (the I2 violation).
+    int seg_lms = 0;
+    for (const auto& r : pending_kfs_) seg_lms += (int)r.lm_pcam.size();
+    // The reloc-target gate fires ONLY on an actual tracking loss (loss_in_segment_): that is
+    // when the poses are dead-reckoned and the landmark geometry is genuinely wrong. A clean
+    // but sparse/low-yield submap still has CORRECT (if fewer) landmarks -> a valid reloc
+    // target, so it is NOT gated (only marked soft for the chain edge below).
+    const bool degraded = loss_in_segment_ || seg_lms < anchor_soft_lm_ ||
+                          (kf_no_image_ - seg_kf_no_image_) > 0;
+    // Reloc-target bar fires ONLY on a TRUE stale-gap loss (dead-reckoned poses = wrong
+    // geometry) — NOT on the covariance-marginal trigger (still-usable geometry, valid
+    // reloc target). Conflating them barred clean-marginal submaps and killed loop closure.
+    if (gate_degraded_reloc_ && seg_hard_loss_) degraded_submaps_.insert(sm.id);
+    seg_hard_loss_ = false;
     if (have_prev_anchor_) {
-      int seg_lms = 0;
-      for (const auto& r : pending_kfs_) seg_lms += (int)r.lm_pcam.size();
-      // SOFT if the segment was visually degraded — low landmark yield (the odom
-      // across it is less trustworthy, OKVIS covariance was inflated) or images
-      // missing → placement is approximate, don't trust its geometry. Else tight ODOM.
-      const bool soft = loss_in_segment_ || seg_lms < anchor_soft_lm_ ||
-                        (kf_no_image_ - seg_kf_no_image_) > 0;
+      const bool soft = degraded;
       anchor_edges_.push_back(AnchorEdge{
           prev_anchor_id_, sm.id, prev_anchor_.inverse() * sm.anchor,
           soft ? anchor_soft_sigma_t_ : anchor_chain_sigma_t_,
@@ -1273,6 +1304,7 @@ class ProviderFusionNode : public rclcpp::Node {
   Eigen::Vector3d last_odom_v_ = Eigen::Vector3d::Zero();  // last OKVIS body velocity
   double last_imu_t_ = -1.0;
   bool loss_in_segment_ = false;   // a stale-gap occurred -> next chain edge is SOFT
+  bool seg_hard_loss_ = false;     // a TRUE stale-gap loss this segment -> bar reloc target (R0.2)
   // GAP-2 "don't re-map what you already see" (task #4 first brick).
   bool dup_suppress_ = true;
   int dup_min_inliers_ = 60, seg_total_kfs_ = 0, seg_covered_kfs_ = 0, suppressed_dups_ = 0;
@@ -1288,6 +1320,10 @@ class ProviderFusionNode : public rclcpp::Node {
   double cull_voxel_ = 0.10, cull_redundant_frac_ = 0.7;
   int cull_min_lms_ = 100, culled_submaps_ = 0;
   std::unordered_set<std::int64_t> occ_;
+  // R0.2 seal-quality gate: submaps sealed during degraded tracking are barred as reloc targets.
+  bool gate_degraded_reloc_ = true;
+  int gated_reloc_targets_ = 0;
+  std::unordered_set<std::uint64_t> degraded_submaps_;
   int kf_no_image_ = 0, loops_closed_ = 0;
   double image_tol_s_ = 0.06, image_buffer_s_ = 0.6;
 

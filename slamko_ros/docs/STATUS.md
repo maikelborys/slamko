@@ -1,5 +1,26 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
+## 2026-06-19 — R0.2 seal-quality gate: never ingest garbage as a reloc match source (task #7)
+
+**The gap (PLAN_ROBUSTNESS top concern):** the graph had no input gate on what becomes a
+RELOC TARGET. A submap sealed during a tracking LOSS has dead-reckoned, untrustworthy landmark
+geometry; registering it as a relocalization target lets a future query FALSE-MATCH against
+garbage → bad re-anchor → corruption propagates through the graph (the I2 violation).
+
+**What landed** (`provider_fusion_node.cpp`): a per-segment hard-loss flag (`seg_hard_loss_`,
+set ONLY by a true stale-gap — NOT by the covariance-marginal trigger, which still has usable
+geometry) marks the sealed submap degraded; `registerAgedSubmaps` then keeps it in the map
+(chain + occupancy + viz) but does NOT `reloc_->addSubMap` it — so it can never be a match
+source. `gate_degraded_reloc`=true. Hard rule #3 respected (this gates the RELOC TARGET, not the
+odometry edge — chain edges are already covariance-graded in `edgeInformation`).
+
+**Validated** (rate 0.5): **clean CASA1_Suave** — barred only the 1 genuine natural stale-gap
+submap, **loop closure fully intact (6 loops)** — NO spurious gating (an earlier version keyed on
+the broader `loss_in_segment_` incl. the covariance-marginal trigger and barred 5/9 submaps →
+0 loops; fixed by gating on stale-gap only). **CASA1_Suave_blackout4** — barred the 1 blackout-
+degraded submap, system still recovered (2 re-anchors). First R0 ingestion gate shipped.
+
+
 <!-- validated: 2026-06-19 · tests: GAP-2 CULL BACKSTOP — revisit grows 0 submaps (was 9), fresh pass culls 0; the immortality plateau -->
 
 ## 2026-06-19 — GAP-2 cull backstop: the immortality CEILING (map bounded by AREA)
