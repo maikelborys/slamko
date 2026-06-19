@@ -1,6 +1,36 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
-<!-- validated: 2026-06-19 · tests: GAP-2 maturation V1 — prior submaps REFINED on revisit (1805 lm nudged, size 9/9 unchanged) + 5-visit growth study -->
+<!-- validated: 2026-06-19 · tests: GAP-2 CULL BACKSTOP — revisit grows 0 submaps (was 9), fresh pass culls 0; the immortality plateau -->
+
+## 2026-06-19 — GAP-2 cull backstop: the immortality CEILING (map bounded by AREA)
+
+**Why (proven, the immortality blocker):** a 9-visit study showed dup-suppression slows growth
+but does NOT stop it — ~3.5 submaps LEAK every visit (blind spots whose VPR recall is too low to
+suppress), extrapolating to **~112 submaps / ~110k lm at 30 visits for ONE house**, linear, no
+plateau (`results/r01/lifelong/growth_9visits.png`). Recall-improvement alone can't guarantee a
+ceiling (a hard tail always leaks). The guarantee is a **culling backstop** = ORB-SLAM's
+`KeyFrameCulling` lifted to submap level, but GEOMETRIC (robust to recall).
+
+**What landed** (`provider_fusion_node.cpp` `sealSubmap` + `occKey`): a real-world voxel
+**occupancy** set (`occ_`, voxel `cull_voxel_m`=0.10), seeded from the prior map and grown by
+every KEPT submap. At seal, if `cull_redundant_frac`=0.7 of a submap's landmarks fall in already
+-occupied voxels, the submap is **CULLED** — the seal is rolled back verbatim (id, anchor edges,
+prev-anchor, loss flag all restored from a snapshot; nothing persisted/registered). GEOMETRIC, so
+it bounds the map by AREA regardless of VPR recall. `cull_enabled`=false restores old behavior.
+
+**Validated** (CASA1_Suave, rate 0.5):
+
+| run | submaps kept | culled | meaning |
+|---|---|---|---|
+| **fresh pass** (no prior, SAFETY) | 9 (full map) | **0** | forward motion never false-culls |
+| **revisit** (prior=fresh map, EFFICACY) | **0** | 9 | revisit adds NOTHING — map bounded by area |
+
+Reloc intact on the revisit (34 re-anchors), fused-vs-provider PASS (0.000 m). **The plateau:
+30 visits → ~9 submaps (house content), flat — vs ~112 without.** Combined with dup-suppression
+(appearance, live) + maturation (refine prior), slamko now has BOTH ORB-SLAM nets: reuse + cull.
+**Honest limit:** cull is drop-only (the redundant submap's fresh observations are discarded, not
+fused into the prior — fusion/maturation-on-cull is the next refinement); occupancy uses the
+current `T_global_map_` (sub-cm stable post-re-anchor; frame error fails SAFE = keep, never false-cull).
 
 ## 2026-06-19 — GAP-2 maturation V1: prior map REFINED on revisit (task #4)
 

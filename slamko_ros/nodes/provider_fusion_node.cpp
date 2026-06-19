@@ -247,6 +247,14 @@ class ProviderFusionNode : public rclcpp::Node {
       mature_out_dir_ = declare_parameter("mature_out_dir", std::string(""));
       mature_voxel_ = declare_parameter("mature_voxel_m", 0.06);
       mature_alpha_ = declare_parameter("mature_alpha", 0.2);
+      // GAP-2 CULL BACKSTOP (the immortality ceiling guarantee): a sealed submap whose
+      // landmarks are >= cull_redundant_frac already in the global occupancy (existing
+      // submaps) is geometrically redundant -> culled. Bounds the map by AREA regardless
+      // of VPR recall (suppression alone leaks ~3.5 submaps/visit -> linear growth).
+      cull_enabled_ = declare_parameter("cull_enabled", true);
+      cull_voxel_ = declare_parameter("cull_voxel_m", 0.10);
+      cull_redundant_frac_ = declare_parameter("cull_redundant_frac", 0.7);
+      cull_min_lms_ = declare_parameter("cull_min_lms", 100);
       // Inter-map anchor edges (R1.1 hard / R1.3 soft): chain edge sigma between
       // consecutive submaps (good odometry) vs SOFT sigma when the segment crossed
       // a visual loss (dead-reckoning — approximate placement only). Hard = loop sigma.
@@ -370,6 +378,10 @@ class ProviderFusionNode : public rclcpp::Node {
       RCLCPP_INFO(get_logger(),
                   "GAP-2 immortality: suppressed %d duplicate submap(s) of known ground "
                   "(map did not grow on revisited territory)", suppressed_dups_);
+    if (culled_submaps_ > 0)
+      RCLCPP_INFO(get_logger(),
+                  "GAP-2 cull backstop: culled %d redundant submap(s) — map bounded by AREA, "
+                  "not by visits", culled_submaps_);
     finalizeMaturation();
     if (provider_file_) std::fclose(provider_file_);
     if (global_file_) std::fclose(global_file_);
@@ -618,7 +630,14 @@ class ProviderFusionNode : public rclcpp::Node {
         rcfg_p.use_lightglue = true;
         rcfg_p.lightglue_model_path = lg_model_path_;
         reloc_prior_ = std::make_unique<slamko::XFeatRelocalizer>(rcfg_p);
-        for (const auto& sm : prior_submaps_) reloc_prior_->addSubMap(sm);
+        for (const auto& sm : prior_submaps_) {
+          reloc_prior_->addSubMap(sm);
+          // Seed the cull-backstop occupancy: prior submaps are already in real-world
+          // (prior-global) frame, so the session's new submaps that re-cover this ground
+          // are recognized as redundant and culled from visit 1.
+          for (const auto& lm : sm.landmarks)
+            occ_.insert(occKey(sm.anchor * lm.position));
+        }
         prior_submaps_.clear();  // registered; keep only ids/anchors
       }
       RCLCPP_INFO(get_logger(),
@@ -944,6 +963,15 @@ class ProviderFusionNode : public rclcpp::Node {
     covered_by_submap_ = sm;
   }
 
+  // Voxel key of a real-world point for the cull-backstop occupancy set (coarser than the
+  // dedup voxel — we test "is this space already mapped", robust to small pose differences).
+  std::int64_t occKey(const Eigen::Vector3d& p) const {
+    const double v = cull_voxel_;
+    auto q = [v](double x) { return (std::int64_t)std::llround(std::floor(x / v)); };
+    const std::int64_t a = q(p.x()) & 0x1FFFFF, b = q(p.y()) & 0x1FFFFF, c = q(p.z()) & 0x1FFFFF;
+    return (a << 42) | (b << 21) | c;
+  }
+
   // GAP-2 maturation (shutdown): reload the prior archive and REFINE each covered prior
   // submap's existing landmarks toward this session's revisit observations (cross-session
   // averaging, structure-only — positions nudged by mature_alpha toward the multi-view
@@ -1002,6 +1030,14 @@ class ProviderFusionNode : public rclcpp::Node {
   void sealSubmap() {
     slamko::SubMap sm;
     sm.id = next_submap_id_++;
+    // CULL backstop rollback snapshot — restored verbatim if this submap turns out to be
+    // geometrically redundant (see the cull check after the landmarks are built).
+    const slamko::SE3 cull_saved_prev_anchor = prev_anchor_;
+    const std::uint64_t cull_saved_prev_id = prev_anchor_id_;
+    const bool cull_saved_have_prev = have_prev_anchor_;
+    const bool cull_saved_loss = loss_in_segment_;
+    const int cull_saved_seg_kf_no_img = seg_kf_no_image_;
+    const std::size_t cull_saved_edges = anchor_edges_.size();
     // AUDIT FIX (2026-06-12): seal from the LIVE graph poses, never the cached
     // KfRec.T_map — when a loop optimizes mid-segment the cache mixes pre/post
     // correction poses inside one submap (smeared landmarks, corrupted
@@ -1113,6 +1149,41 @@ class ProviderFusionNode : public rclcpp::Node {
       }
     }
     const int raw_n = (int)raw_p.size();
+
+    // ---- CULL BACKSTOP (immortality ceiling, ORB-SLAM KeyFrameCulling at submap level).
+    // If most of this submap's landmarks fall in real-world voxels ALREADY occupied by
+    // existing submaps, it duplicates known ground -> CULL (roll the seal back, persist
+    // nothing). Unlike dup-suppression (appearance/VPR-gated -> misses blind spots, leaks
+    // ~3.5 submaps/visit -> linear growth), this is GEOMETRIC: it bounds the map by AREA
+    // regardless of recall, so the map plateaus instead of inflating over revisits.
+    if (cull_enabled_ && (int)sm.landmarks.size() >= cull_min_lms_ && !occ_.empty()) {
+      int redundant = 0;
+      for (const auto& lm : sm.landmarks)
+        if (occ_.count(occKey(T_global_map_ * sm.anchor * lm.position))) ++redundant;
+      const double frac = (double)redundant / (double)sm.landmarks.size();
+      if (frac >= cull_redundant_frac_) {
+        RCLCPP_INFO(get_logger(),
+                    "CULLED redundant submap (%.0f%% of %zu lm already mapped) — immortal: "
+                    "map bounded by AREA, %d culled so far",
+                    frac * 100.0, sm.landmarks.size(), culled_submaps_ + 1);
+        ++culled_submaps_;
+        next_submap_id_ = sm.id;                        // give the id back
+        prev_anchor_ = cull_saved_prev_anchor;          // undo every seal mutation
+        prev_anchor_id_ = cull_saved_prev_id;
+        have_prev_anchor_ = cull_saved_have_prev;
+        loss_in_segment_ = cull_saved_loss;
+        seg_kf_no_image_ = cull_saved_seg_kf_no_img;
+        anchor_edges_.resize(cull_saved_edges);
+        pending_kfs_.clear();
+        seg_total_kfs_ = seg_covered_kfs_ = 0;
+        return;
+      }
+    }
+    // KEEP: genuinely new ground -> mark its real-world voxels occupied so future revisits
+    // of this area are recognized as redundant and culled.
+    for (const auto& lm : sm.landmarks)
+      occ_.insert(occKey(T_global_map_ * sm.anchor * lm.position));
+
     const std::string path = map_dir_.empty()
         ? std::string()
         : map_dir_ + "/submap_" + std::to_string(sm.id) + ".smap";
@@ -1201,6 +1272,11 @@ class ProviderFusionNode : public rclcpp::Node {
   double mature_voxel_ = 0.06, mature_alpha_ = 0.2;
   std::string mature_out_dir_, prior_dir_;
   std::unordered_map<std::uint64_t, std::vector<Eigen::Vector3d>> mature_buf_;
+  // GAP-2 cull backstop: real-world voxel occupancy of all KEPT submaps (+ prior seed).
+  bool cull_enabled_ = true;
+  double cull_voxel_ = 0.10, cull_redundant_frac_ = 0.7;
+  int cull_min_lms_ = 100, culled_submaps_ = 0;
+  std::unordered_set<std::int64_t> occ_;
   int kf_no_image_ = 0, loops_closed_ = 0;
   double image_tol_s_ = 0.06, image_buffer_s_ = 0.6;
 
