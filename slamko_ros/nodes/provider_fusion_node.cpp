@@ -252,7 +252,8 @@ class ProviderFusionNode : public rclcpp::Node {
       // submaps) is geometrically redundant -> culled. Bounds the map by AREA regardless
       // of VPR recall (suppression alone leaks ~3.5 submaps/visit -> linear growth).
       cull_enabled_ = declare_parameter("cull_enabled", true);
-      cull_voxel_ = declare_parameter("cull_voxel_m", 0.10);
+      cull_voxel_ = declare_parameter("cull_voxel_m", 0.15);  // drift-tolerant (only the redundancy
+      // test coarsens; the stored-map dedup stays at lm_dedup_voxel_m=0.06).
       cull_redundant_frac_ = declare_parameter("cull_redundant_frac", 0.7);
       cull_min_lms_ = declare_parameter("cull_min_lms", 100);
       // Inter-map anchor edges (R1.1 hard / R1.3 soft): chain edge sigma between
