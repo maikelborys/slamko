@@ -141,6 +141,11 @@ class ProviderFusionNode : public rclcpp::Node {
     const auto image_topic = declare_parameter("image_topic", std::string(""));
     map_dir_ = declare_parameter("map_dir", std::string(""));
     kf_per_submap_ = declare_parameter("kf_per_submap", 50);
+    // Never-lost branch (R-C): odom stale-gap that counts as tracking loss, and a
+    // force-loss TEST window [start,end] (bag-relative s) that drops odom to simulate it.
+    stale_thresh_ = declare_parameter("stale_gap_s", 0.5);
+    force_loss_start_ = declare_parameter("force_loss_start", -1.0);
+    force_loss_end_ = declare_parameter("force_loss_end", -1.0);
     image_tol_s_ = declare_parameter("image_tol_s", 0.06);
     // Provider odometry arrives with estimation latency (worse under GPU load —
     // the 0.6 s default starved 235/1300 KFs of their image on CASA1_Suave).
@@ -315,6 +320,24 @@ class ProviderFusionNode : public rclcpp::Node {
     s.T_OB = fromPoseMsg(msg->pose.pose);
     for (int i = 0; i < 6; ++i)
       for (int j = 0; j < 6; ++j) s.cov(i, j) = msg->pose.covariance[i * 6 + j];
+
+    // --- never-lost loss detection + branch (R-C) ---
+    if (t0_ < 0.0) t0_ = s.t;
+    const double rel = s.t - t0_;
+    // force-loss TEST window: drop odom to simulate an OKVIS stall (-> stale-gap).
+    if (force_loss_start_ >= 0.0 && rel >= force_loss_start_ && rel < force_loss_end_)
+      return;
+    // a stale-gap since the last accepted sample = tracking loss. Seal the current
+    // submap (so the loss sits at a boundary = a branch) THEN flag the next chain
+    // edge SOFT (its placement across the gap is dead-reckoned, not trustworthy).
+    if (last_odom_t_ >= 0.0 && s.t - last_odom_t_ > stale_thresh_) {
+      RCLCPP_WARN(get_logger(),
+                  "TRACKING LOSS: odom stale-gap %.2fs @t=%.1f -> seal+branch (soft edge)",
+                  s.t - last_odom_t_, rel);
+      if (!map_dir_.empty() && pending_kfs_.size() >= 2) sealSubmap();
+      loss_in_segment_ = true;
+    }
+    last_odom_t_ = s.t;
 
     const bool first = !chain_.hasKeyframe();
     const auto edge = chain_.feed(s);
@@ -791,11 +814,13 @@ class ProviderFusionNode : public rclcpp::Node {
       // SOFT if the segment was visually degraded — low landmark yield (the odom
       // across it is less trustworthy, OKVIS covariance was inflated) or images
       // missing → placement is approximate, don't trust its geometry. Else tight ODOM.
-      const bool soft = seg_lms < anchor_soft_lm_ || (kf_no_image_ - seg_kf_no_image_) > 0;
+      const bool soft = loss_in_segment_ || seg_lms < anchor_soft_lm_ ||
+                        (kf_no_image_ - seg_kf_no_image_) > 0;
       anchor_edges_.push_back(AnchorEdge{
           prev_anchor_id_, sm.id, prev_anchor_.inverse() * sm.anchor,
           soft ? anchor_soft_sigma_t_ : anchor_chain_sigma_t_,
           soft ? anchor_soft_sigma_r_ : anchor_chain_sigma_r_, soft ? 1 : 0});
+      loss_in_segment_ = false;  // consumed by this chain edge
     }
     prev_anchor_ = sm.anchor;
     prev_anchor_id_ = sm.id;
@@ -948,6 +973,9 @@ class ProviderFusionNode : public rclcpp::Node {
   std::uint64_t next_submap_id_ = 0, next_landmark_id_ = 0;
   std::string map_dir_;
   int kf_per_submap_ = 50;
+  double stale_thresh_ = 0.5, force_loss_start_ = -1.0, force_loss_end_ = -1.0;
+  double t0_ = -1.0, last_odom_t_ = -1.0;
+  bool loss_in_segment_ = false;   // a stale-gap occurred -> next chain edge is SOFT
   int kf_no_image_ = 0, loops_closed_ = 0;
   double image_tol_s_ = 0.06, image_buffer_s_ = 0.6;
 

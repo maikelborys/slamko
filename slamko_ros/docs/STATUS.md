@@ -57,6 +57,28 @@ signal is the provider covariance/tracking-quality (Marginal/Lost) — wire when
 health probe is plumbed. A true odom-stale branch (cam+IMU both out) hasn't been
 exercised yet (the bno_ab blackouts are ~1.15s, OKVIS IMU-bridges them).
 
+## 2026-06-19 — never-lost branch supervisor (loss detection -> seal+branch+soft)
+
+provider_fusion_node now detects tracking loss and branches (R-C, the user's
+jump-scenario). In onOdometry: an odom **stale-gap** > `stale_gap_s` (0.5) since the
+last accepted sample = a loss -> seal the current submap early (the loss sits at a
+branch boundary) -> flag the next chain edge **SOFT** (its placement across the gap
+is dead-reckoned). A `force_loss_start/end` test window drops odom to simulate it
+(bench: `FORCE_LOSS="30,33"`; launch args forwarded).
+
+**Validated** (CASA1_Suave golden, rate 0.5): fired on REAL OKVIS stale-gaps
+(1.22s, 0.53s, 1.29s, 1.20s — the bag has natural dropouts) -> 4 SOFT edges at those
+branch points + 5 odom + 3 HARD reconnect welds (`results/r0/multimap_branch.png`).
+**Real-time x1**: runs WITHOUT diverging (extent ~10 m, not >>30 m) but drops ~half
+the frames (2195 vs 4340 poses) on the 8 GB GPU (OKVIS-CNN + XFeat + VPR contention)
+— the 60 fps recording gives enough redundancy to stay coherent; full-rate fidelity
+needs more GPU / INT8 / two-pass.
+
+**Caveat / next (task #10):** the soft edge's relative pose is still the
+(degraded) OKVIS odom across the gap; a TRUE odom-stale branch needs a separate DR
+source (raw IMU / wheel / GPS) — the soft edge would otherwise be identity+huge-cov.
+Loss signal is the stale-gap; wire the covariance/tracking-quality probe too.
+
 ## 2026-06-12 — P-A shipped: provider_fusion_node + loose chain over OKVIS2-X
 
 First real content of the composition root (MASTER_PLAN v2 §8 P-A — the

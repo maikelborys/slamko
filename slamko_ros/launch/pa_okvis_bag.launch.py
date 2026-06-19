@@ -66,6 +66,8 @@ def setup(context):
             'prior_map_dir': LaunchConfiguration('prior_map_dir').perform(context),
             'traj_global_path': out_dir + '/global.tum',
             'traj_graph_path':  out_dir + '/graph.tum',
+            'force_loss_start': float(LaunchConfiguration('force_loss_start').perform(context)),
+            'force_loss_end':   float(LaunchConfiguration('force_loss_end').perform(context)),
         }])
 
     return [okvis, fusion]
@@ -84,6 +86,10 @@ def generate_launch_description():
             description='Capture KF images -> EigenPlaces -> sealed VPR submaps (P-B).'),
         DeclareLaunchArgument('prior_map_dir', default_value='',
             description='Prior smap dir for cross-session relocalization (re-anchor).'),
+        DeclareLaunchArgument('force_loss_start', default_value='-1.0',
+            description='Test: drop odom from this bag-relative time [s] (-1 = off).'),
+        DeclareLaunchArgument('force_loss_end', default_value='-1.0',
+            description='Test: ... until this bag-relative time [s] -> seal+branch+soft edge.'),
         DeclareLaunchArgument('okvis_config',
             default_value=os.path.expanduser(
                 '~/coding/OKVIS2-X/src/OKVIS2-X/config/rsD455_map_odom'),
