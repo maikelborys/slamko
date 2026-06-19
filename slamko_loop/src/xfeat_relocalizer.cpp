@@ -189,10 +189,79 @@ void XFeatRelocalizer::addSubMap(const SubMap& submap) {
   }
 }
 
-RelocResult XFeatRelocalizer::relocalize(const Features& query) const {
+RelocResult XFeatRelocalizer::verifyAgainst(
+    const Features& query, const std::vector<std::uint64_t>& cand) const {
   RelocResult best;  // found = false
   int best_inliers = 0;
+  for (const auto& e : db_) {
+    if (!cand.empty() &&
+        std::find(cand.begin(), cand.end(), e.id) == cand.end())
+      continue;  // not a candidate this query
 
+    SE3 T_sl_cam;
+    int inliers = 0;
+    int putative = 0;  // # correspondences fed to PnP (for the confidence ratio)
+
+    // Brute-force NN verify FIRST. When it works (easy revisit, small viewpoint gap) it
+    // matches the query against the whole landmark cloud → hundreds of correspondences →
+    // a well-constrained PnP, MORE accurate than LighterGlue's sparse synthetic-view
+    // matches. So it stays the default; LighterGlue is the RESCUE below.
+    {
+      std::vector<Eigen::Vector2d> uv;
+      std::vector<Eigen::Vector3d> X;
+      matchDescriptors(query, e.desc, e.pos, cfg_.match_ratio, cfg_.mutual_check, uv, X);
+      if (static_cast<int>(X.size()) >= cfg_.min_inliers &&
+          pnpRansac(X, uv, cfg_, T_sl_cam, inliers) &&
+          // Precision gate (OKVIS-style): inlier RATIO separates a true place from a
+          // coincidental match once the Lowe ratio is permissive.
+          !(cfg_.min_inlier_ratio > 0.0 &&
+            inliers < cfg_.min_inlier_ratio * static_cast<double>(X.size())))
+        putative = static_cast<int>(X.size());
+      else
+        inliers = 0;  // brute-force could not verify this candidate
+    }
+
+    // LighterGlue RESCUE: only when brute-force failed this candidate — the hard revisit
+    // (large viewpoint/time gap) where XFeat-NN gives <1% inliers but the learned matcher
+    // can still find the geometry. Never overrides a good brute-force weld.
+    if (inliers == 0 && lg_) {
+      int lg_inl = 0, lg_put = 0;
+      SE3 lg_T;
+      if (lightGlueVerify(query, e, lg_T, lg_inl, lg_put)) {
+        T_sl_cam = lg_T;
+        inliers = lg_inl;
+        putative = lg_put;
+      }
+    }
+    if (inliers == 0) continue;          // neither path verified this candidate
+    if (inliers <= best_inliers) continue;
+
+    best_inliers = inliers;
+    best.found = true;
+    best.submap_id = e.id;
+    // Camera→body: body pose in sealed-local = (cam in sl) · (body in cam).
+    best.T_query_match = T_sl_cam * cfg_.body_T_cam.inverse();
+    best.confidence = static_cast<double>(inliers) /
+                      static_cast<double>(std::max<int>(1, putative));
+    best.num_inliers = inliers;
+  }
+  return best;
+}
+
+RelocResult XFeatRelocalizer::relocalizeNear(const Features& query,
+                                             const SE3& T_query_global,
+                                             double radius) const {
+  // Distance-ranked candidates (anchor within `radius` of the query's estimated global
+  // pose) — VPR-independent, so it surfaces revisits the cosine retrieval never ranks.
+  std::vector<std::uint64_t> cand;
+  const Eigen::Vector3d p = T_query_global.translation();
+  for (const auto& e : db_)
+    if ((e.anchor.translation() - p).norm() <= radius) cand.push_back(e.id);
+  if (cand.empty()) return RelocResult{};  // nothing nearby → region stays dangling
+  return verifyAgainst(query, cand);
+}
+
+RelocResult XFeatRelocalizer::relocalize(const Features& query) const {
   // Candidate pre-selection: PnP-verify only the most promising submaps. Empty =
   // fall back to ALL submaps, so recall is never reduced, only hopeless submaps skipped.
   std::vector<std::uint64_t> cand;
@@ -234,60 +303,7 @@ RelocResult XFeatRelocalizer::relocalize(const Features& query) const {
   if (cand.empty() && cfg_.use_bow && !vocab_.empty() && query.hasDescriptors())
     cand = bow_db_.query(vocab_.transform(query.descriptors), cfg_.bow_top_k);
 
-  for (const auto& e : db_) {
-    if (!cand.empty() &&
-        std::find(cand.begin(), cand.end(), e.id) == cand.end())
-      continue;  // not a BoW candidate this query
-
-    SE3 T_sl_cam;
-    int inliers = 0;
-    int putative = 0;  // # correspondences fed to PnP (for the confidence ratio)
-
-    // Brute-force NN verify FIRST. When it works (easy revisit, small viewpoint gap) it
-    // matches the query against the whole landmark cloud → hundreds of correspondences →
-    // a well-constrained PnP, MORE accurate than LighterGlue's sparse synthetic-view
-    // matches. So it stays the default; LighterGlue is the RESCUE below.
-    {
-      std::vector<Eigen::Vector2d> uv;
-      std::vector<Eigen::Vector3d> X;
-      matchDescriptors(query, e.desc, e.pos, cfg_.match_ratio, cfg_.mutual_check, uv, X);
-      if (static_cast<int>(X.size()) >= cfg_.min_inliers &&
-          pnpRansac(X, uv, cfg_, T_sl_cam, inliers) &&
-          // Precision gate (OKVIS-style): inlier RATIO separates a true place from a
-          // coincidental match once the Lowe ratio is permissive.
-          !(cfg_.min_inlier_ratio > 0.0 &&
-            inliers < cfg_.min_inlier_ratio * static_cast<double>(X.size())))
-        putative = static_cast<int>(X.size());
-      else
-        inliers = 0;  // brute-force could not verify this candidate
-    }
-
-    // LighterGlue RESCUE: only when brute-force failed this candidate — the hard revisit
-    // (large viewpoint/time gap) where XFeat-NN gives <1% inliers but the learned matcher
-    // can still find the geometry. Never overrides a good brute-force weld, so the build
-    // is guaranteed ≥ the brute-force baseline (it only ADDS closures NN missed).
-    if (inliers == 0 && lg_) {
-      int lg_inl = 0, lg_put = 0;
-      SE3 lg_T;
-      if (lightGlueVerify(query, e, lg_T, lg_inl, lg_put)) {
-        T_sl_cam = lg_T;
-        inliers = lg_inl;
-        putative = lg_put;
-      }
-    }
-    if (inliers == 0) continue;          // neither path verified this candidate
-    if (inliers <= best_inliers) continue;
-
-    best_inliers = inliers;
-    best.found = true;
-    best.submap_id = e.id;
-    // Camera→body: body pose in sealed-local = (cam in sl) · (body in cam).
-    // body in cam = body_T_cam⁻¹ (body_T_cam == T_BS, cam→body).
-    best.T_query_match = T_sl_cam * cfg_.body_T_cam.inverse();
-    best.confidence = static_cast<double>(inliers) /
-                      static_cast<double>(std::max<int>(1, putative));
-    best.num_inliers = inliers;
-  }
+  const RelocResult best = verifyAgainst(query, cand);
   // V.2 diagnostic: one greppable line per VPR-eligible reloc call. Tells us, on a long
   // traversal (magistrale return), (a) whether the right submap surfaces in top-N, (b)
   // the cosine range (low → model OOD; high+wrong-id → granularity still aggregating),

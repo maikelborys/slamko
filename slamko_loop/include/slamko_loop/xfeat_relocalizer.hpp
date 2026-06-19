@@ -121,6 +121,14 @@ class XFeatRelocalizer : public Relocalizer {
   // Match query → each submap, PnP-RANSAC verify, return the best (most inliers).
   RelocResult relocalize(const Features& query) const override;
 
+  // PROXIMITY detection (item E): verify against prior submaps whose anchor is within
+  // `radius` of `T_query_global` — VPR-INDEPENDENT, so it recovers revisits the cosine
+  // retrieval misses (opposite-heading / motion-blur recall-dead zones). Requires the
+  // session to be roughly localized (caller supplies the query's estimated global pose).
+  // Empty result (found=false) if no submap is nearby — that region stays dangling.
+  RelocResult relocalizeNear(const Features& query, const SE3& T_query_global,
+                             double radius) const;
+
   std::size_t numSubMaps() const { return db_.size(); }
 
  private:
@@ -155,6 +163,12 @@ class XFeatRelocalizer : public Relocalizer {
   // each, run PnP-RANSAC on the best, return inliers (0 on no usable result).
   bool lightGlueVerify(const Features& query, const Entry& e, SE3& T_sl_cam_out,
                        int& inliers_out, int& putative_out) const;
+
+  // Shared geometric verify (brute-force NN + LighterGlue rescue) over a candidate
+  // submap-id set (empty = all submaps). Returns the best (most inliers). Used by both
+  // relocalize() (VPR-ranked candidates) and relocalizeNear() (distance-ranked).
+  RelocResult verifyAgainst(const Features& query,
+                            const std::vector<std::uint64_t>& cand) const;
 
   XFeatRelocConfig    cfg_;
   std::vector<Entry>  db_;

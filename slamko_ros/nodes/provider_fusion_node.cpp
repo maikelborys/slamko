@@ -329,6 +329,9 @@ class ProviderFusionNode : public rclcpp::Node {
       // Jumps below this apply as a prior factor (legit drift correction); bigger jumps
       // fall through to the 2-vote rigid-rebase alias defense (cross-FLOOR = 2.6-8 m).
       xsession_prior_jump_max_ = declare_parameter("xsession_prior_jump_max", 2.0);
+      // E (proximity detection): radius [m] around the estimated global pose within which
+      // prior submaps are geometrically verified independent of VPR retrieval. 0 = off.
+      proximity_radius_ = declare_parameter("proximity_radius", 3.0);
       min_reloc_period_s_ = declare_parameter("min_reloc_period_s", 0.5);
       lg_model_path_ = declare_parameter(
           "lightglue_model_path",
@@ -896,8 +899,19 @@ class ProviderFusionNode : public rclcpp::Node {
   void tryRelocalize(std::uint64_t q_id, double t, const slamko::Features& query) {
     if (reloc_ && reloc_->numSubMaps() > 0)
       processRelocResult(reloc_->relocalize(query), q_id, t);
-    if (reloc_prior_)
+    if (reloc_prior_) {
       processRelocResult(reloc_prior_->relocalize(query), q_id, t);
+      // E — PROXIMITY DETECTION: once roughly localized, ALSO verify against prior submaps
+      // NEAR our current estimated global pose (VPR-independent). This recovers the
+      // recall-dead zone (jolts/motion-blur/opposite-heading) the cosine retrieval misses,
+      // filling the cross-session match gap so the prior factors (A) can correct the drift
+      // there. Where nothing matches, the region honestly stays dangling.
+      if (localized_ && proximity_radius_ > 0.0 && graph_.hasNode(q_id)) {
+        const slamko::SE3 T_q_global = T_global_map_ * graph_.pose(q_id);
+        processRelocResult(
+            reloc_prior_->relocalizeNear(query, T_q_global, proximity_radius_), q_id, t);
+      }
+    }
   }
 
   void processRelocResult(const slamko::RelocResult& r, std::uint64_t q_id, double t) {
@@ -1507,6 +1521,7 @@ class ProviderFusionNode : public rclcpp::Node {
   double xsession_prior_sigma_t_ = 0.15, xsession_prior_sigma_r_ = 0.08;
   double xsession_prior_jump_max_ = 2.0;
   int xsession_priors_added_ = 0;
+  double proximity_radius_ = 3.0;   // E: proximity-detection radius [m] (0 = off)
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_image_, sub_image_r_;

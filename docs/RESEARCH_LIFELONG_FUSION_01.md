@@ -69,6 +69,20 @@ exist. **They did NOT collapse the doubling** — root cause found:
   match gap → prior factors there → drift corrects. (RTAB-Map's `RGBD/ProximityBySpace`, the exact
   answer to slamko's viewpoint/recall-dead-zone problem.) **NEXT = implement E.**
 
+## E SHIPPED + VALIDATED (2026-06-19) — proximity detection works
+`XFeatRelocalizer::relocalizeNear(query, T_query_global, radius)` (refactored the per-candidate verify
+into `verifyAgainst`; candidates picked by anchor-distance, NOT VPR cosine) + wired in `tryRelocalize`
+(`proximity_radius` default 3 m) so once localized it ALSO geometric-verifies prior submaps near the
+estimated global pose. Feeds the existing `addPriorFactor` (A). **Controlled A-vs-A+E (same rate 0.5,
+stable OKVIS):** matches 15→45 (3×), **13 of them in the previously-EMPTY kf 271–776 recall-dead gap**
+(kf 273/593/600 etc); alignment to suave **median 0.68→0.48, mean 0.71→0.52, p90 1.41→1.01 (−28%)**;
+certainty (verified-vs-original) **24%→31%**. As predicted: the regions with real geometric overlap
+connect+align; the genuinely-overlapless excursions (bottom y=−7..−9) **stay DANGLING — honest, not a
+fake-coherent double**. This is the user's accepted model: some islands firm, some hang.
+**Remaining refinements:** #12 (inflate the loss-bridged soft edge by the DR-gate magnitude — B fixed
+the all-soft mislabeling but not yet the magnitude scaling); C (suppress duplicate-submap sealing in
+covered prior regions); D (redundant-submap culling backstop). E is the headline coherence unlock; done.
+
 ## Key sources
 ORB-SLAM3 Atlas (Campos 2021, arxiv 2007.11898) · maplab 1.0/2.0 (1711.10250, 2212.00654) · RTAB-Map
 (Labbé & Michaud, T-RO 2013 + JFR 2019; proximity detection, ReduceGraph, IncrementalMemory) ·
