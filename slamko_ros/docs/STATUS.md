@@ -1,6 +1,36 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
-<!-- validated: 2026-06-19 · tests: GAP-2 dup-suppression on CASA1_Suave revisit · -54% landmark growth (12.9k->5.9k), reloc intact (28 re-anchors) -->
+<!-- validated: 2026-06-19 · tests: GAP-2 maturation V1 — prior submaps REFINED on revisit (1805 lm nudged, size 9/9 unchanged) + 5-visit growth study -->
+
+## 2026-06-19 — GAP-2 maturation V1: prior map REFINED on revisit (task #4)
+
+**5-visit growth study first** (`scripts/lifelong_visits.sh`, `results/r01/lifelong/growth.png`):
+visiting the SAME house 5× against an ACCUMULATING prior, dup-suppression slows growth
+~58% (accumulated submaps 9→24 vs 9→45 without) but does NOT stop it — new submaps/visit
+stays ~4-5 (not →0). Root cause: blind-spot regions re-seal duplicates every visit because
+reloc RECALL is too sparse there to mark coverage (the known P-B bottleneck), and each
+duplicate is added to the prior. When reloc fires well (visit 3) growth nearly stops (1
+sealed, 7 suppressed). **Ceiling = reloc recall, not the suppression logic.**
+
+**Maturation V1** (`provider_fusion_node.cpp` `finalizeMaturation`): when a revisit segment
+is SUPPRESSED as a duplicate of a PRIOR submap, its landmarks (in the prior's global frame)
+are buffered keyed by that submap; at shutdown the prior archive is reloaded and each
+covered submap's EXISTING landmarks are REFINED toward the revisit observations (voxel
+nearest-match, position nudged by `mature_alpha`=0.2 toward the multi-session consensus —
+structure-only, descriptors/kf_obs untouched). Matured archive → `mature_out_dir`. Params
+`mature_enabled`, `mature_voxel_m`=0.06, `mature_alpha`=0.2.
+
+**Validated** (CASA1_Suave revisit, prior = pass-1 map): refined **1805 landmarks** across
+the **2 covered submaps** (3: 1356, 7: 449), mean shift **0.8-1.0 cm** (max 3.5 cm — sane
+nudge, not corruption); **all 9 submap sizes byte-for-byte identical landmark counts** (map
+matures, does NOT grow). Viz `results/r01/lifelong/maturation.png`.
+
+**Honest limit (V1 vs V2):** V1 refines existing positions only → it does NOT add the
+revisit's new descriptored landmarks, so it does NOT fix blind-spot reloc recall (the
+growth driver in the 5-visit study). V2 = merge revisit descriptors/landmarks into the
+prior submap (needs descriptor-block + kf_obs consistency — risk of corrupting the submap
+if done naively) to raise recall and converge growth to 0. That is the real bounded-growth
+closer (slamko_mapping P-C′+).
 
 ## 2026-06-19 — GAP-2 immortality brick: "don't re-map what you already see" (task #4)
 

@@ -236,6 +236,17 @@ class ProviderFusionNode : public rclcpp::Node {
       dup_min_inliers_ = declare_parameter("dup_min_inliers", 60);
       dup_cover_window_s_ = declare_parameter("dup_cover_window_s", 4.0);
       dup_cover_frac_ = declare_parameter("dup_cover_frac", 0.6);
+      // GAP-2 maturation (task #4 proper, V1): when a revisit segment is SUPPRESSED as a
+      // duplicate of a PRIOR submap, don't throw its geometry away — REFINE the prior
+      // submap's existing landmarks toward the multi-session consensus (cross-session
+      // averaging, structure-only). The prior map MATURES each visit without growing.
+      // V1 refines existing positions only (safe: descriptors/kf_obs untouched); adding
+      // new descriptored landmarks to fix blind-spot recall is V2. Matured archive is
+      // written to mature_out_dir (never clobbers the input prior unless pointed there).
+      mature_enabled_ = declare_parameter("mature_enabled", true);
+      mature_out_dir_ = declare_parameter("mature_out_dir", std::string(""));
+      mature_voxel_ = declare_parameter("mature_voxel_m", 0.06);
+      mature_alpha_ = declare_parameter("mature_alpha", 0.2);
       // Inter-map anchor edges (R1.1 hard / R1.3 soft): chain edge sigma between
       // consecutive submaps (good odometry) vs SOFT sigma when the segment crossed
       // a visual loss (dead-reckoning — approximate placement only). Hard = loop sigma.
@@ -267,6 +278,7 @@ class ProviderFusionNode : public rclcpp::Node {
                                : onnx_default.substr(0, onnx_default.rfind('/')) +
                                      "/lighterglue.pt");
       const auto prior_dir = declare_parameter("prior_map_dir", std::string(""));
+      prior_dir_ = prior_dir;  // kept for shutdown maturation (re-load + refine + re-save)
       if (!prior_dir.empty()) {
         if (slamko::loadSubMaps(prior_submaps_, prior_dir)) {
           for (const auto& sm : prior_submaps_) {
@@ -358,6 +370,7 @@ class ProviderFusionNode : public rclcpp::Node {
       RCLCPP_INFO(get_logger(),
                   "GAP-2 immortality: suppressed %d duplicate submap(s) of known ground "
                   "(map did not grow on revisited territory)", suppressed_dups_);
+    finalizeMaturation();
     if (provider_file_) std::fclose(provider_file_);
     if (global_file_) std::fclose(global_file_);
     if (dr_gate_file_) std::fclose(dr_gate_file_);
@@ -709,6 +722,17 @@ class ProviderFusionNode : public rclcpp::Node {
                     seg_covered_kfs_, seg_total_kfs_,
                     (unsigned long long)covered_by_submap_, suppressed_dups_ + 1);
         ++suppressed_dups_;
+        // GAP-2 maturation: instead of discarding this duplicate's geometry, buffer its
+        // landmarks (in the PRIOR's global frame) keyed by the prior submap that covers
+        // us — at shutdown they REFINE that prior submap's existing landmarks. Only for
+        // PRIOR submaps (in-session maturation is V2). T_global_map_ maps session->prior.
+        if (mature_enabled_ && prior_ids_.count(covered_by_submap_)) {
+          auto& buf = mature_buf_[covered_by_submap_];
+          for (const auto& r : pending_kfs_) {
+            const slamko::SE3 T_g_cam = T_global_map_ * graph_.pose(r.id) * body_T_cam_;
+            for (const auto& p : r.lm_pcam) buf.push_back(T_g_cam * p);
+          }
+        }
         pending_kfs_.clear();
         seg_total_kfs_ = seg_covered_kfs_ = 0;
       } else {
@@ -920,6 +944,61 @@ class ProviderFusionNode : public rclcpp::Node {
     covered_by_submap_ = sm;
   }
 
+  // GAP-2 maturation (shutdown): reload the prior archive and REFINE each covered prior
+  // submap's existing landmarks toward this session's revisit observations (cross-session
+  // averaging, structure-only — positions nudged by mature_alpha toward the multi-view
+  // consensus; descriptors/kf_obs untouched, map size UNCHANGED). The lifelong map
+  // improves where it was revisited, without growing. Matured archive -> mature_out_dir.
+  void finalizeMaturation() {
+    if (!mature_enabled_ || mature_buf_.empty() || prior_dir_.empty()) return;
+    std::vector<slamko::SubMap> pm;
+    if (!slamko::loadSubMaps(pm, prior_dir_)) {
+      RCLCPP_WARN(get_logger(), "maturation: could not reload prior from %s",
+                  prior_dir_.c_str());
+      return;
+    }
+    const double vox = mature_voxel_;
+    auto vkey = [vox](const Eigen::Vector3d& p) -> std::int64_t {
+      auto q = [vox](double x) { return (std::int64_t)std::llround(std::floor(x / vox)); };
+      const std::int64_t a = q(p.x()) & 0x1FFFFF, b = q(p.y()) & 0x1FFFFF,
+                         c = q(p.z()) & 0x1FFFFF;
+      return (a << 42) | (b << 21) | c;
+    };
+    int total_refined = 0, matured = 0;
+    for (auto& X : pm) {
+      auto it = mature_buf_.find(X.id);
+      if (it == mature_buf_.end() || X.landmarks.empty()) continue;
+      std::unordered_map<std::int64_t, std::vector<int>> cells;
+      for (int i = 0; i < (int)X.landmarks.size(); ++i)
+        cells[vkey(X.landmarks[i].position)].push_back(i);
+      const slamko::SE3 Xinv = X.anchor.inverse();
+      int refined = 0;
+      for (const auto& g : it->second) {
+        const Eigen::Vector3d pl = Xinv * g;  // prior-global -> X-local
+        auto ci = cells.find(vkey(pl));
+        if (ci == cells.end()) continue;
+        int best = -1;
+        double bd = vox * vox;
+        for (int idx : ci->second) {
+          const double d = (X.landmarks[idx].position - pl).squaredNorm();
+          if (d < bd) { bd = d; best = idx; }
+        }
+        if (best < 0) continue;
+        X.landmarks[best].position += mature_alpha_ * (pl - X.landmarks[best].position);
+        ++refined;
+      }
+      if (refined > 0) { total_refined += refined; ++matured; }
+    }
+    const std::string out =
+        mature_out_dir_.empty() ? (prior_dir_ + "_matured") : mature_out_dir_;
+    std::filesystem::create_directories(out);
+    if (slamko::saveSubMaps(pm, out))
+      RCLCPP_INFO(get_logger(),
+                  "GAP-2 maturation: refined %d landmarks across %d prior submap(s) "
+                  "(map size UNCHANGED) -> %s",
+                  total_refined, matured, out.c_str());
+  }
+
   void sealSubmap() {
     slamko::SubMap sm;
     sm.id = next_submap_id_++;
@@ -1117,6 +1196,11 @@ class ProviderFusionNode : public rclcpp::Node {
   int dup_min_inliers_ = 60, seg_total_kfs_ = 0, seg_covered_kfs_ = 0, suppressed_dups_ = 0;
   double dup_cover_window_s_ = 4.0, dup_cover_frac_ = 0.6, covered_until_t_ = -1.0;
   std::uint64_t covered_by_submap_ = 0;
+  // GAP-2 maturation: refine prior submaps with revisit obs at shutdown (task #4 proper).
+  bool mature_enabled_ = true;
+  double mature_voxel_ = 0.06, mature_alpha_ = 0.2;
+  std::string mature_out_dir_, prior_dir_;
+  std::unordered_map<std::uint64_t, std::vector<Eigen::Vector3d>> mature_buf_;
   int kf_no_image_ = 0, loops_closed_ = 0;
   double image_tol_s_ = 0.06, image_buffer_s_ = 0.6;
 
