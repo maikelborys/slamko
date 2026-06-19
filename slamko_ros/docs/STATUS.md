@@ -45,7 +45,23 @@ NOT eliminate them: indoors you pass WITHIN 30 cm of old-but-aged areas without 
 so any spatial dilation over-culls. Both reverted; the committed single-voxel cull (0.10/0.7) stays
 (safe: 0 false-cull). **The real plateau closer is FUSE-ON-CULL** — merge the leaked segment's NEW
 landmarks into the overlapping existing submap (ORB SearchAndFuse; needs descriptor/kf_obs-consistent
-merge), NOT spatial dilation. cull is drop-only today; fuse-on-cull is the next focused build.
+merge), NOT spatial dilation.
+
+**LANDMARK-LEVEL data-association cull SHIPPED (2026-06-19, commit 3ad33fa) — the real ORB bound.**
+Moved the cull from whole-submap to PER-LANDMARK inside the dedup phase: each merged landmark already
+in the global occupancy is dropped (known point), only genuinely-NEW points are kept + added to occ;
+a submap is dropped whole only if ≥`cull_redundant_frac` of its deduped landmarks were already mapped.
+This is ORB SearchAndFuse at landmark granularity (poses-fixed) — a PARTIAL revisit keeps its new
+sliver + drops the redundant bulk, so map CONTENT is bounded by AREA. Validated CASA1_Suave: fresh =
+9 submaps kept, 0 whole-culls, cross-submap seam dedup works (kept 1328 new / culled 574 per seam),
+6 loops; **a FULL revisit (visit 2) added only 8 landmarks (~94% landmark-growth cut).** Asymptote:
+occupancy is a voxel grid over a FINITE house → finite cells → after enough visits every reachable
+cell is filled → 0 new landmarks → PLATEAU (10 or 1000 visits converge to the same bounded map).
+**Honest residual = run-to-run FRAME DRIFT:** the single 0.10 m voxel is intolerant, so visits with a
+poorer re-anchor (drift ~voxel) leak 1.2–1.6 k landmarks (visits 3/5) while a good-align visit leaks 8.
+The drift envelope still saturates (bounded) but the plateau is higher + noisier than ideal. Next
+lever: reduce drift (better per-submap re-anchor) or a modestly coarser cull voxel (drift-tolerant
+without the 30 cm 3×3×3 over-cull that was rejected).
 
 ## 2026-06-19 — GAP-2 maturation V1: prior map REFINED on revisit (task #4)
 
