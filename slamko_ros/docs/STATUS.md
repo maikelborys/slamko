@@ -1,6 +1,42 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
-<!-- validated: 2026-06-19 · tests: live gate PASS (CASA1_Suave golden, dedup) · 80k->13k lm, 6 loops closed (vs 2), inliers 75-123 (vs 59-63) -->
+<!-- validated: 2026-06-19 · tests: DR-gate instrument live on CASA1_Suave (3 gaps 1/3/6 s) · OKVIS bridge d_rot <=4.2deg even @6 s loss -->
+
+## 2026-06-19 — R0.1 DR-gate instrument: OKVIS across-gap motion vs independent DR (task #10)
+
+**The task #10 reframe (load-bearing):** the soft chain edge is NOT identity+huge-cov
+during a loss — OKVIS internally bridges the gap with its own IMU (measured: never
+resets, holds warm state). So an independent dead-reckoning source's job is not to
+*fill* the soft edge but to **GATE** it: a second, independent opinion on the
+across-gap motion. Disagreement ⇒ OKVIS's bridge is suspect ⇒ that is the R0
+"never ingest garbage" gate (PLAN_ROBUSTNESS_01 ordered R0 gates **before** R1.1
+anchor edges). This pass builds the instrument and runs R0.1 (observe, don't gate yet).
+
+**What landed** (`provider_fusion_node.cpp`): an independent DR channel — `onImu`
+integrates **gyro only** (world←body SO3; accel is DOUBLED on bno_ab bags, never
+touched) from `/camera/camera/imu`; translation comes from **coasting** the last
+trustworthy OKVIS body twist. At every stale-gap the across-gap OKVIS relative
+motion is compared to the DR estimate and logged to `<out>/dr_gate.csv`
+(`rel_t,gap_s,d_rot_deg,d_trans_m,okvis_trans_m,coast_trans_m`). Pure instrumentation
+— zero behavior change. Viz `scripts/plot_dr_gate.py` (`results/r01/dr_gate.png`).
+
+**Validated** (CASA1_Suave, rate 0.5, FORCE_LOSS sweep + natural gaps):
+
+| gap | OKVIS trans | coast trans | **d_rot** | d_trans |
+|---|---|---|---|---|
+| 1.05 s (natural) | 0.49 m | 0.91 m | **2.5°** | 0.45 m |
+| 3.03 s (forced)  | 1.39 m | 1.85 m | **4.2°** | 1.07 m |
+| 6.02 s (forced)  | 1.53 m | 3.29 m | **1.3°** | 2.05 m |
+
+**Finding:** rotation is the **trustworthy gate channel** — gyro-vs-OKVIS disagrees
+only **1.3–4.2°** even over a **6 s** loss ⇒ OKVIS's IMU-bridge rotation is sound;
+a provisional R0 gate at ~15° has wide margin (correctly PASSes all three). The
+**translation coast is too crude to gate on** — constant-velocity over-shoots on a
+curving path (3.29 vs 1.53 m @6 s is the model, not a broken bridge). Upper gate
+threshold still needs a **negative** (a genuinely broken bridge) — OKVIS won't
+produce one naturally; next R0.1 step is an adversarial injection. **NOT a regression:**
+the bench's P-A fused-vs-provider gate "FAILs" by design with VPR on (loops correct
+the fused trajectory away from raw provider).
 
 ## 2026-06-19 — R0.1 map cleanup: ORB-SLAM dedup+cull adopted (task #9)
 

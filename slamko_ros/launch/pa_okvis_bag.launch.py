@@ -68,6 +68,8 @@ def setup(context):
             'traj_graph_path':  out_dir + '/graph.tum',
             'force_loss_start': float(LaunchConfiguration('force_loss_start').perform(context)),
             'force_loss_end':   float(LaunchConfiguration('force_loss_end').perform(context)),
+            'imu_topic':    '/camera/camera/imu',
+            'dr_gate_path': out_dir + '/dr_gate.csv',
         }])
 
     return [okvis, fusion]

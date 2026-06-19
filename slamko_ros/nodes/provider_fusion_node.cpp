@@ -47,6 +47,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 
@@ -128,6 +129,36 @@ class ProviderFusionNode : public rclcpp::Node {
     sub_odom_ = create_subscription<nav_msgs::msg::Odometry>(
         topic, qos,
         std::bind(&ProviderFusionNode::onOdometry, this, std::placeholders::_1));
+
+    // ----- R0.1 instrument: an INDEPENDENT dead-reckoning channel that GATES the
+    // across-gap motion OKVIS reports. OKVIS internally bridges a tracking loss with
+    // its own IMU (measured 2026-06-19: never resets, holds warm state) — so the
+    // soft chain edge is already an IMU-bridged pose, NOT identity. The value of a
+    // SECOND, independent DR is to GATE that bridge: if OKVIS's across-gap relative
+    // motion disagrees with our gyro-integrated rotation + last-velocity coasting,
+    // OKVIS's bridge is suspect (the R0 "never ingest garbage" gate). This pass only
+    // MEASURES the disagreement (-> dr_gate.csv); the empirical distribution sets the
+    // gate threshold (R0.1 -> R0). GYRO-ONLY on purpose: bno_ab camera-IMU accel is
+    // DOUBLED on these bags, so we never integrate accel — coasting uses the OKVIS
+    // body twist (its last trustworthy velocity), not raw accel.
+    imu_topic_ = declare_parameter("imu_topic", std::string("/camera/camera/imu"));
+    dr_gate_path_ = declare_parameter("dr_gate_path", std::string(""));
+    if (!imu_topic_.empty()) {
+      auto imu_qos = rclcpp::QoS(rclcpp::KeepLast(200)).durability_volatile();
+      if (declare_parameter("imu_best_effort", true)) imu_qos.best_effort();
+      else imu_qos.reliable();
+      sub_imu_ = create_subscription<sensor_msgs::msg::Imu>(
+          imu_topic_, imu_qos,
+          std::bind(&ProviderFusionNode::onImu, this, std::placeholders::_1));
+      if (!dr_gate_path_.empty()) {
+        dr_gate_file_ = std::fopen(dr_gate_path_.c_str(), "w");
+        if (dr_gate_file_)
+          std::fprintf(dr_gate_file_,
+                       "rel_t,gap_s,d_rot_deg,d_trans_m,okvis_trans_m,coast_trans_m\n");
+      }
+      RCLCPP_INFO(get_logger(), "DR gate instrument on: imu=%s csv=%s",
+                  imu_topic_.c_str(), dr_gate_path_.c_str());
+    }
 
     const double tf_rate = declare_parameter("tf_rate_hz", 30.0);
     tf_timer_ = create_wall_timer(
@@ -314,9 +345,25 @@ class ProviderFusionNode : public rclcpp::Node {
     if (fused_file_) std::fclose(fused_file_);
     if (provider_file_) std::fclose(provider_file_);
     if (global_file_) std::fclose(global_file_);
+    if (dr_gate_file_) std::fclose(dr_gate_file_);
   }
 
  private:
+  // Independent gyro-only orientation integration (world<-body). Drifts slowly
+  // (gyro bias), but across a SHORT loss gap (<~3 s) the integrated rotation is
+  // accurate — that is exactly the window we gate. Accel is NOT touched (doubled
+  // on bno_ab); translation comes from coasting the OKVIS body twist.
+  void onImu(const sensor_msgs::msg::Imu::SharedPtr m) {
+    const double t = rclcpp::Time(m->header.stamp).seconds();
+    if (last_imu_t_ < 0.0) { last_imu_t_ = t; return; }
+    const double dt = t - last_imu_t_;
+    last_imu_t_ = t;
+    if (dt <= 0.0 || dt > 0.2) return;  // drop reorders / large holes (don't integrate junk)
+    const Eigen::Vector3d w(m->angular_velocity.x, m->angular_velocity.y,
+                            m->angular_velocity.z);
+    dr_R_ = dr_R_ * slamko::SO3::exp(w * dt);
+  }
+
   void onOdometry(const nav_msgs::msg::Odometry::SharedPtr msg) {
     slamko::ProviderSample s;
     s.t = rclcpp::Time(msg->header.stamp).seconds();
@@ -334,13 +381,36 @@ class ProviderFusionNode : public rclcpp::Node {
     // submap (so the loss sits at a boundary = a branch) THEN flag the next chain
     // edge SOFT (its placement across the gap is dead-reckoned, not trustworthy).
     if (last_odom_t_ >= 0.0 && s.t - last_odom_t_ > stale_thresh_) {
+      const double gap = s.t - last_odom_t_;
+      // R0.1 GATE measurement: how far does OKVIS's across-gap motion (its own IMU
+      // bridge) sit from an INDEPENDENT estimate? Rotation from our gyro integration;
+      // translation from coasting the last trustworthy OKVIS body velocity. Big
+      // disagreement => OKVIS's bridge is suspect => this segment is a gate candidate.
+      const slamko::SE3 T_rel_okvis = last_odom_T_.inverse() * s.T_OB;
+      const slamko::SO3 R_rel_dr = dr_R_at_last_odom_.inverse() * dr_R_;
+      const Eigen::Vector3d t_coast = last_odom_v_ * gap;  // first-order coast, before-body frame
+      const double d_rot_deg =
+          (T_rel_okvis.so3().inverse() * R_rel_dr).log().norm() * 180.0 / M_PI;
+      const double d_trans = (T_rel_okvis.translation() - t_coast).norm();
       RCLCPP_WARN(get_logger(),
-                  "TRACKING LOSS: odom stale-gap %.2fs @t=%.1f -> seal+branch (soft edge)",
-                  s.t - last_odom_t_, rel);
+                  "TRACKING LOSS: odom stale-gap %.2fs @t=%.1f -> seal+branch (soft edge) "
+                  "| DR gate: d_rot=%.1fdeg d_trans=%.2fm (okvis=%.2fm coast=%.2fm)",
+                  gap, rel, d_rot_deg, d_trans, T_rel_okvis.translation().norm(),
+                  t_coast.norm());
+      if (dr_gate_file_) {
+        std::fprintf(dr_gate_file_, "%.3f,%.3f,%.3f,%.4f,%.4f,%.4f\n", rel, gap,
+                     d_rot_deg, d_trans, T_rel_okvis.translation().norm(), t_coast.norm());
+        std::fflush(dr_gate_file_);
+      }
       if (!map_dir_.empty() && pending_kfs_.size() >= 2) sealSubmap();
       loss_in_segment_ = true;
     }
     last_odom_t_ = s.t;
+    // snapshot the last trustworthy state for the NEXT gap's DR comparison.
+    last_odom_T_ = s.T_OB;
+    last_odom_v_ = Eigen::Vector3d(msg->twist.twist.linear.x, msg->twist.twist.linear.y,
+                                   msg->twist.twist.linear.z);
+    dr_R_at_last_odom_ = dr_R_;
     // OKVIS-reported degraded tracking (covariance inflated, Marginal/Lost) also
     // marks the segment SOFT — the principled signal (not just a landmark proxy).
     if (s.cov(0, 0) + s.cov(1, 1) + s.cov(2, 2) > cov_soft_thresh_) loss_in_segment_ = true;
@@ -982,6 +1052,15 @@ class ProviderFusionNode : public rclcpp::Node {
   double stale_thresh_ = 0.5, force_loss_start_ = -1.0, force_loss_end_ = -1.0;
   double cov_soft_thresh_ = 0.01;  // OKVIS pos-cov trace -> degraded (Marginal/Lost)
   double t0_ = -1.0, last_odom_t_ = -1.0;
+  // R0.1 independent DR-gate channel (gyro-only orientation + coasting translation).
+  std::string imu_topic_, dr_gate_path_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
+  std::FILE* dr_gate_file_ = nullptr;
+  slamko::SO3 dr_R_;                 // integrated world<-body orientation (gyro)
+  slamko::SO3 dr_R_at_last_odom_;    // its value at the last accepted odom sample
+  slamko::SE3 last_odom_T_;          // last accepted OKVIS pose (pre-gap snapshot)
+  Eigen::Vector3d last_odom_v_ = Eigen::Vector3d::Zero();  // last OKVIS body velocity
+  double last_imu_t_ = -1.0;
   bool loss_in_segment_ = false;   // a stale-gap occurred -> next chain edge is SOFT
   int kf_no_image_ = 0, loops_closed_ = 0;
   double image_tol_s_ = 0.06, image_buffer_s_ = 0.6;
