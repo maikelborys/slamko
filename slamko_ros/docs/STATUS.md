@@ -25,12 +25,20 @@ it bounds the map by AREA regardless of VPR recall. `cull_enabled`=false restore
 | **fresh pass** (no prior, SAFETY) | 9 (full map) | **0** | forward motion never false-culls |
 | **revisit** (prior=fresh map, EFFICACY) | **0** | 9 | revisit adds NOTHING — map bounded by area |
 
-Reloc intact on the revisit (34 re-anchors), fused-vs-provider PASS (0.000 m). **The plateau:
-30 visits → ~9 submaps (house content), flat — vs ~112 without.** Combined with dup-suppression
-(appearance, live) + maturation (refine prior), slamko now has BOTH ORB-SLAM nets: reuse + cull.
-**Honest limit:** cull is drop-only (the redundant submap's fresh observations are discarded, not
-fused into the prior — fusion/maturation-on-cull is the next refinement); occupancy uses the
-current `T_global_map_` (sub-cm stable post-re-anchor; frame error fails SAFE = keep, never false-cull).
+Reloc intact on the revisit (34 re-anchors), fused-vs-provider PASS (0.000 m). Combined with
+dup-suppression (appearance, live) + maturation (refine prior), slamko now has BOTH ORB-SLAM nets:
+reuse + cull.
+
+**HONEST multi-visit result (correction — the single revisit's 0-kept was a best-case alignment).**
+A 4-visit cull-ON run (acc prior grows between visits) gives acc submaps 9→10→11→13→14 = **~1.25
+new submaps/visit** vs **3.56/visit WITHOUT cull → cull cuts growth ~65%** (30-visit projection ~45
+vs ~112), but it does **NOT fully flatten** at frac=0.7/voxel=0.10. Residual leak = segments where
+BOTH nets miss: appearance recall low AND geometric redundancy <0.7 (from `T_global_map_` frame
+drift + genuinely-new-viewpoint landmarks). `results/r02_cull/immortal_ceiling.png`. **To reach a
+true plateau:** (a) tune `cull_redundant_frac`/`cull_voxel_m` more aggressively (re-validate the
+fresh-pass-0-cull safety), and/or (b) **fuse-on-cull** — merge the leaked segment's NEW landmarks
+into the overlapping existing submap instead of keeping a whole new one (ORB SearchAndFuse; the
+real closer, needs descriptor/kf_obs-consistent merge). cull is drop-only today.
 
 ## 2026-06-19 — GAP-2 maturation V1: prior map REFINED on revisit (task #4)
 
