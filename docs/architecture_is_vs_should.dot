@@ -1,0 +1,83 @@
+// slamko architecture — IS (today) vs SHOULD-BE (immortal multi-map SLAM).
+// Color = status:  green=shipped/validated  yellow=partial/in-progress  red=MISSING (the gap)
+// Render:  dot -Tpng docs/architecture_is_vs_should.dot -o /tmp/slamko_arch.png
+digraph slamko {
+  rankdir=LR;
+  graph [fontname="Helvetica", fontsize=11, labelloc=t,
+         label="slamko — immortal multi-map SLAM: how it IS vs how it SHOULD be (2026-06-19)\lgreen = shipped   yellow = partial   red = MISSING gap\l"];
+  node  [fontname="Helvetica", fontsize=10, style="filled,rounded", shape=box];
+  edge  [fontname="Helvetica", fontsize=9, color="#555555"];
+
+  // ---- robots / sensors ----
+  subgraph cluster_robot {
+    label="any robot body"; style="rounded,dashed"; color="#999999";
+    robots [label="humanoid · cuadrúpedo\ndron · diferencial", fillcolor="#e8eef7"];
+  }
+  subgraph cluster_sensors {
+    label="sensors"; style="rounded,dashed"; color="#999999";
+    d455 [label="D455 stereo + IMU", fillcolor="#cfe8cf"];
+    bno  [label="BNO055 IMU + mag\n(compass)", fillcolor="#fdf3c7"];
+    gps  [label="GPS / GNSS", fillcolor="#f7cccc"];
+  }
+  robots -> d455 [style=invis];
+
+  // ---- provider (P-A) ----
+  subgraph cluster_vio {
+    label="slamko_vio  —  provider adapter (P-A ✅)"; style="rounded"; color="#3a7d3a";
+    okvis [label="OKVIS2-X (external)\npure VIO odom\nIMU-bridges loss ≤ ~6 s", fillcolor="#cfe8cf"];
+    reledge [label="relative KF edges\n+ covariance\n+ stale-gap probe", fillcolor="#cfe8cf"];
+    okvis -> reledge;
+  }
+  d455 -> okvis;
+  bno  -> drgate [style=dashed, label="gyro (DR)"];
+
+  // ---- fusion (P-A done; iSAM2 queued) ----
+  subgraph cluster_fusion {
+    label="slamko_fusion  —  loose chain pose-graph"; style="rounded"; color="#b58a00";
+    chain   [label="chain pose-graph\n(odom + loop edges)\nP-A ✅", fillcolor="#cfe8cf"];
+    isam    [label="iSAM2 poses-only\nincremental real-time\nP-C′ ⧖ queued", fillcolor="#fdf3c7"];
+    chain -> isam [style=dashed];
+  }
+  reledge -> chain;
+
+  // ---- loop / supervisor (the heart) ----
+  subgraph cluster_loop {
+    label="slamko_loop  —  Atlas + reloc + never-lost supervisor"; style="rounded"; color="#7d3a3a";
+    vpr     [label="VPR reloc\nEigenPlaces → XFeat+LighterGlue\n→ PnP   (P-B ✅)", fillcolor="#cfe8cf"];
+    consensus [label="loop consensus gate\n(PCM-lite, 3-vote)\nP-B ✅", fillcolor="#cfe8cf"];
+    branch  [label="branch supervisor\nstale-gap → seal → branch\nP-C 🟢", fillcolor="#cfe8cf"];
+    drgate  [label="DR-gate JUEZ\ngyro+coast vs OKVIS\n⟵ built today: instrument ✅\nbut NOT gating yet", fillcolor="#fdf3c7"];
+    hardedge [label="HARD edge = reversible anchor\nIN the graph (constrains opt)\nR1.1 ⧖ — today metadata-ONLY!", fillcolor="#f7cccc"];
+    softedge [label="SOFT edge\napprox dir (gyro yaw) + high cov\n+ compass anchor (task #3)\nR1.3 partial", fillcolor="#fdf3c7"];
+    atlas   [label="ATLAS: dangling islands\nNO edge when untrustworthy\n(teleport / garbage)\nR1 ✗ MISSING — always 1 chain today", fillcolor="#f7cccc"];
+    lifelong [label="LIFELONG memory mgmt\ncross-session dedup/merge +\nsummarization + out-of-core/tiling\nslamko_mapping P-C′+ ✗ MISSING", fillcolor="#f7cccc"];
+
+    vpr -> consensus -> hardedge;
+    branch -> drgate;
+    drgate -> atlas    [label="discrepa → isla"];
+    drgate -> softedge [label="concuerda → blanda"];
+    hardedge -> atlas  [label="loop cose isla colgada", style=dashed];
+  }
+  chain -> vpr;
+  chain -> branch;
+  hardedge -> isam [style=dashed, constraint=false];
+  gps -> hardedge [style=dashed, label="P-D anchor"];
+  bno -> softedge [style=dashed, label="compass yaw\nP-D"];
+
+  // ---- ros bridge ----
+  subgraph cluster_ros {
+    label="slamko_ros  —  composition root + bridge (✅)"; style="rounded"; color="#3a7d3a";
+    bridge [label="/map  /odom  /tf\n(map→odom→base)\nrviz viz", fillcolor="#cfe8cf"];
+  }
+  isam -> bridge;
+  atlas -> bridge [style=invis];
+  lifelong -> bridge [style=invis];
+
+  // ---- the two big gaps callout ----
+  gap1 [shape=note, fillcolor="#ffe0e0",
+        label="GAP 1 — true Atlas\nadd the 'no-edge → dangling island'\npath; DR-gate juez decides it.\nReconnect later by loop."];
+  gap2 [shape=note, fillcolor="#ffe0e0",
+        label="GAP 2 — immortality\n10× replay = 10× landmarks today.\nNeed cross-session merge +\nsummarization + out-of-core."];
+  atlas -> gap1 [style=dotted, dir=none, constraint=false];
+  lifelong -> gap2 [style=dotted, dir=none, constraint=false];
+}
