@@ -1,5 +1,23 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
+## 2026-06-19 — Viewpoint-aware cull: the recall coverage fix (bounded + omni-directional)
+
+Resolves the tension the viewpoint reframe exposed: the immortality cull bounds the map by
+DROPPING geometrically-redundant revisits — but a revisit from a NEW viewing direction (same 3D
+points, low VPR cosine = the opposite-facing blind spot) carries a descriptor the map needs for
+future recall from that direction. Fix: the cull now only fires when the segment's VIEWPOINT is
+already in the map — `seg_covered_kfs_ >= cull_vp_frac`=0.5 of its KFs matched known places by VPR
+(same direction). A new-direction revisit (not VPR-covered) is KEPT as a reloc anchor for that
+heading. Distinct viewing directions per place are finite → map stays bounded while becoming
+omni-directional. `cull_viewpoint_aware`=true (false = pure-geometric cull).
+
+**Validated** (CASA1_Suave 4-visit, same-bag = same-direction revisits): acc submaps 9→9→11→14→15
+(~1.5/visit) — **identical to the pure-geometric cull, NO regression**; reloc healthy (30–36
+re-anchors/visit). **Honest limit:** same-bag revisits are same-direction, so the viewpoint-keep
+NEVER fired here (all revisits VPR-covered → culled) — this validates NO-REGRESSION + the safe
+addition, but the positive recall gain (keeping a new direction) needs a multi-direction-revisit
+bag to demonstrate (not available; the mechanism is backed by the viewpoint root-cause measurement).
+
 ## 2026-06-19 — VPR-model A/B: de-risks the recall fix (EigenPlaces stays; tail needs dense matcher)
 
 The recall bottleneck is the VPR cosine cliff (failures at low cosine). Before swapping the

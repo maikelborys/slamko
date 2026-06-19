@@ -284,6 +284,10 @@ class ProviderFusionNode : public rclcpp::Node {
       // test coarsens; the stored-map dedup stays at lm_dedup_voxel_m=0.06).
       cull_redundant_frac_ = declare_parameter("cull_redundant_frac", 0.7);
       cull_min_lms_ = declare_parameter("cull_min_lms", 100);
+      // Viewpoint-aware cull (recall fix): keep geometrically-redundant revisits that bring a NEW
+      // viewing direction (low VPR coverage) as omni-directional reloc anchors; cull only same-view.
+      cull_viewpoint_aware_ = declare_parameter("cull_viewpoint_aware", true);
+      cull_vp_frac_ = declare_parameter("cull_vp_frac", 0.5);
       // Inter-map anchor edges (R1.1 hard / R1.3 soft): chain edge sigma between
       // consecutive submaps (good odometry) vs SOFT sigma when the segment crossed
       // a visual loss (dead-reckoning — approximate placement only). Hard = loop sigma.
@@ -1205,7 +1209,18 @@ class ProviderFusionNode : public rclcpp::Node {
     std::vector<int> raw_row(raw_p.size(), -1);   // raw idx -> merged row (-1 = culled)
     std::vector<std::pair<int, int>> rep;         // merged row -> representative (k,i)
     int row = 0, lm_culled_occ = 0;
-    const bool occ_cull = cull_enabled_ && !occ_.empty();
+    // VIEWPOINT-AWARE cull (the recall fix): only cull a geometrically-redundant revisit if its
+    // VIEWPOINT is already in the map — i.e. its keyframes matched known places by VPR
+    // (seg_covered_kfs_ high = same viewing direction). A revisit from a NEW direction (e.g.
+    // opposite-facing: same 3D points, but low VPR cosine -> NOT covered) is KEPT, so its
+    // descriptors become a reloc anchor for that direction. Recall failures are a viewpoint-
+    // COVERAGE gap (measured: same-heading revisits already match at floor 0.426; opposite-facing
+    // can't be matched by any descriptor/dense-matcher). Distinct viewing directions per place are
+    // finite -> the map stays bounded while becoming omni-directional. cull_viewpoint_aware=false
+    // restores pure-geometric culling.
+    const bool viewpoint_known = !cull_viewpoint_aware_ ||
+        (seg_total_kfs_ > 0 && seg_covered_kfs_ >= cull_vp_frac_ * seg_total_kfs_);
+    const bool occ_cull = cull_enabled_ && !occ_.empty() && viewpoint_known;
     for (auto& kv : cells) {
       auto& idxs = kv.second;
       if ((int)idxs.size() < lm_min_obs_) continue;     // CULL: seen < lm_min_obs_ times
@@ -1385,6 +1400,8 @@ class ProviderFusionNode : public rclcpp::Node {
   bool cull_enabled_ = true;
   double cull_voxel_ = 0.10, cull_redundant_frac_ = 0.7;
   int cull_min_lms_ = 100, culled_submaps_ = 0;
+  bool cull_viewpoint_aware_ = true;
+  double cull_vp_frac_ = 0.5;
   std::unordered_set<std::int64_t> occ_;
   // R0.2 seal-quality gate: submaps sealed during degraded tracking are barred as reloc targets.
   bool gate_degraded_reloc_ = true;
