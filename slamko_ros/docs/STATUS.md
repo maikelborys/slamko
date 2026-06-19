@@ -34,11 +34,18 @@ A 4-visit cull-ON run (acc prior grows between visits) gives acc submaps 9→10�
 new submaps/visit** vs **3.56/visit WITHOUT cull → cull cuts growth ~65%** (30-visit projection ~45
 vs ~112), but it does **NOT fully flatten** at frac=0.7/voxel=0.10. Residual leak = segments where
 BOTH nets miss: appearance recall low AND geometric redundancy <0.7 (from `T_global_map_` frame
-drift + genuinely-new-viewpoint landmarks). `results/r02_cull/immortal_ceiling.png`. **To reach a
-true plateau:** (a) tune `cull_redundant_frac`/`cull_voxel_m` more aggressively (re-validate the
-fresh-pass-0-cull safety), and/or (b) **fuse-on-cull** — merge the leaked segment's NEW landmarks
-into the overlapping existing submap instead of keeping a whole new one (ORB SearchAndFuse; the
-real closer, needs descriptor/kf_obs-consistent merge). cull is drop-only today.
+drift + genuinely-new-viewpoint landmarks). `results/r02_cull/immortal_ceiling.png`.
+
+**TRIED AND REJECTED (2026-06-19) — spatial drift-tolerance is the WRONG lever.** Added a 3x3x3
+neighbour-voxel occupancy test (`occContains`, ~30 cm tolerance) to absorb the frame drift and
+catch the leak. It FALSE-CULLED legitimate new map on the fresh pass: 9→6 submaps (lost 1/3 of the
+house). Adding **age-gating** (occupancy only from submaps older than the loop gap, so the forward
+seam is excluded — the principled ORB covisibility/loop-gap idea) reduced false-culls 3→1 but did
+NOT eliminate them: indoors you pass WITHIN 30 cm of old-but-aged areas without truly revisiting,
+so any spatial dilation over-culls. Both reverted; the committed single-voxel cull (0.10/0.7) stays
+(safe: 0 false-cull). **The real plateau closer is FUSE-ON-CULL** — merge the leaked segment's NEW
+landmarks into the overlapping existing submap (ORB SearchAndFuse; needs descriptor/kf_obs-consistent
+merge), NOT spatial dilation. cull is drop-only today; fuse-on-cull is the next focused build.
 
 ## 2026-06-19 — GAP-2 maturation V1: prior map REFINED on revisit (task #4)
 
