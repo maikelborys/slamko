@@ -1112,13 +1112,20 @@ class ProviderFusionNode : public rclcpp::Node {
 
     std::vector<int> raw_row(raw_p.size(), -1);   // raw idx -> merged row (-1 = culled)
     std::vector<std::pair<int, int>> rep;         // merged row -> representative (k,i)
-    int row = 0;
+    int row = 0, lm_culled_occ = 0;
+    const bool occ_cull = cull_enabled_ && !occ_.empty();
     for (auto& kv : cells) {
       auto& idxs = kv.second;
       if ((int)idxs.size() < lm_min_obs_) continue;     // CULL: seen < lm_min_obs_ times
       Eigen::Vector3d c = Eigen::Vector3d::Zero();
       for (int ri : idxs) c += raw_p[ri];
       c /= (double)idxs.size();                          // centroid = multi-view refine
+      // ORB-SLAM data association ACROSS submaps (the immortality bound): if this physical
+      // point already lives in the global occupancy (an existing submap mapped it), it's a
+      // duplicate of known ground -> CULL it, keep only genuinely-NEW points. Per-LANDMARK
+      // (not per-submap) so a PARTIAL revisit keeps its new sliver + drops the redundant bulk
+      // -> the map grows only with new content -> bounded by AREA, not by visits.
+      if (occ_cull && occ_.count(occKey(T_global_map_ * sm.anchor * c))) { ++lm_culled_occ; continue; }
       sm.landmarks.push_back(slamko::MapLandmark{next_landmark_id_++, c, row});
       rep.push_back(raw_ki[idxs[0]]);
       for (int ri : idxs) raw_row[ri] = row;
@@ -1156,31 +1163,34 @@ class ProviderFusionNode : public rclcpp::Node {
     // nothing). Unlike dup-suppression (appearance/VPR-gated -> misses blind spots, leaks
     // ~3.5 submaps/visit -> linear growth), this is GEOMETRIC: it bounds the map by AREA
     // regardless of recall, so the map plateaus instead of inflating over revisits.
-    if (cull_enabled_ && (int)sm.landmarks.size() >= cull_min_lms_ && !occ_.empty()) {
-      int redundant = 0;
-      for (const auto& lm : sm.landmarks)
-        if (occ_.count(occKey(T_global_map_ * sm.anchor * lm.position))) ++redundant;
-      const double frac = (double)redundant / (double)sm.landmarks.size();
-      if (frac >= cull_redundant_frac_) {
-        RCLCPP_INFO(get_logger(),
-                    "CULLED redundant submap (%.0f%% of %zu lm already mapped) — immortal: "
-                    "map bounded by AREA, %d culled so far",
-                    frac * 100.0, sm.landmarks.size(), culled_submaps_ + 1);
-        ++culled_submaps_;
-        next_submap_id_ = sm.id;                        // give the id back
-        prev_anchor_ = cull_saved_prev_anchor;          // undo every seal mutation
-        prev_anchor_id_ = cull_saved_prev_id;
-        have_prev_anchor_ = cull_saved_have_prev;
-        loss_in_segment_ = cull_saved_loss;
-        seg_kf_no_image_ = cull_saved_seg_kf_no_img;
-        anchor_edges_.resize(cull_saved_edges);
-        pending_kfs_.clear();
-        seg_total_kfs_ = seg_covered_kfs_ = 0;
-        return;
-      }
+    const int dedup_total = lm_culled_occ + (int)sm.landmarks.size();
+    if (cull_enabled_ && dedup_total >= cull_min_lms_ &&
+        lm_culled_occ >= cull_redundant_frac_ * dedup_total) {
+      // >= cull_redundant_frac of the deduped landmarks were already mapped -> this segment
+      // is a (near-)pure revisit -> drop the whole submap (the per-landmark cull above already
+      // kept the few new points; below cull_min_lms_ of them isn't worth its own submap).
+      RCLCPP_INFO(get_logger(),
+                  "CULLED redundant submap (%d/%d lm already mapped, only %zu new) — immortal: "
+                  "map bounded by AREA, %d culled so far",
+                  lm_culled_occ, dedup_total, sm.landmarks.size(), culled_submaps_ + 1);
+      ++culled_submaps_;
+      next_submap_id_ = sm.id;                        // give the id back
+      prev_anchor_ = cull_saved_prev_anchor;          // undo every seal mutation
+      prev_anchor_id_ = cull_saved_prev_id;
+      have_prev_anchor_ = cull_saved_have_prev;
+      loss_in_segment_ = cull_saved_loss;
+      seg_kf_no_image_ = cull_saved_seg_kf_no_img;
+      anchor_edges_.resize(cull_saved_edges);
+      pending_kfs_.clear();
+      seg_total_kfs_ = seg_covered_kfs_ = 0;
+      return;
     }
-    // KEEP: genuinely new ground -> mark its real-world voxels occupied so future revisits
-    // of this area are recognized as redundant and culled.
+    if (lm_culled_occ > 0)
+      RCLCPP_INFO(get_logger(),
+                  "data-association: kept %zu NEW lm, culled %d already-mapped (partial revisit)",
+                  sm.landmarks.size(), lm_culled_occ);
+    // KEEP: this submap's genuinely-new landmarks -> mark their voxels occupied so future
+    // revisits of this ground are recognized as duplicates and culled per-landmark.
     for (const auto& lm : sm.landmarks)
       occ_.insert(occKey(T_global_map_ * sm.anchor * lm.position));
 
