@@ -16,6 +16,9 @@ OUT=${2:-results/pa/$(basename "$BAG")}
 RATE=${3:-1.0}
 MAX_WAIT=${MAX_WAIT:-900}   # hard cap on the whole run [s]
 VPR=${VPR:-false}           # true => P-B path (KF images + EigenPlaces + reloc + sealed map)
+IMU_RATE=${IMU_RATE:-80.0}  # OKVIS /okvis_odometry publish rate [Hz]. MUST be a double
+                            # (80, integer, throws InvalidParameterType); 0.0 = NO odom
+                            # published (empty TUM!) on this build; 80.0 is the proven value.
 
 PROVIDER=${PROVIDER:-okvis}   # okvis | kltvo
 PATTERN='^[^ ]*(okvis2x_stereo_network_node_subscriber|provider_fusion_node|klt_vo_node)'
@@ -29,7 +32,7 @@ if pgrep -af "$PATTERN" > /dev/null; then
   exit 2
 fi
 
-mkdir -p "$OUT"
+mkdir -p "$OUT/okvis"   # OKVIS dumps okvis2-vio-final_map.g2o here on shutdown; -p makes $OUT too
 source /opt/ros/jazzy/setup.bash
 source ~/coding/OKVIS2-X/install/setup.bash   # provider workspace (okvis pkg)
 source ~/ros2_ws/install/setup.bash            # klt_vo workspace
@@ -38,6 +41,7 @@ source install/setup.bash
 echo "== P-A bench: bag=$BAG out=$OUT rate=$RATE"
 EXTRA_ARGS=()
 [ -n "${PRIOR_MAP:-}" ] && EXTRA_ARGS+=("prior_map_dir:=$PRIOR_MAP")
+[ "$PROVIDER" = okvis ] && EXTRA_ARGS+=("imu_rate:=$IMU_RATE")
 setsid ros2 launch slamko_ros $LAUNCH_FILE \
   bag_path:="$BAG" out_dir:="$PWD/$OUT" rate:="$RATE" rviz:=false vpr:="$VPR" \
   "${EXTRA_ARGS[@]}" \
