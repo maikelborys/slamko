@@ -73,6 +73,10 @@ uint32_t submapColor(std::uint64_t id, bool dangling) {
 struct VizSink::Impl {
   std::unique_ptr<rerun::RecordingStream> rec;
   bool on = false;
+  // The growing trajectory (re-logged as a connected polyline each pose so the PATH
+  // is visible at any scrub time, not just a single moving dot).
+  std::vector<rerun::Vec3D> traj;
+  std::vector<bool> cert;
 };
 
 VizSink::VizSink() : impl_(std::make_unique<Impl>()) {}
@@ -152,12 +156,27 @@ void VizSink::setSessionTransform(const SE3& T_global_session, bool /*localized*
 
 void VizSink::logPose(const SE3& T_session_body, bool certain) {
   if (!impl_->on) return;
-  const char* path =
-      certain ? "world/session/traj/certain" : "world/session/traj/dangling";
-  impl_->rec->log(path,
-                  rerun::Points3D({vec3(T_session_body.translation())})
-                      .with_colors(rerun::Color(certain ? 0x1ABE1AFF : 0xE03030FF))
-                      .with_radii(0.02f));
+  impl_->traj.push_back(vec3(T_session_body.translation()));
+  impl_->cert.push_back(certain);
+  // The whole path as ONE connected polyline (light blue) — re-logged each pose so the
+  // trajectory is a visible growing LINE, not a lone moving dot.
+  std::vector<std::vector<rerun::Vec3D>> strip{impl_->traj};
+  impl_->rec->log("world/session/traj/line",
+                  rerun::LineStrips3D(strip)
+                      .with_colors(rerun::Color(0x66B2FFFF))
+                      .with_radii(0.01f));
+  // The vertices coloured by certainty (green=verified-vs-prior / red=dangling-DR).
+  std::vector<rerun::Vec3D> cp, dp;
+  for (std::size_t i = 0; i < impl_->traj.size(); ++i)
+    (impl_->cert[i] ? cp : dp).push_back(impl_->traj[i]);
+  if (!cp.empty())
+    impl_->rec->log("world/session/traj/certain",
+                    rerun::Points3D(cp).with_colors(rerun::Color(0x1ABE1AFF))
+                        .with_radii(0.03f));
+  if (!dp.empty())
+    impl_->rec->log("world/session/traj/dangling",
+                    rerun::Points3D(dp).with_colors(rerun::Color(0xE03030FF))
+                        .with_radii(0.03f));
 }
 
 void VizSink::logCamera(const SE3& T_session_cam, double fx, double fy, double /*cx*/,

@@ -73,6 +73,8 @@ def setup(context):
             'mag_topic':    '/bno055/mag',
             'compass_csv_path': out_dir + '/compass.csv',
             'mature_out_dir': out_dir + '/matured_prior',
+            'viz': LaunchConfiguration('viz').perform(context).lower() == 'true',
+            'viz_endpoint': LaunchConfiguration('viz_endpoint').perform(context),
         }])
 
     return [okvis, fusion]
@@ -91,6 +93,10 @@ def generate_launch_description():
             description='Capture KF images -> EigenPlaces -> sealed VPR submaps (P-B).'),
         DeclareLaunchArgument('prior_map_dir', default_value='',
             description='Prior smap dir for cross-session relocalization (re-anchor).'),
+        DeclareLaunchArgument('viz', default_value='false',
+            description='Live Rerun visualizer (needs -DSLAMKO_WITH_RERUN build + a viewer).'),
+        DeclareLaunchArgument('viz_endpoint', default_value='',
+            description='Rerun endpoint; ".rrd" path = offline file capture, else gRPC viewer.'),
         DeclareLaunchArgument('force_loss_start', default_value='-1.0',
             description='Test: drop odom from this bag-relative time [s] (-1 = off).'),
         DeclareLaunchArgument('force_loss_end', default_value='-1.0',

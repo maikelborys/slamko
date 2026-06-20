@@ -41,6 +41,11 @@ source install/setup.bash
 echo "== P-A bench: bag=$BAG out=$OUT rate=$RATE"
 EXTRA_ARGS=()
 [ -n "${PRIOR_MAP:-}" ] && EXTRA_ARGS+=("prior_map_dir:=$PRIOR_MAP")
+# VIZ=true -> live Rerun viewer (gRPC); VIZ=/path.rrd -> offline rewindable file capture.
+if [ -n "${VIZ:-}" ]; then
+  EXTRA_ARGS+=("viz:=true")
+  [ "$VIZ" != true ] && EXTRA_ARGS+=("viz_endpoint:=$VIZ")
+fi
 [ "$PROVIDER" = okvis ] && EXTRA_ARGS+=("imu_rate:=$IMU_RATE")
 # FORCE_LOSS="30,33" -> drop odom in that bag-relative window (test seal+branch).
 [ -n "${FORCE_LOSS:-}" ] && EXTRA_ARGS+=("force_loss_start:=${FORCE_LOSS%,*}" "force_loss_end:=${FORCE_LOSS#*,}")
