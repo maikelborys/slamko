@@ -18,9 +18,21 @@ research provenance — anchor-don't-weld, iSAM2-poses-only, raw-mag-not-BNO-fus
 GNSS init-then-re-anchor). Old own-VIO plan: `docs/archive/MASTER_PLAN_OWNVIO_01.md`.
 Also: [`docs/DECOUPLING.md`](docs/DECOUPLING.md), [`docs/DOC_PROCESS.md`](docs/DOC_PROCESS.md).
 
-> **Current focus (2026-06-19): the IMMORTALITY CORE is BUILT + validated on casa1.
-> Cold-start → [`docs/PIPELINE_STATUS_01.md`](docs/PIPELINE_STATUS_01.md) §0** (refreshed)
-> + memory `slamko-immortality-push`. Done today (~26 commits): **map BOUNDED-by-AREA**
+> **Current focus (2026-06-20): COHERENT CROSS-SESSION FUSION shipped (A+B+E).** Cold-start →
+> [`docs/RESEARCH_LIFELONG_FUSION_01.md`](docs/RESEARCH_LIFELONG_FUSION_01.md) +
+> [`docs/PLAN_BRUTAL_RUNS_VIZ_01.md`](docs/PLAN_BRUTAL_RUNS_VIZ_01.md) + memory
+> `slamko-lifelong-fusion-ABE`. The revisit "doubling" = rigid-SE3 re-base can't absorb
+> path-growing drift (5-agent research). FIX: **A** cross-session = weighted PRIOR FACTOR in the
+> pose-graph (`PoseGraph::addPriorFactor`), not a rigid re-base; **B** stiff-chain (soft only on a
+> TRUE odom stale-gap, fixed the all-soft img-miss bug → 15 stiff/0 soft/2 hard); **E** proximity
+> detection (`XFeatRelocalizer::relocalizeNear` by anchor-distance, VPR-independent → fills the
+> recall-dead gap). Validated A-vs-A+E @rate0.5: matches 15→45, p90 1.41→1.01 m (−28%), certainty
+> 24→31%. **HONEST DANGLING model:** overlap→connect+align, no-overlap→hang (never a fake-coherent
+> double). Brutal bags recorded (`/mnt/data/bno_ab/BRUTAL_BAGS.md`). **GOTCHA: OKVIS GPU-contention
+> nondeterminism → run VPR-on rate≤0.5 + check provider.tum y-span before any ATE.** Next: #12
+> loss-edge magnitude · C suppress duplicate-submap sealing (cross-session bounding) · D cull backstop.
+> **Prior milestone (2026-06-19, IMMORTALITY CORE):** [`docs/PIPELINE_STATUS_01.md`](docs/PIPELINE_STATUS_01.md) §0
+> + memory `slamko-immortality-push`. ~26 commits: **map BOUNDED-by-AREA**
 > (ORB data-association: per-landmark cross-submap cull + drift-tolerant 0.15 m voxel +
 > viewpoint-aware → revisiting plateaus, landmark growth +100%→+3%/visit); **R0
 > "never ingest garbage" gates** (seal-quality + DR-informed bar degraded submaps as reloc
