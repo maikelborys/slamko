@@ -12,6 +12,8 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "slamko_core/features.hpp"
 #include "slamko_core/se3.hpp"
@@ -25,6 +27,12 @@ struct RelocResult {
   SE3 T_query_match;             // relative pose query -> matched (weld constraint)
   double confidence = 0.0;       // place-recognition score
   int num_inliers = 0;           // geometric-verification inliers (PnP RANSAC)
+  // Per-INLIER data association (P1 of the persistent-MapPoints refactor): the
+  // (query-feature index, matched submap landmark id) pairs that survived PnP-RANSAC.
+  // These are the SAME physical points re-observed on revisit — the hook for fusing
+  // (not duplicating) the revisit into the existing map. Empty on the LightGlue rescue
+  // path (synthetic views carry no direct query-feature index) and for legacy callers.
+  std::vector<std::pair<int, std::uint64_t>> matches;
 };
 
 class Relocalizer {

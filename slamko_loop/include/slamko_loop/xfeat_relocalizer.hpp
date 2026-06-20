@@ -137,6 +137,7 @@ class XFeatRelocalizer : public Relocalizer {
     SE3 anchor;
     Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> desc;  // M×D
     std::vector<Eigen::Vector3d> pos;  // M submap-local 3D, aligned with desc rows
+    std::vector<std::uint64_t> lm_ids; // M landmark ids, aligned with pos/desc (P1: data assoc)
     Eigen::VectorXf global_desc;       // VPR descriptor for this submap (empty if none)
     // Per-keyframe VPR descriptors (SMP4), aligned 1:1 with `keyframes`. The ranking
     // uses max_k cosine(query, kf_global_desc[k]) — a per-submap aggregate descriptor

@@ -21,12 +21,15 @@ namespace {
 void matchDescriptors(const Features& q,
                       const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic,
                                           Eigen::RowMajor>& sdesc,
-                      const std::vector<Eigen::Vector3d>& spos, float ratio,
+                      const std::vector<Eigen::Vector3d>& spos,
+                      const std::vector<std::uint64_t>& slm_ids, float ratio,
                       bool mutual,
                       std::vector<Eigen::Vector2d>& uv_out,
-                      std::vector<Eigen::Vector3d>& X_out) {
+                      std::vector<Eigen::Vector3d>& X_out,
+                      std::vector<std::pair<int, std::uint64_t>>& corr_out) {
   uv_out.clear();
   X_out.clear();
+  corr_out.clear();
   if (!q.hasDescriptors() || sdesc.rows() < 2 ||
       q.descriptorDim() != static_cast<int>(sdesc.cols()))
     return;
@@ -60,6 +63,10 @@ void matchDescriptors(const Features& q,
       if (mutual && sj_best_qi[best_j] != i) continue;   // not reciprocal
       uv_out.emplace_back(q.keypoints(i, 0), q.keypoints(i, 1));
       X_out.push_back(spos[best_j]);
+      // P1: keep (query-feature index, submap landmark id) parallel to uv/X, so the
+      // PnP inliers can be turned into a data-association list for the map merge.
+      corr_out.emplace_back(i, best_j < static_cast<int>(slm_ids.size())
+                                   ? slm_ids[best_j] : 0);
     }
   }
 }
@@ -77,7 +84,8 @@ void bearing(double u, double v, double fx, double fy, double cx, double cy,
 // sample 3 → P3P → reproject all → count inliers → argmax.
 bool pnpRansac(const std::vector<Eigen::Vector3d>& X,
                const std::vector<Eigen::Vector2d>& uv, const XFeatRelocConfig& cfg,
-               SE3& T_sl_cam_out, int& inliers_out) {
+               SE3& T_sl_cam_out, int& inliers_out,
+               std::vector<int>* inlier_idx = nullptr) {
   const int N = static_cast<int>(X.size());
   if (N < 4) return false;
   const double thr2 = cfg.ransac_thresh_px * cfg.ransac_thresh_px;
@@ -125,6 +133,20 @@ bool pnpRansac(const std::vector<Eigen::Vector3d>& X,
   // (R,t) maps sl→cam; the camera pose IN sl is the inverse.
   T_sl_cam_out = SE3(bestR, bestt).inverse();
   inliers_out = best_inliers;
+  // P1: recompute the inlier SET under the winning model so the caller can build the
+  // data-association list (which correspondences are the true re-observations).
+  if (inlier_idx) {
+    inlier_idx->clear();
+    inlier_idx->reserve(best_inliers);
+    for (int j = 0; j < N; ++j) {
+      const Eigen::Vector3d Xc = bestR * X[j] + bestt;
+      if (Xc.z() < 1e-3) continue;
+      const double up = cfg.fx * Xc.x() / Xc.z() + cfg.cx;
+      const double vp = cfg.fy * Xc.y() / Xc.z() + cfg.cy;
+      const double du = up - uv[j].x(), dv = vp - uv[j].y();
+      if (du * du + dv * dv <= thr2) inlier_idx->push_back(j);
+    }
+  }
   return true;
 }
 
@@ -166,6 +188,7 @@ void XFeatRelocalizer::addSubMap(const SubMap& submap) {
     if (row >= e.desc.rows()) break;
     e.desc.row(row++) = submap.descriptors.row(lm.descriptor_row);
     e.pos.push_back(lm.position);
+    e.lm_ids.push_back(lm.id);                    // P1: keep the landmark identity
   }
   e.desc.conservativeResize(row, submap.descriptors.cols());
   db_.push_back(std::move(e));
@@ -201,6 +224,8 @@ RelocResult XFeatRelocalizer::verifyAgainst(
     SE3 T_sl_cam;
     int inliers = 0;
     int putative = 0;  // # correspondences fed to PnP (for the confidence ratio)
+    std::vector<std::pair<int, std::uint64_t>> corr;  // P1: (query idx, landmark id) per match
+    std::vector<int> inlier_idx;                      // P1: which corr survived PnP
 
     // Brute-force NN verify FIRST. When it works (easy revisit, small viewpoint gap) it
     // matches the query against the whole landmark cloud → hundreds of correspondences →
@@ -209,9 +234,10 @@ RelocResult XFeatRelocalizer::verifyAgainst(
     {
       std::vector<Eigen::Vector2d> uv;
       std::vector<Eigen::Vector3d> X;
-      matchDescriptors(query, e.desc, e.pos, cfg_.match_ratio, cfg_.mutual_check, uv, X);
+      matchDescriptors(query, e.desc, e.pos, e.lm_ids, cfg_.match_ratio, cfg_.mutual_check,
+                       uv, X, corr);
       if (static_cast<int>(X.size()) >= cfg_.min_inliers &&
-          pnpRansac(X, uv, cfg_, T_sl_cam, inliers) &&
+          pnpRansac(X, uv, cfg_, T_sl_cam, inliers, &inlier_idx) &&
           // Precision gate (OKVIS-style): inlier RATIO separates a true place from a
           // coincidental match once the Lowe ratio is permissive.
           !(cfg_.min_inlier_ratio > 0.0 &&
@@ -244,6 +270,12 @@ RelocResult XFeatRelocalizer::verifyAgainst(
     best.confidence = static_cast<double>(inliers) /
                       static_cast<double>(std::max<int>(1, putative));
     best.num_inliers = inliers;
+    // P1: the inlier correspondences = the re-observed map points (the merge hook).
+    // Empty on the LightGlue rescue path (inlier_idx stays empty there).
+    best.matches.clear();
+    best.matches.reserve(inlier_idx.size());
+    for (int k : inlier_idx)
+      if (k >= 0 && k < static_cast<int>(corr.size())) best.matches.push_back(corr[k]);
   }
   return best;
 }

@@ -1296,10 +1296,10 @@ class ProviderFusionNode : public rclcpp::Node {
     const auto res = graph_.optimize();
     T_map_odom_target_ = graph_.pose(q_id) * chain_.lastKeyframe().T_OB.inverse();
     RCLCPP_INFO(get_logger(),
-                "LOOP CLOSED: kf %llu -> submap %llu (kf %llu), inliers=%d | optimize: "
+                "LOOP CLOSED: kf %llu -> submap %llu (kf %llu), inliers=%d assoc=%zu | optimize: "
                 "converged=%d iters=%d cost %.2e -> %.2e",
                 (unsigned long long)q_id, (unsigned long long)r.submap_id,
-                (unsigned long long)a, r.num_inliers, (int)res.converged,
+                (unsigned long long)a, r.num_inliers, r.matches.size(), (int)res.converged,
                 res.iterations, res.initial_cost, res.final_cost);
     ++loops_closed_;
     markCoverage(node_time_.count(q_id) ? node_time_[q_id] : 0.0, r.submap_id,
