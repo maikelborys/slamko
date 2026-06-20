@@ -63,6 +63,7 @@
 #include "slamko_core/se3.hpp"
 #include "slamko_core/submap.hpp"
 #include "slamko_core/submap_io.hpp"
+#include "slamko_loop/mappoint_store.hpp"
 #include "slamko_loop/pose_graph.hpp"
 #include "slamko_loop/xfeat_relocalizer.hpp"
 #include "slamko_ros/viz_sink.hpp"
@@ -323,6 +324,16 @@ class ProviderFusionNode : public rclcpp::Node {
       // viewing direction (low VPR coverage) as omni-directional reloc anchors; cull only same-view.
       cull_viewpoint_aware_ = declare_parameter("cull_viewpoint_aware", true);
       cull_vp_frac_ = declare_parameter("cull_vp_frac", 0.5);
+      // Phase A (PLAN_PERSISTENT_MAPPOINTS_02): drift-TOLERANT cross-submap data
+      // association by DESCRIPTOR — the persistent-MapPoint identity slamko lacked.
+      // The voxel occ_ cull misses revisit duplicates when VIO drift > the voxel; this
+      // matches the same physical point by XFeat cosine within a generous radius and
+      // culls it regardless of drift. Opt-in (default OFF = today's behaviour exactly).
+      mappoint_assoc_ = declare_parameter("mappoint_assoc", false);
+      mp_store_ = slamko::MapPointStore(
+          declare_parameter("mappoint_assoc_cell", 0.4),
+          declare_parameter("mappoint_assoc_radius", 0.4),
+          (float)declare_parameter("mappoint_assoc_cos", 0.82));
       // Inter-map anchor edges (R1.1 hard / R1.3 soft): chain edge sigma between
       // consecutive submaps (good odometry) vs SOFT sigma when the segment crossed
       // a visual loss (dead-reckoning — approximate placement only). Hard = loop sigma.
@@ -1585,6 +1596,11 @@ class ProviderFusionNode : public rclcpp::Node {
     std::vector<int> raw_row(raw_p.size(), -1);   // raw idx -> merged row (-1 = culled)
     std::vector<std::pair<int, int>> rep;         // merged row -> representative (k,i)
     int row = 0, lm_culled_occ = 0;
+    // Phase A: descriptor-duplicates removed from the STORED map this seal. Kept SEPARATE
+    // from lm_culled_occ so the CULL BACKSTOP + occ_ stay byte-identical to baseline ->
+    // Phase A dedups the map WITHOUT moving the graph/trajectory (provably no-regress).
+    int culled_mp_this = 0;
+    std::vector<std::int64_t> mp_culled_ock;   // occ_ keys to insert IFF this submap is kept
     // VIEWPOINT-AWARE cull (the recall fix): only cull a geometrically-redundant revisit if its
     // VIEWPOINT is already in the map — i.e. its keyframes matched known places by VPR
     // (seg_covered_kfs_ high = same viewing direction). A revisit from a NEW direction (e.g.
@@ -1608,10 +1624,31 @@ class ProviderFusionNode : public rclcpp::Node {
       // duplicate of known ground -> CULL it, keep only genuinely-NEW points. Per-LANDMARK
       // (not per-submap) so a PARTIAL revisit keeps its new sliver + drops the redundant bulk
       // -> the map grows only with new content -> bounded by AREA, not by visits.
-      const std::int64_t ock = occKey(T_global_map_ * sm.anchor * c);
+      const Eigen::Vector3d gpos = T_global_map_ * sm.anchor * c;
+      const std::int64_t ock = occKey(gpos);
       if (occ_cull && (occ_.count(ock) || prior_occ_.count(ock))) { ++lm_culled_occ; continue; }
-      sm.landmarks.push_back(slamko::MapLandmark{next_landmark_id_++, c, row});
-      rep.push_back(raw_ki[idxs[0]]);
+      // Phase A — DRIFT-TOLERANT data association by descriptor (the voxel cull above only
+      // fires when the revisit lands in the SAME voxel; under drift it doesn't). If this
+      // point's XFeat descriptor matches an existing MapPoint within the search radius, it
+      // is the SAME physical point the revisit re-observed -> cull the duplicate (record the
+      // observation), regardless of the few-cm drift that fooled the voxel test.
+      const auto& ki0 = raw_ki[idxs[0]];
+      if (mappoint_assoc_) {
+        const auto drow = pending_kfs_[ki0.first].lm_desc.row(ki0.second);
+        const std::int64_t mp = mp_store_.associate(gpos, drow);
+        if (mp >= 0) {
+          // Drift-tolerant duplicate: drop from the stored map, but treat it EXACTLY as a
+          // kept point for the backstop denominator + occ_ (so the graph is unaffected).
+          mp_store_.addObservation(mp); ++culled_mp_; ++culled_mp_this;
+          mp_culled_ock.push_back(ock);
+          continue;
+        }
+      }
+      sm.landmarks.push_back(slamko::MapLandmark{next_landmark_id_, c, row});
+      if (mappoint_assoc_)
+        mp_store_.add(next_landmark_id_, gpos, pending_kfs_[ki0.first].lm_desc.row(ki0.second));
+      ++next_landmark_id_;
+      rep.push_back(ki0);
       for (int ri : idxs) raw_row[ri] = row;
       ++row;
     }
@@ -1647,7 +1684,9 @@ class ProviderFusionNode : public rclcpp::Node {
     // nothing). Unlike dup-suppression (appearance/VPR-gated -> misses blind spots, leaks
     // ~3.5 submaps/visit -> linear growth), this is GEOMETRIC: it bounds the map by AREA
     // regardless of recall, so the map plateaus instead of inflating over revisits.
-    const int dedup_total = lm_culled_occ + (int)sm.landmarks.size();
+    // + culled_mp_this so the denominator equals baseline's (those points WOULD be in
+    // sm.landmarks without Phase A) -> the backstop fires identically -> trajectory-neutral.
+    const int dedup_total = lm_culled_occ + (int)sm.landmarks.size() + culled_mp_this;
     if (cull_enabled_ && dedup_total >= cull_min_lms_ &&
         lm_culled_occ >= cull_redundant_frac_ * dedup_total) {
       // >= cull_redundant_frac of the deduped landmarks were already mapped -> this segment
@@ -1677,6 +1716,9 @@ class ProviderFusionNode : public rclcpp::Node {
     // revisits of this ground are recognized as duplicates and culled per-landmark.
     for (const auto& lm : sm.landmarks)
       occ_.insert(occKey(T_global_map_ * sm.anchor * lm.position));
+    // Phase A: the descriptor-duplicates dropped from the stored map STILL mark their
+    // voxels occupied (baseline would have kept them) -> occ_ identical to baseline.
+    for (std::int64_t k : mp_culled_ock) occ_.insert(k);
     // P2: cache this KEPT submap's local landmarks so occ_ can be refreshed from the
     // loop-corrected anchor (graph_.pose(first_kf)) after a loop removes drift.
     {
@@ -1702,6 +1744,10 @@ class ProviderFusionNode : public rclcpp::Node {
                 sm.landmarks.empty() ? 1.0 : (double)raw_n / (double)sm.landmarks.size(),
                 kf_no_image_ ? (" [" + std::to_string(kf_no_image_) + " KF w/o image]").c_str()
                              : "");
+    if (mappoint_assoc_)
+      RCLCPP_INFO(get_logger(),
+                  "MapPoint store: %zu points, %d drift-tolerant duplicates culled (cumulative)",
+                  mp_store_.size(), culled_mp_);
     // Defer relocalizer registration until the submap is older than the loop gap.
     submap_first_kf_[sm.id] = sm.keyframes.front().id;
     submap_last_t_[sm.id] = pending_kfs_.back().t;
@@ -1816,6 +1862,11 @@ class ProviderFusionNode : public rclcpp::Node {
   int cull_min_lms_ = 100, culled_submaps_ = 0;
   bool cull_viewpoint_aware_ = true;
   double cull_vp_frac_ = 0.5;
+  // Phase A persistent-MapPoint identity (PLAN_PERSISTENT_MAPPOINTS_02): global store of
+  // points keyed by descriptor for DRIFT-TOLERANT cross-submap association at seal.
+  bool mappoint_assoc_ = false;
+  slamko::MapPointStore mp_store_;
+  int culled_mp_ = 0;   // duplicates the voxel cull MISSED, caught by descriptor match
   std::unordered_set<std::int64_t> occ_;
   // P2 (fusion / immortal-bounding): the PRIOR map's occupancy (already global, fixed —
   // never refreshed) kept apart from the session occ_ so a cross-session revisit of

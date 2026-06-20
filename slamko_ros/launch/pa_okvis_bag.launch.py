@@ -79,6 +79,8 @@ def setup(context):
                 LaunchConfiguration('compass_yaw_prior').perform(context).lower() == 'true',
             'occ_refresh':
                 LaunchConfiguration('occ_refresh').perform(context).lower() == 'true',
+            'mappoint_assoc':
+                LaunchConfiguration('mappoint_assoc').perform(context).lower() == 'true',
         }])
 
     return [okvis, fusion]
@@ -105,6 +107,8 @@ def generate_launch_description():
             description='BNO055 absolute-yaw graph prior (gated) — straightens heading drift.'),
         DeclareLaunchArgument('occ_refresh', default_value='true',
             description='P2: refresh occupancy from loop-corrected anchors (fuse revisits).'),
+        DeclareLaunchArgument('mappoint_assoc', default_value='false',
+            description='Phase A: drift-tolerant cross-submap data association by descriptor.'),
         DeclareLaunchArgument('force_loss_start', default_value='-1.0',
             description='Test: drop odom from this bag-relative time [s] (-1 = off).'),
         DeclareLaunchArgument('force_loss_end', default_value='-1.0',

@@ -50,6 +50,8 @@ fi
 [ -n "${COMPASS_YAW:-}" ] && EXTRA_ARGS+=("compass_yaw_prior:=true")
 # OCC_REFRESH=false -> disable P2 revisit-fusion (baseline for the A/B).
 [ -n "${OCC_REFRESH:-}" ] && EXTRA_ARGS+=("occ_refresh:=$OCC_REFRESH")
+# MAPPOINT_ASSOC=true -> Phase A drift-tolerant cross-submap descriptor association.
+[ -n "${MAPPOINT_ASSOC:-}" ] && EXTRA_ARGS+=("mappoint_assoc:=$MAPPOINT_ASSOC")
 [ "$PROVIDER" = okvis ] && EXTRA_ARGS+=("imu_rate:=$IMU_RATE")
 # FORCE_LOSS="30,33" -> drop odom in that bag-relative window (test seal+branch).
 [ -n "${FORCE_LOSS:-}" ] && EXTRA_ARGS+=("force_loss_start:=${FORCE_LOSS%,*}" "force_loss_end:=${FORCE_LOSS#*,}")
