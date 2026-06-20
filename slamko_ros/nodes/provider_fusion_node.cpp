@@ -1302,6 +1302,13 @@ class ProviderFusionNode : public rclcpp::Node {
                 (unsigned long long)a, r.num_inliers, r.matches.size(), (int)res.converged,
                 res.iterations, res.initial_cost, res.final_cost);
     ++loops_closed_;
+    // P1 proof artifact: dump the re-associated landmark ids (the SAME points re-observed
+    // on this revisit) so scripts/render_map_png.py can HIGHLIGHT them. q_id,submap_id,lm_id.
+    if (!map_dir_.empty() && !r.matches.empty()) {
+      std::ofstream af(map_dir_ + "/loop_assoc.csv", std::ios::app);
+      for (const auto& m : r.matches)
+        af << q_id << ',' << r.submap_id << ',' << m.second << '\n';
+    }
     markCoverage(node_time_.count(q_id) ? node_time_[q_id] : 0.0, r.submap_id,
                  r.num_inliers);
     // R1.1 HARD inter-map edge: the building submap (its future id == next_submap_id_)
