@@ -314,6 +314,7 @@ class ProviderFusionNode : public rclcpp::Node {
       // submaps) is geometrically redundant -> culled. Bounds the map by AREA regardless
       // of VPR recall (suppression alone leaks ~3.5 submaps/visit -> linear growth).
       cull_enabled_ = declare_parameter("cull_enabled", true);
+      occ_refresh_ = declare_parameter("occ_refresh", true);  // P2: fuse revisits via loop-corrected occ
       cull_voxel_ = declare_parameter("cull_voxel_m", 0.15);  // drift-tolerant (only the redundancy
       // test coarsens; the stored-map dedup stays at lm_dedup_voxel_m=0.06).
       cull_redundant_frac_ = declare_parameter("cull_redundant_frac", 0.7);
@@ -878,7 +879,7 @@ class ProviderFusionNode : public rclcpp::Node {
           // (prior-global) frame, so the session's new submaps that re-cover this ground
           // are recognized as redundant and culled from visit 1.
           for (const auto& lm : sm.landmarks)
-            occ_.insert(occKey(sm.anchor * lm.position));
+            prior_occ_.insert(occKey(sm.anchor * lm.position));
           // LIVE VIZ: the prior map cloud (grey, world/prior) — the backdrop the session
           // aligns onto once cross-session-localized.
           if (viz_enable_ && viz_.enabled()) {
@@ -1209,6 +1210,7 @@ class ProviderFusionNode : public rclcpp::Node {
       if (!localized_) {
         T_global_map_ = T_new;
         localized_ = true;
+        refreshOcc();  // P2: T_global_map_ changed -> reproject session occupancy into global
         // Atlas coherence: pin the whole session subtree onto the prior frame so window B
         // shows the session sitting INSIDE the prior cloud (and re-anchors move it as one).
         viz_.setSessionTransform(T_global_map_, true);
@@ -1228,6 +1230,7 @@ class ProviderFusionNode : public rclcpp::Node {
                                 xsession_prior_sigma_r_, /*robust=*/true);
           const auto res = graph_.optimize();
           T_map_odom_target_ = graph_.pose(q_id) * chain_.lastKeyframe().T_OB.inverse();
+          refreshOcc();  // P2: prior factor corrected the session -> realign occupancy
           ++xsession_priors_added_;
           have_big_cand_ = false;
           RCLCPP_INFO(get_logger(),
@@ -1295,6 +1298,7 @@ class ProviderFusionNode : public rclcpp::Node {
     graph_.addLoopEdge(a, q_id, r.T_query_match, loop_sigma_t_, loop_sigma_r_);
     const auto res = graph_.optimize();
     T_map_odom_target_ = graph_.pose(q_id) * chain_.lastKeyframe().T_OB.inverse();
+    refreshOcc();  // P2: the loop removed drift -> realign occupancy -> revisits now fuse
     RCLCPP_INFO(get_logger(),
                 "LOOP CLOSED: kf %llu -> submap %llu (kf %llu), inliers=%d assoc=%zu | optimize: "
                 "converged=%d iters=%d cost %.2e -> %.2e",
@@ -1410,6 +1414,22 @@ class ProviderFusionNode : public rclcpp::Node {
     auto q = [v](double x) { return (std::int64_t)std::llround(std::floor(x / v)); };
     const std::int64_t a = q(p.x()) & 0x1FFFFF, b = q(p.y()) & 0x1FFFFF, c = q(p.z()) & 0x1FFFFF;
     return (a << 42) | (b << 21) | c;
+  }
+
+  // P2 FUSION: rebuild the session occupancy from the loop-CORRECTED submap anchors. A loop
+  // closure removes the accumulated drift from the graph poses; refreshing occ_ to the
+  // corrected positions means a subsequent revisit (now aligned) lands in the SAME voxels as
+  // the original → its duplicate landmarks are culled → the map FUSES instead of doubling.
+  // Prior occupancy (prior_occ_, global + fixed) is untouched. occ_refresh=false = old behaviour.
+  void refreshOcc() {
+    if (!cull_enabled_ || !occ_refresh_ || kept_lm_local_.empty()) return;
+    occ_.clear();
+    for (const auto& kv : kept_lm_local_) {
+      auto it = submap_first_kf_.find(kv.first);
+      if (it == submap_first_kf_.end() || !graph_.hasNode(it->second)) continue;
+      const slamko::SE3 anchor = graph_.pose(it->second);
+      for (const auto& lm : kv.second) occ_.insert(occKey(T_global_map_ * anchor * lm));
+    }
   }
 
   // GAP-2 maturation (shutdown): reload the prior archive and REFINE each covered prior
@@ -1576,7 +1596,7 @@ class ProviderFusionNode : public rclcpp::Node {
     // restores pure-geometric culling.
     const bool viewpoint_known = !cull_viewpoint_aware_ ||
         (seg_total_kfs_ > 0 && seg_covered_kfs_ >= cull_vp_frac_ * seg_total_kfs_);
-    const bool occ_cull = cull_enabled_ && !occ_.empty() && viewpoint_known;
+    const bool occ_cull = cull_enabled_ && (!occ_.empty() || !prior_occ_.empty()) && viewpoint_known;
     for (auto& kv : cells) {
       auto& idxs = kv.second;
       if ((int)idxs.size() < lm_min_obs_) continue;     // CULL: seen < lm_min_obs_ times
@@ -1588,7 +1608,8 @@ class ProviderFusionNode : public rclcpp::Node {
       // duplicate of known ground -> CULL it, keep only genuinely-NEW points. Per-LANDMARK
       // (not per-submap) so a PARTIAL revisit keeps its new sliver + drops the redundant bulk
       // -> the map grows only with new content -> bounded by AREA, not by visits.
-      if (occ_cull && occ_.count(occKey(T_global_map_ * sm.anchor * c))) { ++lm_culled_occ; continue; }
+      const std::int64_t ock = occKey(T_global_map_ * sm.anchor * c);
+      if (occ_cull && (occ_.count(ock) || prior_occ_.count(ock))) { ++lm_culled_occ; continue; }
       sm.landmarks.push_back(slamko::MapLandmark{next_landmark_id_++, c, row});
       rep.push_back(raw_ki[idxs[0]]);
       for (int ri : idxs) raw_row[ri] = row;
@@ -1656,6 +1677,13 @@ class ProviderFusionNode : public rclcpp::Node {
     // revisits of this ground are recognized as duplicates and culled per-landmark.
     for (const auto& lm : sm.landmarks)
       occ_.insert(occKey(T_global_map_ * sm.anchor * lm.position));
+    // P2: cache this KEPT submap's local landmarks so occ_ can be refreshed from the
+    // loop-corrected anchor (graph_.pose(first_kf)) after a loop removes drift.
+    {
+      auto& cache = kept_lm_local_[sm.id];
+      cache.reserve(sm.landmarks.size());
+      for (const auto& lm : sm.landmarks) cache.push_back(lm.position);
+    }
 
     const std::string path = map_dir_.empty()
         ? std::string()
@@ -1783,11 +1811,20 @@ class ProviderFusionNode : public rclcpp::Node {
   std::unordered_map<std::uint64_t, std::vector<Eigen::Vector3d>> mature_buf_;
   // GAP-2 cull backstop: real-world voxel occupancy of all KEPT submaps (+ prior seed).
   bool cull_enabled_ = true;
+  bool occ_refresh_ = true;   // P2: refresh occupancy from loop-corrected anchors (fuse revisits)
   double cull_voxel_ = 0.10, cull_redundant_frac_ = 0.7;
   int cull_min_lms_ = 100, culled_submaps_ = 0;
   bool cull_viewpoint_aware_ = true;
   double cull_vp_frac_ = 0.5;
   std::unordered_set<std::int64_t> occ_;
+  // P2 (fusion / immortal-bounding): the PRIOR map's occupancy (already global, fixed —
+  // never refreshed) kept apart from the session occ_ so a cross-session revisit of
+  // prior-mapped ground is culled, not duplicated. kept_lm_local_ caches each KEPT session
+  // submap's local landmarks so occ_ can be REFRESHED from the loop-corrected anchors
+  // (after a loop removes drift, the revisit aligns → its duplicates fall in occupied
+  // voxels → fused). This is what makes the self-correcting map ABSORB revisits.
+  std::unordered_set<std::int64_t> prior_occ_;
+  std::unordered_map<std::uint64_t, std::vector<Eigen::Vector3d>> kept_lm_local_;
   // R0.2 seal-quality gate: submaps sealed during degraded tracking are barred as reloc targets.
   bool gate_degraded_reloc_ = true;
   double dr_gate_reject_deg_ = 15.0;
