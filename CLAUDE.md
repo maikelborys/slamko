@@ -29,7 +29,15 @@ Also: [`docs/DECOUPLING.md`](docs/DECOUPLING.md), [`docs/DOC_PROCESS.md`](docs/D
 > recall-dead gap). Validated A-vs-A+E @rate0.5: matches 15→45, p90 1.41→1.01 m (−28%), certainty
 > 24→31%. **HONEST DANGLING model:** overlap→connect+align, no-overlap→hang (never a fake-coherent
 > double). Brutal bags recorded (`/mnt/data/bno_ab/BRUTAL_BAGS.md`). **GOTCHA: OKVIS GPU-contention
-> nondeterminism → run VPR-on rate≤0.5 + check provider.tum y-span before any ATE.** Next: #12
+> nondeterminism → run VPR-on rate≤0.5 + check provider.tum y-span before any ATE.**
+> **LIVE VIZ shipped (2026-06-20, 633a06d):** `slamko_ros` `VizSink` = live Rerun (rerun.io) viewer —
+> window A image+XFeat-keypoints+HUD, window B 3D map building live + frustums + edges BY TYPE
+> (chain/soft/loop/x-prior/proximity-candidate), Atlas-coherent (session Transform3D). NO-OP unless
+> `-DSLAMKO_WITH_RERUN` (FetchContents SDK 0.33); `connect_grpc` to a SEPARATE viewer (never spawn(),
+> GPU isolation) or `.rrd` offline-rewindable. `viz_selftest`→345 KB .rrd; both builds green. Plus
+> **3-tier candidate→soft→weld** for the VPR-independent proximity path (reversible
+> `proximity_three_tier`). "Soft edges on another plane" → per-class COLOUR+entity-LAYER, not z-offset
+> (research). Next: VALIDATE live brutal-revisit capture + 3-tier A/B (no-regress) · #12
 > loss-edge magnitude · C suppress duplicate-submap sealing (cross-session bounding) · D cull backstop.
 > **Prior milestone (2026-06-19, IMMORTALITY CORE):** [`docs/PIPELINE_STATUS_01.md`](docs/PIPELINE_STATUS_01.md) §0
 > + memory `slamko-immortality-push`. ~26 commits: **map BOUNDED-by-AREA**
