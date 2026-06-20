@@ -47,13 +47,36 @@ branch + recovery are all correct; only the d_rot MAGNITUDE is suspect on EuRoC.
 node + composing OKVIS on gated topics. Deferred in favour of Stage 2 (the user's "ver como
 se fusiona" cross-session goal).
 
-## STAGE 2 (next) — cross-session rectified MH fusion
-The user's "correr machine hall desde mitad hasta final, luego desde principio hasta final y
-ver como se fusiona". Needs the VPR/stereo-landmark path → ROW-ALIGNED rectified stereo.
-Built: `scripts/euroc_rectify_node.py` (live cv2.stereoRectify, publishes `/euroc/cam{0,1}/
-image_rect` + `camera_info_rect` 752x480 distortion-zeroed; OKVIS keeps eating raw — no bag
-re-record). Plan: session1 = MH mid→end → map; session2 = full with prior_map_dir → watch the
-reloc/proximity merge; ATE both + rotatable Plotly landmarks.
+## STAGE 2 RESULTS — cross-session rectified MH fusion (2026-06-20)
+Built: `scripts/euroc_rectify_node.py` (live cv2.stereoRectify → `/euroc/cam{0,1}/image_rect`
++ `camera_info_rect` 752x480 distortion-zeroed, fx=436.23 baseline=0.110 m; OKVIS keeps eating
+raw — no bag re-record) + `pa_okvis_euroc_x.launch.py` (bag `--start-offset` + OKVIS + rectify
++ fusion) + `scripts/render_xsession.py` (top-down prior+new overlay).
+
+Ran MH_03: **session 1 = mid→end (offset 67 s)** → 10 VPR submaps, ATE 5.57 cm. **session 2 =
+full + prior_map_dir=x_s1/map** → prior loaded (10 submaps), 18 new submaps (10–27).
+
+**The pipeline works end-to-end and cross-session reloc FIRES** — but the honest outcome:
+- **7 proximity CANDIDATES, 0 WELDS.** All candidates were session-2 kf 0–32 → prior submap 9
+  at XFeat-PnP inl 16–30; the 3-tier gate HELD every one (needs inl≥40 or a 2nd vote). These
+  early matches are almost certainly FALSE (session-2 START ≠ session-1 END), so the gate was
+  RIGHT to hold → no teleport. Maps stay in their own frames (see `/tmp/x_session.png`: blue
+  session-2 offset from grey prior by the t=0→67 s motion).
+- **Weak recall in the TRUE-overlap region.** Session 2 at bag t≥67 retraces session 1's
+  IDENTICAL trajectory, so it SHOULD match prior submaps 0–9 with >40 inliers — but only weak
+  submap-9 hits (inl=16) appeared. Either the VPR candidate stage isn't surfacing the right
+  prior submap, or a prior-query gap. **This is the thing to debug next** (an identical-path
+  revisit is the easiest possible recall case; weak here = a real plumbing/recall issue, not
+  the viewpoint ceiling).
+- **VPR-on DEGRADED the same-session ATE: 3.93 cm (Stage-1, VPR off) → 8.12 cm fused / 42 cm
+  graph (VPR on).** A same-session loop/graph correction made MH_03 WORSE. Separate concern
+  from cross-session, but important — VPR-on should never regress the open-loop chain.
+
+**Verdict:** infra is solid + reloc detection works, but (a) true-overlap recall is weak and
+(b) VPR-on regresses ATE — both must be understood before claiming cross-session fusion on
+EuRoC. NOT a threshold-lowering problem (that would force the FALSE kf0 weld). Next debug:
+trace why session-2 @t≥67 doesn't strongly re-match prior 0–9 (same images!), and why the
+VPR-on graph correction hurts.
 
 ## NEXT TASK — EuRoC MH cross-session + blackout harness (build this)
 The validation the user wants ("todo completo"): EuRoC Machine Hall, overlapping sessions
