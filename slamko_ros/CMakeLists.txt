@@ -15,6 +15,13 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 add_compile_options(-Wall -Wextra)
 
+# Live Rerun visualizer (rerun.io). OFF by default so a normal build needs no
+# network / no extra SDK; ON fetches the Rerun C++ SDK (~one zip from GitHub
+# releases) and compiles the real VizSink. The node ALWAYS builds either way —
+# viz_sink.cpp is a complete no-op without this. Enable with:
+#   colcon build --packages-select slamko_ros --cmake-args -DSLAMKO_WITH_RERUN=ON
+option(SLAMKO_WITH_RERUN "Build the live Rerun visualizer sink" OFF)
+
 find_package(ament_cmake REQUIRED)
 find_package(slamko_core REQUIRED)
 find_package(slamko_loop REQUIRED)
@@ -35,8 +42,17 @@ find_path(TENSORRT_INCLUDE_DIR NvInfer.h HINTS /usr/include/x86_64-linux-gnu /us
 find_library(NVINFER nvinfer HINTS /usr/lib/x86_64-linux-gnu)
 find_library(NVONNXPARSER nvonnxparser HINTS /usr/lib/x86_64-linux-gnu)
 
-add_executable(provider_fusion_node nodes/provider_fusion_node.cpp)
-target_include_directories(provider_fusion_node PRIVATE ${TENSORRT_INCLUDE_DIR})
+# Rerun C++ SDK (only when the viz is enabled).
+if(SLAMKO_WITH_RERUN)
+  include(FetchContent)
+  FetchContent_Declare(rerun_sdk URL
+    https://github.com/rerun-io/rerun/releases/download/0.33.0/rerun_cpp_sdk.zip)
+  FetchContent_MakeAvailable(rerun_sdk)
+endif()
+
+add_executable(provider_fusion_node nodes/provider_fusion_node.cpp src/viz_sink.cpp)
+target_include_directories(provider_fusion_node PRIVATE
+  ${TENSORRT_INCLUDE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/include)
 ament_target_dependencies(provider_fusion_node
   slamko_core slamko_loop slamko_vio rclcpp nav_msgs sensor_msgs geometry_msgs
   tf2_ros ament_index_cpp)
@@ -44,7 +60,20 @@ ament_target_dependencies(provider_fusion_node
 # has undefined cudart/nvinfer refs the consumer must satisfy).
 target_link_libraries(provider_fusion_node Eigen3::Eigen ${OpenCV_LIBS}
   ${NVINFER} ${NVONNXPARSER} CUDA::cudart)
+if(SLAMKO_WITH_RERUN)
+  target_compile_definitions(provider_fusion_node PRIVATE SLAMKO_WITH_RERUN)
+  target_link_libraries(provider_fusion_node rerun_sdk)
+
+  # No-ROS runtime smoke test of the viz path -> a .rrd capture you can scrub.
+  add_executable(viz_selftest tools/viz_selftest.cpp src/viz_sink.cpp)
+  target_include_directories(viz_selftest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_definitions(viz_selftest PRIVATE SLAMKO_WITH_RERUN)
+  ament_target_dependencies(viz_selftest slamko_core)
+  target_link_libraries(viz_selftest Eigen3::Eigen ${OpenCV_LIBS} rerun_sdk)
+  install(TARGETS viz_selftest RUNTIME DESTINATION lib/${PROJECT_NAME})
+endif()
 install(TARGETS provider_fusion_node RUNTIME DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY include/ DESTINATION include)
 
 add_executable(provider_chain_offline tools/provider_chain_offline.cpp)
 target_link_libraries(provider_chain_offline Eigen3::Eigen)

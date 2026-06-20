@@ -64,6 +64,7 @@
 #include "slamko_core/submap_io.hpp"
 #include "slamko_loop/pose_graph.hpp"
 #include "slamko_loop/xfeat_relocalizer.hpp"
+#include "slamko_ros/viz_sink.hpp"
 #include "slamko_vio/feature/eigenplaces.h"
 #include "slamko_vio/feature/xfeat.h"
 
@@ -332,6 +333,17 @@ class ProviderFusionNode : public rclcpp::Node {
       // E (proximity detection): radius [m] around the estimated global pose within which
       // prior submaps are geometrically verified independent of VPR retrieval. 0 = off.
       proximity_radius_ = declare_parameter("proximity_radius", 3.0);
+      // 3-TIER candidate->soft->weld (RESEARCH_LIFELONG_FUSION_01 §arch; Kimera/maplab
+      // precedent). A proximity match (E) is VPR-independent = weaker appearance evidence,
+      // so it enters a CANDIDATE tier first (viz-only, NOT optimised) and is promoted to a
+      // prior factor ONLY on a strong-inlier hit OR a 2nd consistent candidate. This
+      // protects never-false-merge (Hard Rule: never ingest garbage) without losing E's
+      // recall. false -> proximity matches promote immediately (the pre-3-tier behaviour).
+      proximity_three_tier_ = declare_parameter("proximity_three_tier", true);
+      // Inliers at/above which a single proximity candidate promotes straight to a factor.
+      proximity_promote_inliers_ = declare_parameter("proximity_promote_inliers", 40);
+      // Max translation [m] between two candidate corrections for them to "agree" (2nd vote).
+      proximity_agree_m_ = declare_parameter("proximity_agree_m", 0.5);
       min_reloc_period_s_ = declare_parameter("min_reloc_period_s", 0.5);
       lg_model_path_ = declare_parameter(
           "lightglue_model_path",
@@ -389,6 +401,20 @@ class ProviderFusionNode : public rclcpp::Node {
                               std::string("/camera/camera/infra2/camera_info")),
             info_qos, [this](sensor_msgs::msg::CameraInfo::SharedPtr m) { onInfo(m, true); });
       }
+    }
+
+    // ----- LIVE VIZ (Rerun). No-op unless the build is -DSLAMKO_WITH_RERUN AND a
+    // `rerun` viewer is reachable. connect_grpc to a SEPARATELY-launched viewer (never
+    // spawn() in-process — keeps the viewer's GPU/crash handling out of the estimator).
+    viz_enable_ = declare_parameter("viz", false);
+    viz_endpoint_ = declare_parameter("viz_endpoint", std::string(""));
+    if (viz_enable_) {
+      const bool on = viz_.init("slamko", viz_endpoint_);
+      viz_.setSessionTransform(T_global_map_, /*localized=*/false);  // identity at boot
+      RCLCPP_INFO(get_logger(), "live viz: %s (%s)",
+                  on ? "STREAMING to rerun" : "requested but NOT connected "
+                       "(build -DSLAMKO_WITH_RERUN + launch a `rerun` viewer)",
+                  viz_endpoint_.empty() ? "default endpoint" : viz_endpoint_.c_str());
     }
 
     RCLCPP_INFO(get_logger(), "provider_fusion_node up: topic=%s frames %s->%s->%s",
@@ -723,6 +749,14 @@ class ProviderFusionNode : public rclcpp::Node {
           // are recognized as redundant and culled from visit 1.
           for (const auto& lm : sm.landmarks)
             occ_.insert(occKey(sm.anchor * lm.position));
+          // LIVE VIZ: the prior map cloud (grey, world/prior) — the backdrop the session
+          // aligns onto once cross-session-localized.
+          if (viz_enable_ && viz_.enabled()) {
+            std::vector<Eigen::Vector3d> pts;
+            pts.reserve(sm.landmarks.size());
+            for (const auto& lm : sm.landmarks) pts.push_back(sm.anchor * lm.position);
+            viz_.logPriorCloud(sm.id, pts);
+          }
         }
         prior_submaps_.clear();  // registered; keep only ids/anchors
       }
@@ -805,6 +839,36 @@ class ProviderFusionNode : public rclcpp::Node {
         if (t - last_reloc_attempt_t_ >= min_reloc_period_s_) {
           last_reloc_attempt_t_ = t;
           tryRelocalize(id, t, ql);
+        }
+        // ---- LIVE VIZ window A (landmarks over video) + window B pose/camera/HUD.
+        if (viz_enable_ && viz_.enabled()) {
+          viz_.setTime(id, t);
+          viz_.logImage(*left);
+          // XFeat keypoints -> FULL-image pixels (wide sensors are centre-cropped by crop_x_).
+          const float off = (left->cols >= 752) ? (float)crop_x_ : 0.0f;
+          Eigen::Matrix<float, Eigen::Dynamic, 2, Eigen::RowMajor> uv(ql.keypoints.rows(), 2);
+          for (int i = 0; i < ql.keypoints.rows(); ++i) {
+            uv(i, 0) = ql.keypoints(i, 0) + off;
+            uv(i, 1) = ql.keypoints(i, 1);
+          }
+          viz_.logKeypoints(uv, loss_in_segment_ ? slamko::VizTrack::Degraded
+                                                  : slamko::VizTrack::Tracked);
+          const bool certain = localized_ && viz_kf_since_match_ < 18;
+          viz_.logPose(T_map, certain);
+          viz_.logCamera(T_map * body_T_cam_, fx_, fy_, cx_, cy_, left->cols, left->rows);
+          char hud[256];
+          std::snprintf(hud, sizeof(hud),
+                        "%s | kf %llu | submaps %zu | loops %d | x-prior %d | prox %d/%d | "
+                        "%zu kpts%s",
+                        localized_ ? "LOCALIZED" : (loss_in_segment_ ? "TRACK-LOSS" : "MAPPING"),
+                        (unsigned long long)id, sealed_ids_.size(), loops_closed_,
+                        xsession_priors_added_, prox_promoted_, prox_candidates_,
+                        (size_t)ql.keypoints.rows(), loss_in_segment_ ? " [DR]" : "");
+          viz_.logHud(hud);
+          viz_.logScalar("loops", loops_closed_);
+          viz_.logScalar("xsession_priors", xsession_priors_added_);
+          viz_.logScalar("keypoints", ql.keypoints.rows());
+          ++viz_kf_since_match_;
         }
       }
     }
@@ -909,12 +973,14 @@ class ProviderFusionNode : public rclcpp::Node {
       if (localized_ && proximity_radius_ > 0.0 && graph_.hasNode(q_id)) {
         const slamko::SE3 T_q_global = T_global_map_ * graph_.pose(q_id);
         processRelocResult(
-            reloc_prior_->relocalizeNear(query, T_q_global, proximity_radius_), q_id, t);
+            reloc_prior_->relocalizeNear(query, T_q_global, proximity_radius_), q_id, t,
+            /*from_proximity=*/true);
       }
     }
   }
 
-  void processRelocResult(const slamko::RelocResult& r, std::uint64_t q_id, double t) {
+  void processRelocResult(const slamko::RelocResult& r, std::uint64_t q_id, double t,
+                          bool from_proximity = false) {
     if (r.found)
       RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
                            "reloc attempt: kf %llu best=submap %llu inliers=%d",
@@ -924,6 +990,45 @@ class ProviderFusionNode : public rclcpp::Node {
     if (!r.found ||
         r.num_inliers < (is_prior ? prior_min_inliers_ : reloc_min_inliers_))
       return;
+
+    // 3-TIER candidate->soft->weld gate for the PROXIMITY path (RESEARCH_LIFELONG_
+    // FUSION_01 §arch). A proximity match is VPR-INDEPENDENT = weaker appearance
+    // evidence, so it must not perturb the graph on a single hit (never-false-merge).
+    // It enters a CANDIDATE tier (viz dashed-grey, NOT optimised) and is promoted to a
+    // prior factor ONLY on strong inliers OR a 2nd candidate agreeing on the same
+    // correction. Strong/agreeing -> fall through to the normal prior-factor path below.
+    if (from_proximity && proximity_three_tier_ && is_prior && localized_ &&
+        graph_.hasNode(q_id)) {
+      const slamko::SE3 T_global_q = prior_anchor_.at(r.submap_id) * r.T_query_match;
+      const slamko::SE3 target_session = T_global_map_.inverse() * T_global_q;
+      ++prox_candidates_;
+      if (viz_enable_ && viz_.enabled()) {
+        const Eigen::Vector3d pq = graph_.pose(q_id).translation();
+        const Eigen::Vector3d pp =
+            (T_global_map_.inverse() * prior_anchor_.at(r.submap_id)).translation();
+        viz_cand_segs_.push_back({pp, pq});
+        pushGraphEdgesToViz();
+      }
+      const bool strong = r.num_inliers >= proximity_promote_inliers_;
+      const bool agree =
+          have_prox_cand_ && prox_cand_submap_ == r.submap_id &&
+          (prox_cand_target_.translation() - target_session.translation()).norm() <
+              proximity_agree_m_;
+      if (!strong && !agree) {
+        have_prox_cand_ = true;
+        prox_cand_submap_ = r.submap_id;
+        prox_cand_target_ = target_session;
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+                             "proximity CANDIDATE held: kf %llu -> prior submap %llu inl=%d "
+                             "(awaiting promote: strong>=%d or a 2nd vote)",
+                             (unsigned long long)q_id, (unsigned long long)r.submap_id,
+                             r.num_inliers, proximity_promote_inliers_);
+        return;
+      }
+      have_prox_cand_ = false;
+      viz_cand_segs_.clear();  // promoted -> the candidate becomes a real (green) prior edge
+      ++prox_promoted_;
+    }
     if (!is_prior) {
       // In-session: only AGED submaps count as loops (adjacent corridor isn't a
       // loop) + a loose teleport bound vs the graph (30 m default — NOT a tight
@@ -973,6 +1078,10 @@ class ProviderFusionNode : public rclcpp::Node {
       if (!localized_) {
         T_global_map_ = T_new;
         localized_ = true;
+        // Atlas coherence: pin the whole session subtree onto the prior frame so window B
+        // shows the session sitting INSIDE the prior cloud (and re-anchors move it as one).
+        viz_.setSessionTransform(T_global_map_, true);
+        viz_kf_since_match_ = 0;
       } else if (xsession_prior_factor_) {
         // A (RESEARCH_LIFELONG_FUSION_01): T_global_map_ stays FROZEN after the first
         // re-anchor; each further confident match adds a per-keyframe PRIOR pulling q
@@ -996,6 +1105,14 @@ class ProviderFusionNode : public rclcpp::Node {
               xsession_priors_added_, (unsigned long long)q_id,
               (unsigned long long)r.submap_id, r.num_inliers, jump,
               res.initial_cost, res.final_cost);
+          if (viz_enable_ && viz_.enabled()) {
+            const Eigen::Vector3d pq = graph_.pose(q_id).translation();
+            const Eigen::Vector3d pp =
+                (T_global_map_.inverse() * prior_anchor_.at(r.submap_id)).translation();
+            viz_prior_segs_.push_back({pp, pq});
+            viz_kf_since_match_ = 0;
+            pushGraphEdgesToViz();
+          }
           markCoverage(node_time_.count(q_id) ? node_time_[q_id] : 0.0, r.submap_id,
                        r.num_inliers);
           return;
@@ -1062,6 +1179,12 @@ class ProviderFusionNode : public rclcpp::Node {
     anchor_edges_.push_back(AnchorEdge{next_submap_id_, r.submap_id, r.T_query_match,
                                        loop_sigma_t_, loop_sigma_r_, 2});
     dumpAnchorEdges();
+    // LIVE VIZ: the "sees another keyframe" link q<->matched (red) + redraw the graph.
+    if (viz_enable_ && viz_.enabled()) {
+      viz_loop_segs_.push_back({graph_.pose(a).translation(), graph_.pose(q_id).translation()});
+      viz_kf_since_match_ = 0;
+      pushGraphEdgesToViz();
+    }
   }
 
   // Persist the inter-map anchor edges (federation-of-islands connections) so the
@@ -1077,6 +1200,38 @@ class ProviderFusionNode : public rclcpp::Node {
         << ',' << p.z() << ',' << q.x() << ',' << q.y() << ',' << q.z() << ','
         << q.w() << ',' << e.sigma_t << ',' << e.sigma_r << '\n';
     }
+  }
+
+  // World position (session frame) of a sealed submap's anchor = its first KF's live
+  // graph pose. False if not yet in the graph (e.g. the still-building submap).
+  bool anchorPos(std::uint64_t sm, Eigen::Vector3d& out) {
+    auto it = submap_first_kf_.find(sm);
+    if (it == submap_first_kf_.end() || !graph_.hasNode(it->second)) return false;
+    out = graph_.pose(it->second).translation();
+    return true;
+  }
+
+  // Re-log the typed pose-graph edges to the viz (replace-per-class). Chain/Soft come
+  // from anchor_edges_ (submap-anchor endpoints); Loop/Prior/Candidate are the
+  // accumulated kf<->target links. The trust ladder is drawn by COLOUR + a per-class
+  // entity layer (research: never a z-offset) so soft/candidate links read as uncertain
+  // without contaminating the trusted map.
+  void pushGraphEdgesToViz() {
+    if (!viz_enable_ || !viz_.enabled()) return;
+    std::vector<std::array<Eigen::Vector3d, 2>> chain, soft, loop;
+    Eigen::Vector3d a, b;
+    for (const auto& e : anchor_edges_) {
+      if (!anchorPos(e.from, a) || !anchorPos(e.to, b)) continue;
+      if (e.type == 0) chain.push_back({a, b});
+      else if (e.type == 1) soft.push_back({a, b});
+      else loop.push_back({a, b});
+    }
+    for (const auto& s : viz_loop_segs_) loop.push_back(s);
+    viz_.setEdges(slamko::VizEdge::Chain, chain);
+    viz_.setEdges(slamko::VizEdge::Soft, soft);
+    viz_.setEdges(slamko::VizEdge::Loop, loop);
+    viz_.setEdges(slamko::VizEdge::Prior, viz_prior_segs_);
+    viz_.setEdges(slamko::VizEdge::Candidate, viz_cand_segs_);
   }
 
   // Register sealed submaps into the relocalizer only once they are OLDER than
@@ -1384,6 +1539,17 @@ class ProviderFusionNode : public rclcpp::Node {
     // Defer relocalizer registration until the submap is older than the loop gap.
     submap_first_kf_[sm.id] = sm.keyframes.front().id;
     submap_last_t_[sm.id] = pending_kfs_.back().t;
+    // LIVE VIZ window B: this submap's landmark cloud (session frame) + the typed edges.
+    // A submap sealed across a true loss / during degraded tracking renders DANGLING
+    // (distinct hue) — honest about which geometry is trustworthy.
+    if (viz_enable_ && viz_.enabled()) {
+      viz_.setTime(sm.keyframes.back().id, pending_kfs_.back().t);
+      std::vector<Eigen::Vector3d> pts;
+      pts.reserve(sm.landmarks.size());
+      for (const auto& lm : sm.landmarks) pts.push_back(sm.anchor * lm.position);
+      viz_.logSubmapCloud(sm.id, pts, seg_was_hard_loss || degraded_submaps_.count(sm.id) > 0);
+      pushGraphEdgesToViz();
+    }
     sealed_unregistered_.emplace_back(std::move(sm), pending_kfs_.back().t);
     dumpAnchorEdges();
     pending_kfs_.clear();
@@ -1522,6 +1688,25 @@ class ProviderFusionNode : public rclcpp::Node {
   double xsession_prior_jump_max_ = 2.0;
   int xsession_priors_added_ = 0;
   double proximity_radius_ = 3.0;   // E: proximity-detection radius [m] (0 = off)
+  // 3-tier candidate->soft->weld for the proximity path (never-false-merge defense).
+  bool proximity_three_tier_ = true;
+  int proximity_promote_inliers_ = 40;
+  double proximity_agree_m_ = 0.5;
+  bool have_prox_cand_ = false;       // a proximity candidate is pending a 2nd vote
+  std::uint64_t prox_cand_submap_ = 0;
+  slamko::SE3 prox_cand_target_;      // its implied session-frame target pose for q
+  int prox_candidates_ = 0, prox_promoted_ = 0;
+  // Accumulated viz edge segments by class (session frame). Chain/Soft are rebuilt from
+  // anchor_edges_ each push; these three accumulate kf<->target links as matches fire.
+  std::vector<std::array<Eigen::Vector3d, 2>> viz_cand_segs_;   // proximity, pre-promotion (grey)
+  std::vector<std::array<Eigen::Vector3d, 2>> viz_loop_segs_;   // same-session loop (red)
+  std::vector<std::array<Eigen::Vector3d, 2>> viz_prior_segs_;  // cross-session prior (green)
+
+  // ----- live viz (Rerun); no-op unless built with SLAMKO_WITH_RERUN + a viewer.
+  slamko::VizSink viz_;
+  bool viz_enable_ = false;
+  std::string viz_endpoint_;
+  int viz_kf_since_match_ = 1000;     // keyframes since the last verified match (certainty)
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_image_, sub_image_r_;

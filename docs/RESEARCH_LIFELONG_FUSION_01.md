@@ -83,6 +83,43 @@ fake-coherent double**. This is the user's accepted model: some islands firm, so
 the all-soft mislabeling but not yet the magnitude scaling); C (suppress duplicate-submap sealing in
 covered prior regions); D (redundant-submap culling backstop). E is the headline coherence unlock; done.
 
+## §viz + §arch — live visualizer + lost-track edge architecture (2026-06-20, 3 agents)
+
+Research (slamko data-surface map · modern-viz comparison · how ORB-SLAM3/PLVS/AirSLAM/RTAB-Map/
+maplab/Kimera handle lost-track→new-map→re-merge + edge-type viz). Verdicts:
+
+**Viewer = Rerun (rerun.io), not Pangolin.** The two windows the user wants (landmarks-over-video +
+live-3D-map-with-keyframe-frustums-and-loop-links) ARE Rerun's native data model: one scrubbable
+scene-graph, image+overlay+3D+plots time-aligned, `LineStrips3D` for edges (and future line
+landmarks AirSLAM/PLVS-style = zero new tooling), entity-path subtrees that model DANGLING submaps
+as free-floating islands cleanly. Apache-2.0+MIT (Hard Rule #1 clean). connect_grpc to a separate
+viewer (NOT spawn() — keeps the viewer GPU/crash handling out of the estimator, the OKVIS
+contention discipline). Fallback Foxglove (zero-code remote dashboard). Pangolin is what we'd be
+replacing (no scrub, no image panel, hand-drawn). SHIPPED as `slamko_ros` `VizSink` (no-op unless
+`-DSLAMKO_WITH_RERUN`); both builds green; `viz_selftest` emits a 345 KB `.rrd` (runtime proof).
+
+**The "draw soft edges on a separate plane so they don't contaminate the map" idea — sound
+instinct, wrong mechanism.** z-offset / 2.5D layering is a real technique (MLN viz) but the
+empirical evidence is against it (TVCG-2024 VR study: 2.5D wins no task in general, adds occlusion)
+and NO mainstream SLAM viewer z-offsets edges. The contamination concern is real and split into TWO
+channels: (a) METRIC — the soft edge LIVES in the optimised graph with HIGH covariance so it yields
+under a hard weld (slamko already does this; matches RTAB-Map/maplab/Kimera — keep it, it's what
+makes us never-lost); (b) VISUAL — separate by per-class COLOUR + a toggleable entity LAYER, not by
+geometry. Encoding adopted (RTAB-Map convention): chain=blue solid · soft=orange faint · intra-loop
+=red · cross-session-prior=green · proximity-candidate=grey faint · dangling submap=distinct hue,
+NO connecting edge.
+
+**Edge lifecycle = explicit 3-tier candidate→soft→weld (Kimera geometric-verify-then-PCM/GNC +
+maplab aam-then-relax precedent).** The proximity path (E) is VPR-INDEPENDENT = weaker appearance
+evidence, so it must not perturb the graph on one hit (never-false-merge). Lifecycle now:
+**candidate** (metadata + dashed-grey viz, NOT optimised) → **soft/promote** (into the graph once a
+strong-inlier hit OR a 2nd consistent candidate confirms) → **hard weld** (the cross-session prior
+factor). SHIPPED reversible (`proximity_three_tier`); validation = the brutal-revisit A/B must not
+regress E's matches/p90 (PENDING the GPU run). The conclusion the agents converged on: slamko's
+soft-edge-with-high-covariance + weld-only-on-verified-recognition design was ALREADY correct and
+field-aligned; the only gap was making the candidate→soft promotion explicit + reversible, which
+this adds.
+
 ## Key sources
 ORB-SLAM3 Atlas (Campos 2021, arxiv 2007.11898) · maplab 1.0/2.0 (1711.10250, 2212.00654) · RTAB-Map
 (Labbé & Michaud, T-RO 2013 + JFR 2019; proximity detection, ReduceGraph, IncrementalMemory) ·

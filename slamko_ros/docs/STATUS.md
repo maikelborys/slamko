@@ -1,5 +1,44 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
+## 2026-06-20 — Live Rerun visualizer (VizSink) + 3-tier candidate→soft→weld edges
+
+Two deliverables from the "online viewer + lost-track edge architecture" research
+(`docs/RESEARCH_LIFELONG_FUSION_01.md` §viz/§arch; 3 parallel research agents):
+
+**1. VizSink — live Rerun (rerun.io) debug visualizer.** The modern Pangolin: one scrubbable
+scene-graph with two coherent views the offline Plotly can't give. Window A ("landmarks over
+video"): the live left image + XFeat keypoints (green=tracked/orange=DR-loss) + a HUD status line +
+scalar plots. Window B ("map building"): per-submap landmark clouds, the trajectory growing live
+(green=certain/red=dangling), camera frustums, and the pose-graph edges drawn **by type** — chain
+(blue) / soft-loss-bridged (orange, faint) / intra-loop (red) / cross-session-prior (green) /
+proximity-CANDIDATE (grey, faint). Atlas coherence: the whole session subtree carries a
+Transform3D = T_global_map_, so a re-anchor moves it onto the prior cloud as one rigid island
+(dangling islands hang honestly). The "draw soft edges on another plane so they don't contaminate
+the map" instinct → realised as per-class entity LAYERS + colour, NOT a z-offset (research verdict:
+2.5D layering hurts; no SLAM viewer does it).
+
+Design (`viz_sink.hpp`/`.cpp`, PIMPL): compiled as a complete **NO-OP** unless the build sets
+`-DSLAMKO_WITH_RERUN=ON` (option fetches the SDK 0.33.0). The node never #includes a Rerun header,
+so it builds with or without the SDK. Connection is `connect_grpc` to a SEPARATELY-launched viewer
+(never spawn() in-process — keeps the viewer GPU/crash handling out of the estimator, the OKVIS
+GPU-contention discipline). `viz_endpoint` ending in `.rrd` records to a file instead = an
+**offline, rewindable** capture (`rerun run.rrd` to scrub).
+
+**Validated:** no-op build green; `-DSLAMKO_WITH_RERUN=ON` build green against the real fetched
+SDK (only API fix: `Pinhole` has no `with_principal_point` → centred); `viz_selftest` (no-ROS
+runtime exercise of every method) emits a 345 KB `.rrd` → the logging path works end-to-end. The
+full live SLAM-run capture (brutal-revisit) is the remaining demo (heavy GPU run).
+
+**2. 3-tier candidate→soft→weld for the proximity (E) path.** The architecture refinement
+(Kimera/maplab precedent): a proximity match is VPR-INDEPENDENT = weaker appearance evidence, so it
+no longer perturbs the graph on a single hit. It enters a CANDIDATE tier (viz dashed-grey, NOT
+optimised) and is promoted to a prior factor ONLY on strong inliers
+(`proximity_promote_inliers`=40) OR a 2nd candidate agreeing on the same correction within
+`proximity_agree_m`=0.5 m. Protects never-false-merge without losing E's recall. Reversible:
+`proximity_three_tier`=true (false = the validated pre-3-tier immediate-promote behaviour).
+**Built + compiles; validation = re-run the brutal-revisit A/B (matches/p90 must not regress) —
+PENDING the GPU run.**
+
 ## 2026-06-19 — Viewpoint-aware cull: the recall coverage fix (bounded + omni-directional)
 
 Resolves the tension the viewpoint reframe exposed: the immortality cull bounds the map by
