@@ -17,6 +17,44 @@
 - **NEXT (user-set sequence): (1) EuRoC Machine Hall with BLACKOUTS (VIO / VIO+IMU dropout),
   ATE vs GT, then (2) the refactor IF the ATE reveals a real problem.**
 
+## STAGE 1 RESULTS — EuRoC MH_03 ATE + provider-feed blackout (2026-06-20, DONE)
+Harness built: `slamko_ros/launch/pa_okvis_euroc.launch.py` + `scripts/bench_euroc.sh`
+(rate 1.0 — EuRoC is OKVIS-stable, NOT the D455 rate<=0.5 GPU rule). EuRoC bags carry
+`/euroc/cam{0,1}/camera_info` (no "missing CameraInfo"); images are raw radtan but OKVIS
+undistorts INTERNALLY, so the provider/ATE path needs no rectification.
+
+| run | ATE rmse | p50 | p90 | n | note |
+|---|---|---|---|---|---|
+| baseline (no loss) | **3.93 cm** | 3.07 | 6.19 | 2012 | fused == provider EXACTLY (P-A gate) |
+| blackout VIO+IMU   | 3.91 cm | 2.61 | 6.37 | 1849 | 8 s odom-loss @50-58 s |
+| blackout VIO-only  | 3.99 cm | 2.89 | 6.37 | 1882 | imu_topic=none |
+
+**Headline (honest):** all 3 within 0.08 cm → slamko's never-lost recovery from an 8 s
+provider-feed blackout is CLEAN and IMU-INDEPENDENT at the trajectory level. Mechanism
+(`provider_fusion_node.cpp:655`): force_loss drops slamko's VIEW of OKVIS odom; OKVIS keeps
+its own internal IMU bridge, so when odom resumes `s.T_OB` is still-valid → slamko
+seal→branch→soft-edge→snaps back. The IMU toggle changes ONLY the DR-GATE measurement
+(`dr_gate.csv`), which is by design a GATE not a fill ([[slamko-neverlost-edges-supervisor]]).
+3.93 cm matches OKVIS's known ~3.2 cm MH_03.
+
+**Caveat (don't trust yet):** the DR-gate gyro channel (`onImu`) reads d_rot=34.9° on the
+VIO+IMU EuRoC run vs OKVIS's true 12.3° rotation — a gyro-FRAME issue (the channel was
+calibrated on D455 `/camera/camera/imu`, not EuRoC `/euroc/imu0`). Gap DETECTION + seal +
+branch + recovery are all correct; only the d_rot MAGNITUDE is suspect on EuRoC. Task #3/#12.
+
+**Deeper stress still available:** this drops slamko's odom FEED. A true VISUAL blackout
+(drop images to OKVIS so OKVIS itself goes IMU-only) is the harder test — needs an image-gate
+node + composing OKVIS on gated topics. Deferred in favour of Stage 2 (the user's "ver como
+se fusiona" cross-session goal).
+
+## STAGE 2 (next) — cross-session rectified MH fusion
+The user's "correr machine hall desde mitad hasta final, luego desde principio hasta final y
+ver como se fusiona". Needs the VPR/stereo-landmark path → ROW-ALIGNED rectified stereo.
+Built: `scripts/euroc_rectify_node.py` (live cv2.stereoRectify, publishes `/euroc/cam{0,1}/
+image_rect` + `camera_info_rect` 752x480 distortion-zeroed; OKVIS keeps eating raw — no bag
+re-record). Plan: session1 = MH mid→end → map; session2 = full with prior_map_dir → watch the
+reloc/proximity merge; ATE both + rotatable Plotly landmarks.
+
 ## NEXT TASK — EuRoC MH cross-session + blackout harness (build this)
 The validation the user wants ("todo completo"): EuRoC Machine Hall, overlapping sessions
 (MH mid→end as session 1, then full as session 2 → watch them FUSE), with **ATE vs ground-
