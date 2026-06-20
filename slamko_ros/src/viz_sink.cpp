@@ -158,8 +158,13 @@ void VizSink::logPose(const SE3& T_session_body, bool certain) {
   if (!impl_->on) return;
   impl_->traj.push_back(vec3(T_session_body.translation()));
   impl_->cert.push_back(certain);
-  // The whole path as ONE connected polyline (light blue) — re-logged each pose so the
-  // trajectory is a visible growing LINE, not a lone moving dot.
+  // THROTTLE the re-log: the path is re-logged whole each time (Rerun replace semantics),
+  // which is O(N) per pose -> O(N²) over a run and chokes the viewer. Re-log only every
+  // 8 poses (and always on the very first) — visually identical for a debug view, ~8× less
+  // work. (The single new point is cheap to accumulate every pose; only the LOG is heavy.)
+  if (impl_->traj.size() > 1 && impl_->traj.size() % 8 != 0) return;
+  // The whole path as ONE connected polyline (light blue) — re-logged so the trajectory is
+  // a visible growing LINE, not a lone moving dot.
   std::vector<std::vector<rerun::Vec3D>> strip{impl_->traj};
   impl_->rec->log("world/session/traj/line",
                   rerun::LineStrips3D(strip)

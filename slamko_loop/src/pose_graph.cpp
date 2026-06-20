@@ -83,6 +83,28 @@ struct PriorFactor {
   Eigen::Matrix<double, 6, 6> sqrt_info_;
 };
 
+// Unary YAW-only prior: residual = sqrt_info · wrap(yaw(q) − yaw_target). yaw is the
+// rotation about world-Z, yaw = atan2(R10, R00) (pitch-safe except at ±90° pitch). Only
+// the quaternion block participates → position + roll + pitch stay free (the compass
+// constrains exactly the one unobservable DOF). See COMPASS_RTABMAP.md §2.
+struct YawPriorFactor {
+  YawPriorFactor(double yaw_target, double sqrt_info)
+      : yaw_t_(yaw_target), si_(sqrt_info) {}
+
+  template <typename T>
+  bool operator()(const T* const q_ptr, T* residual) const {
+    Eigen::Map<const Eigen::Quaternion<T>> q(q_ptr);  // (x, y, z, w)
+    const Eigen::Matrix<T, 3, 3> R = q.toRotationMatrix();
+    const T yaw_est = ceres::atan2(R(1, 0), R(0, 0));
+    T d = yaw_est - T(yaw_t_);
+    d = ceres::atan2(ceres::sin(d), ceres::cos(d));  // wrap to (−π, π]
+    residual[0] = T(si_) * d;
+    return true;
+  }
+
+  double yaw_t_, si_;
+};
+
 std::array<double, 7> toBlock(const SE3& T) {
   const Eigen::Quaterniond q = T.so3().unit_quaternion();
   const Eigen::Vector3d t = T.translation();
@@ -135,11 +157,18 @@ void PoseGraph::addPriorFactor(std::uint64_t id, const SE3& T_W_body_target,
   priors_.push_back(Prior{id, T_W_body_target, sqrtInfoFromSigmas(sigma_t, sigma_r), robust});
 }
 
+void PoseGraph::addYawPrior(std::uint64_t id, double yaw_target_rad, double sigma_yaw_rad,
+                            bool robust) {
+  yaw_priors_.push_back(
+      YawPrior{id, yaw_target_rad, 1.0 / std::max(sigma_yaw_rad, 1e-6), robust});
+}
+
 PoseGraph::Result PoseGraph::optimize() {
   Result res;
   res.num_nodes = static_cast<int>(nodes_.size());
   for (const auto& e : edges_) (e.is_loop ? res.num_loops : res.num_odom)++;
-  if (nodes_.empty() || (edges_.empty() && priors_.empty())) return res;
+  if (nodes_.empty() || (edges_.empty() && priors_.empty() && yaw_priors_.empty()))
+    return res;
 
   ceres::Problem problem;
   for (auto& [id, blk] : nodes_) {
@@ -158,6 +187,18 @@ PoseGraph::Result PoseGraph::optimize() {
         (pr.robust && cfg_.loop_huber_delta > 0.0) ? new ceres::HuberLoss(cfg_.loop_huber_delta)
                                                    : nullptr;
     problem.AddResidualBlock(cost, loss, it->second.data(), it->second.data() + 3);
+  }
+
+  // Unary yaw-only (compass/BNO) priors — constrain ONLY the heading of each node.
+  for (const auto& yp : yaw_priors_) {
+    auto it = nodes_.find(yp.id);
+    if (it == nodes_.end()) continue;
+    auto* cost = new ceres::AutoDiffCostFunction<YawPriorFactor, 1, 4>(
+        new YawPriorFactor(yp.yaw, yp.sqrt_info));
+    ceres::LossFunction* loss =
+        (yp.robust && cfg_.loop_huber_delta > 0.0) ? new ceres::HuberLoss(cfg_.loop_huber_delta)
+                                                   : nullptr;
+    problem.AddResidualBlock(cost, loss, it->second.data() + 3);
   }
 
   for (const auto& e : edges_) {

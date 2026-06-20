@@ -49,6 +49,7 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/magnetic_field.hpp>
+#include <std_msgs/msg/u_int8_multi_array.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 
@@ -187,6 +188,38 @@ class ProviderFusionNode : public rclcpp::Node {
       RCLCPP_INFO(get_logger(), "compass instrument on: mag=%s gate=[%.0f,%.0f]uT csv=%s",
                   mag_topic_.c_str(), mag_norm_min_ut_, mag_norm_max_ut_,
                   compass_csv_path_.c_str());
+    }
+
+    // ----- BNO055 ABSOLUTE-YAW compass PRIOR (the bent-corridor / vision-loss yaw fix;
+    // ported from RTABmap/COMPASS_RTABMAP.md). OFF by default — opt-in, never regresses an
+    // existing run. Uses the BNO's fused orientation quaternion as a yaw-only graph prior,
+    // gated by mag-cal + field-norm + innovation with adaptive sigma. The |B| field-norm
+    // comes from onMag, so the mag topic must be subscribed (it is, above).
+    compass_yaw_prior_ = declare_parameter("compass_yaw_prior", false);
+    yaw_min_cal_mag_   = declare_parameter("yaw_min_cal_mag", 2);
+    yaw_band_tol_ut_   = declare_parameter("yaw_band_tol_ut", 8.0);
+    yaw_sigma_min_deg_ = declare_parameter("yaw_sigma_min_deg", 5.0);
+    yaw_sigma_max_deg_ = declare_parameter("yaw_sigma_max_deg", 45.0);
+    yaw_innov_gate_deg_ = declare_parameter("yaw_innov_gate_deg", 30.0);
+    yaw_init_window_s_ = declare_parameter("yaw_init_window_s", 4.0);
+    yaw_opt_every_     = declare_parameter("yaw_opt_every", 15);
+    bno_imu_topic_     = declare_parameter("bno_imu_topic", std::string("/bno055/imu"));
+    bno_calib_topic_   = declare_parameter("bno_calib_topic", std::string("/bno055/calib_status"));
+    if (compass_yaw_prior_) {
+      auto bq = rclcpp::QoS(rclcpp::KeepLast(200)).durability_volatile();
+      if (declare_parameter("bno_best_effort", true)) bq.best_effort(); else bq.reliable();
+      sub_bno_imu_ = create_subscription<sensor_msgs::msg::Imu>(
+          bno_imu_topic_, bq,
+          std::bind(&ProviderFusionNode::onBnoImu, this, std::placeholders::_1));
+      sub_bno_calib_ = create_subscription<std_msgs::msg::UInt8MultiArray>(
+          bno_calib_topic_, bq,
+          std::bind(&ProviderFusionNode::onBnoCalib, this, std::placeholders::_1));
+      RCLCPP_INFO(get_logger(),
+                  "compass YAW-PRIOR on: bno=%s calib=%s min_cal=%d band=±%.0fuT "
+                  "sigma=[%.0f,%.0f]deg innov_gate=%.0fdeg opt_every=%d",
+                  bno_imu_topic_.c_str(), bno_calib_topic_.c_str(), yaw_min_cal_mag_,
+                  yaw_band_tol_ut_, yaw_sigma_min_deg_, yaw_sigma_max_deg_,
+                  yaw_innov_gate_deg_, yaw_opt_every_);
     }
 
     const double tf_rate = declare_parameter("tf_rate_hz", 30.0);
@@ -485,6 +518,7 @@ class ProviderFusionNode : public rclcpp::Node {
     const double t = rclcpp::Time(m->header.stamp).seconds();
     const double bx = m->magnetic_field.x, by = m->magnetic_field.y, bz = m->magnetic_field.z;
     const double norm_ut = std::sqrt(bx * bx + by * by + bz * bz) * 1e6;  // T -> uT
+    bno_last_norm_ut_ = norm_ut;  // latest |B| for the compass yaw-prior field-norm gate
     const bool ok = norm_ut >= mag_norm_min_ut_ && norm_ut <= mag_norm_max_ut_;
     const double heading_deg = std::atan2(by, bx) * 180.0 / M_PI;
     ++mag_total_;
@@ -492,6 +526,102 @@ class ProviderFusionNode : public rclcpp::Node {
     if (compass_file_) {
       std::fprintf(compass_file_, "%.3f,%.2f,%.2f,%d\n", t, norm_ut, heading_deg, ok ? 1 : 0);
       std::fflush(compass_file_);
+    }
+  }
+
+  // ---- BNO055 ABSOLUTE-YAW compass prior (COMPASS_RTABMAP.md ported into slamko).
+  // The BNO's fused orientation quaternion gives an absolute heading (magnetometer-
+  // anchored). We use it as a YAW-ONLY prior in the pose graph — the one DOF VIO can't
+  // observe — gated by mag calibration + field-norm + innovation, with adaptive sigma.
+  // yaw about world-Z from a quaternion (pitch-safe except at ±90° pitch).
+  static double yawFromQuat(const Eigen::Quaterniond& q) {
+    return std::atan2(2.0 * (q.w() * q.z() + q.x() * q.y()),
+                      1.0 - 2.0 * (q.y() * q.y() + q.z() * q.z()));
+  }
+  static double wrapPi(double a) { return std::atan2(std::sin(a), std::cos(a)); }
+
+  void onBnoImu(const sensor_msgs::msg::Imu::SharedPtr m) {
+    if (!compass_yaw_prior_) return;
+    const double t = rclcpp::Time(m->header.stamp).seconds();
+    const Eigen::Quaterniond q(m->orientation.w, m->orientation.x, m->orientation.y,
+                               m->orientation.z);
+    if (q.norm() < 0.5) return;  // unpopulated orientation
+    bno_yaw_buf_.emplace_back(t, yawFromQuat(q.normalized()));
+    while (bno_yaw_buf_.size() > 600) bno_yaw_buf_.pop_front();
+  }
+
+  void onBnoCalib(const std_msgs::msg::UInt8MultiArray::SharedPtr m) {
+    if (m->data.size() >= 4) bno_mag_cal_ = m->data[3];  // [sys,gyro,accel,MAG] 0-3
+  }
+
+  // BNO yaw nearest to time t (within 0.1 s), false if none.
+  bool bnoYawAt(double t, double& yaw_out) const {
+    double best_dt = 0.1;
+    bool found = false;
+    for (const auto& e : bno_yaw_buf_)
+      if (std::abs(e.first - t) < best_dt) { best_dt = std::abs(e.first - t); yaw_out = e.second; found = true; }
+    return found;
+  }
+
+  // Per-keyframe: maybe add a gated, adaptive-sigma yaw prior anchoring the OKVIS heading
+  // to the BNO's absolute yaw. Calibrates the OKVIS-world↔magnetic-north offset over an
+  // init window first. Re-optimizes every yaw_opt_every_ applied priors so the heading is
+  // continuously straightened (the bent-corridor fix).
+  void maybeAddYawPrior(std::uint64_t id, double t, const slamko::SE3& T_map) {
+    if (!compass_yaw_prior_ || !graph_.hasNode(id)) return;
+    double yaw_bno;
+    if (!bnoYawAt(t, yaw_bno)) return;
+    // Gate 1: magnetometer calibrated enough.
+    if (bno_mag_cal_ < yaw_min_cal_mag_) { ++yaw_gated_cal_; return; }
+    const double yaw_okvis = yawFromQuat(T_map.so3().unit_quaternion());
+
+    if (!yaw_offset_locked_) {
+      // INIT: learn the constant OKVIS-yaw↔BNO-yaw offset + nominal |B| over a window.
+      if (yaw_init_t0_ < 0.0) yaw_init_t0_ = t;
+      yaw_off_sin_ += std::sin(yaw_okvis - yaw_bno);
+      yaw_off_cos_ += std::cos(yaw_okvis - yaw_bno);
+      if (bno_last_norm_ut_ > 0.0) { yaw_nom_sum_ += bno_last_norm_ut_; ++yaw_nom_n_; }
+      if (t - yaw_init_t0_ >= yaw_init_window_s_ && yaw_nom_n_ >= 10) {
+        yaw_offset_ = std::atan2(yaw_off_sin_, yaw_off_cos_);
+        yaw_nominal_ut_ = yaw_nom_sum_ / std::max(1, yaw_nom_n_);
+        yaw_offset_locked_ = true;
+        RCLCPP_INFO(get_logger(),
+                    "compass yaw-prior LOCKED: offset=%.1fdeg nominal|B|=%.1fuT (cal=%d)",
+                    yaw_offset_ * 180.0 / M_PI, yaw_nominal_ut_, bno_mag_cal_);
+      }
+      return;
+    }
+
+    // Gate 2: field-norm band (auto-learned nominal ± tol) — rejects ferrous spikes.
+    const double anom = (yaw_nominal_ut_ > 0.0 && bno_last_norm_ut_ > 0.0)
+                            ? std::abs(bno_last_norm_ut_ - yaw_nominal_ut_) / yaw_band_tol_ut_
+                            : 1.0;
+    if (anom > 1.0) { ++yaw_gated_band_; return; }
+    // Gate 3: innovation (compass vs current VIO yaw) — anti-spike backstop.
+    const double yaw_target = wrapPi(yaw_bno + yaw_offset_);
+    const double innov = wrapPi(yaw_target - yaw_okvis);
+    if (std::abs(innov) > yaw_innov_gate_deg_ * M_PI / 180.0) { ++yaw_gated_innov_; return; }
+
+    // Adaptive sigma: tight in a clean field, loose where dirty (|B| anomaly / low cal /
+    // big innovation). dirtiness in [0,1] lerps sigma_min -> sigma_max (geometric).
+    const double dirt = std::min(1.0, std::max({anom,
+        (3.0 - bno_mag_cal_) / 3.0,
+        std::abs(innov) / (yaw_innov_gate_deg_ * M_PI / 180.0)}));
+    const double smin = yaw_sigma_min_deg_ * M_PI / 180.0;
+    const double smax = yaw_sigma_max_deg_ * M_PI / 180.0;
+    const double sigma = smin * std::pow(smax / smin, dirt);
+    graph_.addYawPrior(id, yaw_target, sigma, /*robust=*/true);
+    ++yaw_priors_added_;
+    if (yaw_priors_added_ % yaw_opt_every_ == 0 && graph_.numNodes() >= 5) {
+      const auto res = graph_.optimize();
+      T_map_odom_target_ = graph_.pose(id) * chain_.lastKeyframe().T_OB.inverse();
+      RCLCPP_INFO(get_logger(),
+                  "compass yaw-prior #%d @kf %llu: yaw_bno=%.0f yaw_vio=%.0f innov=%.1fdeg "
+                  "sigma=%.0fdeg | re-opt cost %.2e->%.2e (gated cal/band/innov=%ld/%ld/%ld)",
+                  yaw_priors_added_, (unsigned long long)id, yaw_target * 180.0 / M_PI,
+                  yaw_okvis * 180.0 / M_PI, innov * 180.0 / M_PI, sigma * 180.0 / M_PI,
+                  res.initial_cost, res.final_cost, yaw_gated_cal_, yaw_gated_band_,
+                  yaw_gated_innov_);
     }
   }
 
@@ -804,6 +934,7 @@ class ProviderFusionNode : public rclcpp::Node {
   // Called once per new chain keyframe (single-threaded executor — no locking).
   // EigenPlaces + XFeat run HERE, at keyframe rate (~1-5 Hz), never per frame.
   void onKeyframe(std::uint64_t id, double t, const slamko::SE3& T_map) {
+    maybeAddYawPrior(id, t, T_map);  // compass yaw anchor (independent of the VPR path)
     if (!vpr_) return;
     auto nearest = [](const std::deque<std::pair<double, cv::Mat>>& buf, double tq,
                       double tol) -> const std::pair<double, cv::Mat>* {
@@ -1607,6 +1738,24 @@ class ProviderFusionNode : public rclcpp::Node {
   std::FILE* compass_file_ = nullptr;
   double mag_norm_min_ut_ = 25.0, mag_norm_max_ut_ = 65.0;
   long mag_total_ = 0, mag_accepted_ = 0;
+  // BNO055 absolute-yaw compass PRIOR (ported from COMPASS_RTABMAP.md). Anchors the one
+  // unobservable VIO DOF (yaw), gated by mag-cal + field-norm + innovation, adaptive sigma.
+  bool compass_yaw_prior_ = false;
+  std::string bno_imu_topic_, bno_calib_topic_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_bno_imu_;
+  rclcpp::Subscription<std_msgs::msg::UInt8MultiArray>::SharedPtr sub_bno_calib_;
+  std::deque<std::pair<double, double>> bno_yaw_buf_;  // (t, yaw_bno[rad])
+  double bno_last_norm_ut_ = -1.0;
+  int bno_mag_cal_ = 0;
+  bool yaw_offset_locked_ = false;
+  double yaw_offset_ = 0.0, yaw_off_sin_ = 0.0, yaw_off_cos_ = 0.0;
+  double yaw_init_window_s_ = 4.0, yaw_init_t0_ = -1.0;
+  double yaw_nom_sum_ = 0.0, yaw_nominal_ut_ = -1.0;
+  int yaw_nom_n_ = 0, yaw_min_cal_mag_ = 2;
+  double yaw_band_tol_ut_ = 8.0;
+  double yaw_sigma_min_deg_ = 5.0, yaw_sigma_max_deg_ = 45.0, yaw_innov_gate_deg_ = 30.0;
+  int yaw_opt_every_ = 15, yaw_priors_added_ = 0;
+  long yaw_gated_cal_ = 0, yaw_gated_band_ = 0, yaw_gated_innov_ = 0;
   std::FILE* dr_gate_file_ = nullptr;
   slamko::SO3 dr_R_;                 // integrated world<-body orientation (gyro)
   slamko::SO3 dr_R_at_last_odom_;    // its value at the last accepted odom sample

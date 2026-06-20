@@ -75,6 +75,8 @@ def setup(context):
             'mature_out_dir': out_dir + '/matured_prior',
             'viz': LaunchConfiguration('viz').perform(context).lower() == 'true',
             'viz_endpoint': LaunchConfiguration('viz_endpoint').perform(context),
+            'compass_yaw_prior':
+                LaunchConfiguration('compass_yaw_prior').perform(context).lower() == 'true',
         }])
 
     return [okvis, fusion]
@@ -97,6 +99,8 @@ def generate_launch_description():
             description='Live Rerun visualizer (needs -DSLAMKO_WITH_RERUN build + a viewer).'),
         DeclareLaunchArgument('viz_endpoint', default_value='',
             description='Rerun endpoint; ".rrd" path = offline file capture, else gRPC viewer.'),
+        DeclareLaunchArgument('compass_yaw_prior', default_value='false',
+            description='BNO055 absolute-yaw graph prior (gated) — straightens heading drift.'),
         DeclareLaunchArgument('force_loss_start', default_value='-1.0',
             description='Test: drop odom from this bag-relative time [s] (-1 = off).'),
         DeclareLaunchArgument('force_loss_end', default_value='-1.0',

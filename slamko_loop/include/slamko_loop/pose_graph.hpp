@@ -85,6 +85,16 @@ class PoseGraph {
   void addPriorFactor(std::uint64_t id, const SE3& T_W_body_target,
                       double sigma_t, double sigma_r, bool robust = true);
 
+  // UNARY yaw-only (heading) prior — the compass / BNO055 absolute-yaw anchor. Penalises
+  // ONLY the rotation about world-Z (yaw): the single DOF a gravity-aligned VIO cannot
+  // observe (gravity already locks roll/pitch), so it drifts unbounded with no absolute
+  // reference. Position + roll + pitch stay FREE. `yaw_target_rad` is the body heading in
+  // the graph's world frame (after the OKVIS-yaw↔magnetic-north offset calibration);
+  // `sigma_yaw_rad` is adaptive (tight in a clean field, loose where ferrous). This is
+  // RTAB-Map's kPosePrior-populated-only-on-yaw, ported (see RTABmap/COMPASS_RTABMAP.md).
+  void addYawPrior(std::uint64_t id, double yaw_target_rad, double sigma_yaw_rad,
+                   bool robust = true);
+
   // Gauge fix: this node's pose is held constant. If never set, the smallest id
   // is anchored automatically.
   void setAnchor(std::uint64_t id) { anchor_id_ = id; has_anchor_ = true; }
@@ -113,6 +123,13 @@ class PoseGraph {
     bool robust = true;
   };
 
+  struct YawPrior {
+    std::uint64_t id = 0;
+    double yaw = 0.0;        // target heading [rad], world frame
+    double sqrt_info = 1.0;  // 1/sigma_yaw [1/rad]
+    bool robust = true;
+  };
+
   static Eigen::Matrix<double, 6, 6> sqrtInfoFromSigmas(double sigma_t, double sigma_r);
 
   PoseGraphConfig cfg_;
@@ -120,6 +137,7 @@ class PoseGraph {
   std::map<std::uint64_t, std::array<double, 7>> nodes_;
   std::vector<Edge> edges_;
   std::vector<Prior> priors_;
+  std::vector<YawPrior> yaw_priors_;
   std::uint64_t anchor_id_ = 0;
   bool has_anchor_ = false;
 };
