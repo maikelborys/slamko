@@ -372,6 +372,19 @@ class ProviderFusionNode : public rclcpp::Node {
       // A burst of clustered losses (or a loss right at the end) would otherwise spawn
       // useless 10-landmark sliver maps; require the active component to be mature first.
       atlas_min_component_kfs_ = declare_parameter("atlas_min_component_kfs", 20);
+      // ETAPA 1b' — break on QUALITY (not just on an odom gap). The user's insight: when the
+      // provider dead-reckons through a tracking glitch it keeps publishing a FALSE trajectory
+      // (no gap, but physically implausible) — that should start a NEW island so the bad
+      // segment never contaminates the good map. Signals: an incoherent inter-sample jump
+      // (implied speed / speed-jump beyond what real motion can produce) OR a covariance spike
+      // (when the provider populates it). Cooldown avoids break-storms on a burst of glitches.
+      atlas_break_on_quality_ = declare_parameter("atlas_break_on_quality", false);
+      quality_break_speed_ = declare_parameter("quality_break_speed", 6.0);     // m/s implausible
+      quality_break_jump_ = declare_parameter("quality_break_jump", 1.5);       // m/s speed step
+      quality_break_cov_ = declare_parameter("quality_break_cov", 0.0);         // cov trace, 0=off
+      quality_break_cooldown_ = declare_parameter("quality_break_cooldown", 1.0);  // s
+      quality_recover_samples_ =
+          declare_parameter("quality_recover_samples", 30);  // sustained-coherent to recover
       anchor_soft_lm_ = declare_parameter("anchor_soft_lm", 7000);
       // R0.2 ingestion gate: bar degraded-tracking submaps from being reloc match targets.
       gate_degraded_reloc_ = declare_parameter("gate_degraded_reloc", true);
@@ -801,6 +814,57 @@ class ProviderFusionNode : public rclcpp::Node {
       if (atlas_break_on_loss_ && kfs_in_component_ >= atlas_min_component_kfs_)
         pending_break_ = true;
     }
+    // ETAPA 1b' — QUALITY break as a LOST->RECOVERED state machine (the user's model). A fast
+    // maneuver makes the provider dead-reckon through a glitch -> a FALSE trajectory (no odom
+    // gap, but physically implausible inter-sample motion). The right behaviour is NOT to cut
+    // at every jump (over-fragments) but to enter a LOST state for the WHOLE bad stretch and
+    // only resume a CLEAN map once tracking is coherent again, SUSTAINED. Result per maneuver:
+    //   good map (comp N) | dangling bad-bridge (comp N+1, hard-loss) | clean resume (comp N+2).
+    // Multiple jumps inside one maneuver = ONE lost period, not one break each.
+    double cur_speed = -1.0;
+    if (last_odom_t_ >= 0.0) {
+      const double dt = std::max(1e-3, s.t - last_odom_t_);
+      cur_speed = (s.T_OB.translation() - last_odom_T_.translation()).norm() / dt;
+      if (atlas_break_on_quality_) {
+        const double jump = last_speed_ >= 0.0 ? std::abs(cur_speed - last_speed_) : 0.0;
+        const double cov_tr = s.cov(0, 0) + s.cov(1, 1) + s.cov(2, 2);
+        const bool incoherent = cur_speed > quality_break_speed_ || jump > quality_break_jump_ ||
+                                (quality_break_cov_ > 0.0 && cov_tr > quality_break_cov_);
+        if (!tracking_lost_) {
+          if (incoherent && kfs_in_component_ >= atlas_min_component_kfs_) {
+            // ENTER LOST: seal the GOOD map up to here, start a dangling bad-bridge island.
+            RCLCPP_WARN(get_logger(),
+                        "QUALITY LOST: incoherent transition @t=%.1f (speed=%.1f jump=%.1f "
+                        "cov=%.2g) -> seal good map, tracking LOST until recovery",
+                        rel, cur_speed, jump, cov_tr);
+            if (!map_dir_.empty() && pending_kfs_.size() >= 2) sealSubmap();
+            tracking_lost_ = true;
+            coherent_streak_ = 0;
+            loss_in_segment_ = true;
+            seg_hard_loss_ = true;
+            pending_break_ = true;     // the bad bridge is its own (dangling) component
+            ++quality_breaks_;
+          }
+        } else {
+          // LOST: the maneuver. Everything here is suspect; wait for SUSTAINED coherence.
+          loss_in_segment_ = true;
+          seg_hard_loss_ = true;
+          if (incoherent) {
+            coherent_streak_ = 0;
+          } else if (++coherent_streak_ >= quality_recover_samples_) {
+            // RECOVERED: tracking coherent again -> seal the bad bridge + start a CLEAN island.
+            RCLCPP_WARN(get_logger(),
+                        "QUALITY RECOVERED @t=%.1f (%d coherent samples) -> new CLEAN island",
+                        rel, coherent_streak_);
+            if (!map_dir_.empty() && pending_kfs_.size() >= 2) sealSubmap();
+            tracking_lost_ = false;
+            pending_break_ = true;     // the clean resume is a fresh component
+            ++quality_recoveries_;
+          }
+        }
+      }
+    }
+    last_speed_ = cur_speed;
     last_odom_t_ = s.t;
     // snapshot the last trustworthy state for the NEXT gap's DR comparison.
     last_odom_T_ = s.T_OB;
@@ -2098,6 +2162,16 @@ class ProviderFusionNode : public rclcpp::Node {
   int component_id_ = 0;
   int atlas_min_component_kfs_ = 20;
   int kfs_in_component_ = 0;   // keyframes in the ACTIVE component (reset on break)
+  // ETAPA 1b' quality-break (LOST->RECOVERED state machine): an incoherent transition /
+  // covariance spike enters LOST (the maneuver); a sustained coherent streak RECOVERS into a
+  // fresh clean island. The bad bridge between them dangles (hard-loss).
+  bool atlas_break_on_quality_ = false;
+  bool tracking_lost_ = false;        // in a quality-LOST stretch (a bad maneuver)
+  int coherent_streak_ = 0;           // consecutive coherent samples since the last incoherence
+  int quality_recover_samples_ = 30;  // sustained coherent samples needed to declare recovery
+  double quality_break_speed_ = 6.0, quality_break_jump_ = 1.5, quality_break_cov_ = 0.0;
+  double quality_break_cooldown_ = 1.0, last_quality_break_t_ = -1e9, last_speed_ = -1.0;
+  int quality_breaks_ = 0, quality_recoveries_ = 0;
   std::unordered_map<std::uint64_t, int> submap_component_;  // submap id -> atlas component
   double anchor_soft_sigma_t_ = 1.0, anchor_soft_sigma_r_ = 0.3;
   int anchor_soft_lm_ = 7000;      // segment raw-landmark floor below which the chain edge is SOFT

@@ -60,6 +60,8 @@ fi
 [ -n "${DR_GATE_SOFT_COV:-}" ] && EXTRA_ARGS+=("dr_gate_soft_cov:=$DR_GATE_SOFT_COV")
 # ATLAS_BREAK=true -> etapa 1b: tracking loss breaks into a new disjoint map component.
 [ -n "${ATLAS_BREAK:-}" ] && EXTRA_ARGS+=("atlas_break_on_loss:=$ATLAS_BREAK")
+# ATLAS_BREAK_QUALITY=true -> etapa 1b': incoherent transition / cov spike -> break (false-traj).
+[ -n "${ATLAS_BREAK_QUALITY:-}" ] && EXTRA_ARGS+=("atlas_break_on_quality:=$ATLAS_BREAK_QUALITY")
 [ "$PROVIDER" = okvis ] && EXTRA_ARGS+=("imu_rate:=$IMU_RATE")
 # FORCE_LOSS="30,33" -> drop odom in that bag-relative window (test seal+branch).
 [ -n "${FORCE_LOSS:-}" ] && EXTRA_ARGS+=("force_loss_start:=${FORCE_LOSS%,*}" "force_loss_end:=${FORCE_LOSS#*,}")
