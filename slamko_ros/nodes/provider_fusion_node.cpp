@@ -341,6 +341,15 @@ class ProviderFusionNode : public rclcpp::Node {
       anchor_chain_sigma_r_ = declare_parameter("anchor_chain_sigma_r", 0.02);
       anchor_soft_sigma_t_ = declare_parameter("anchor_soft_sigma_t", 1.0);
       anchor_soft_sigma_r_ = declare_parameter("anchor_soft_sigma_r", 0.3);
+      // TRUNK step 1 (#12, METHODOLOGY_01): when a stale-gap loss is detected, the
+      // provider's covariance on the gap-spanning CHAIN edge is over-confident (OKVIS
+      // IMU-bridged it but the geometry is dead-reckoned). Replace it with the DR-gate
+      // disagreement (d_trans, d_rot) as the real across-gap uncertainty -> the optimizer
+      // YIELDS there -> a later loop pulls the warped segment straight (the brutal-on-suave
+      // warp fix). Opt-in (default OFF = today's stiff behaviour) for a clean A/B.
+      dr_gate_soft_cov_ = declare_parameter("dr_gate_soft_cov", false);
+      dr_gate_soft_floor_t_ = declare_parameter("dr_gate_soft_floor_t", 0.05);
+      dr_gate_soft_floor_r_ = declare_parameter("dr_gate_soft_floor_r", 0.02);
       anchor_soft_lm_ = declare_parameter("anchor_soft_lm", 7000);
       // R0.2 ingestion gate: bar degraded-tracking submaps from being reloc match targets.
       gate_degraded_reloc_ = declare_parameter("gate_degraded_reloc", true);
@@ -698,6 +707,13 @@ class ProviderFusionNode : public rclcpp::Node {
       // bridged the gap correctly (proven sound <=6 s), so its geometry is trustworthy -> keep
       // it as a valid reloc target. This turns the R0.1 measurement into the R0 decision.
       if (d_rot_deg > dr_gate_reject_deg_) seg_hard_loss_ = true;
+      // #12: stage the DR-gate uncertainty for the NEXT chain edge (the one spanning
+      // this gap). The disagreement IS the across-gap covariance — flooring keeps it
+      // from going tighter than a normal odom edge.
+      if (dr_gate_soft_cov_) {
+        pending_soft_sigma_t_ = std::max(dr_gate_soft_floor_t_, d_trans);
+        pending_soft_sigma_r_ = std::max(dr_gate_soft_floor_r_, d_rot_deg * M_PI / 180.0);
+      }
     }
     last_odom_t_ = s.t;
     // snapshot the last trustworthy state for the NEXT gap's DR comparison.
@@ -726,7 +742,24 @@ class ProviderFusionNode : public rclcpp::Node {
       const slamko::SE3 T_map_to = graph_.pose(edge->from) * edge->T_from_to;
       graph_.addKeyframe(edge->to, T_map_to);
       node_time_[edge->to] = s.t;
-      graph_.addEdge(edge->from, edge->to, edge->T_from_to, edge->information, false);
+      // #12: if a stale-gap was just detected, this edge spans it -> use the DR-gate
+      // uncertainty instead of the provider's over-confident covariance, so the graph
+      // can yield here and a loop straightens the segment.
+      if (pending_soft_sigma_t_ > 0.0) {
+        Eigen::Matrix<double, 6, 6> info = Eigen::Matrix<double, 6, 6>::Zero();
+        const double it = 1.0 / (pending_soft_sigma_t_ * pending_soft_sigma_t_);
+        const double ir = 1.0 / (pending_soft_sigma_r_ * pending_soft_sigma_r_);
+        info.diagonal() << it, it, it, ir, ir, ir;
+        graph_.addEdge(edge->from, edge->to, edge->T_from_to, info, false);
+        RCLCPP_INFO(get_logger(),
+                    "#12 DR-gate soft chain edge %llu->%llu: sigma_t=%.2fm sigma_r=%.1fdeg "
+                    "(replaced provider-stiff cov)",
+                    (unsigned long long)edge->from, (unsigned long long)edge->to,
+                    pending_soft_sigma_t_, pending_soft_sigma_r_ * 180.0 / M_PI);
+        pending_soft_sigma_t_ = pending_soft_sigma_r_ = 0.0;
+      } else {
+        graph_.addEdge(edge->from, edge->to, edge->T_from_to, edge->information, false);
+      }
       // map->odom correction target from the latest keyframe pair.
       T_map_odom_target_ = T_map_to * chain_.lastKeyframe().T_OB.inverse();
       onKeyframe(edge->to, s.t, T_map_to);
@@ -1909,6 +1942,10 @@ class ProviderFusionNode : public rclcpp::Node {
   bool have_prev_anchor_ = false;
   int seg_kf_no_image_ = 0;
   double anchor_chain_sigma_t_ = 0.05, anchor_chain_sigma_r_ = 0.02;
+  // #12 DR-gate soft chain-edge covariance (trunk step 1).
+  bool dr_gate_soft_cov_ = false;
+  double dr_gate_soft_floor_t_ = 0.05, dr_gate_soft_floor_r_ = 0.02;
+  double pending_soft_sigma_t_ = 0.0, pending_soft_sigma_r_ = 0.0;
   double anchor_soft_sigma_t_ = 1.0, anchor_soft_sigma_r_ = 0.3;
   int anchor_soft_lm_ = 7000;      // segment raw-landmark floor below which the chain edge is SOFT
   int prior_min_inliers_ = 15;

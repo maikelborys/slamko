@@ -100,6 +100,55 @@ TEST(PoseGraph, ClosesDriftedLoop) {
       << "before=" << err_before << " after=" << err_after;
 }
 
+// #12 TRUNK mechanism (METHODOLOGY_01 step 1): a tracking-loss gap = ONE bad odometry
+// edge (dead-reckoned junk OKVIS IMU-bridged). If that edge carries the DR-gate
+// uncertainty (HIGH covariance), the optimizer YIELDS there and the loop straightens the
+// rest of the trajectory; if it stays provider-stiff, the bad measurement smears error
+// across every pose. Soft-on-the-gap must beat stiff-on-the-gap vs ground truth. This is
+// the brutal-on-suave "warp" fix, isolated to its pose-graph mechanism (no GPU/bags).
+TEST(PoseGraph, DrGateSoftEdgeAbsorbsLossGap) {
+  const int N = 24;
+  const double R = 5.0;
+  const auto gt = circleGroundTruth(N, R);
+  const int gap = N / 2;  // the loss-gap edge is (gap-1)->(gap)
+
+  auto run = [&](bool soft_gap) -> double {
+    PoseGraph pg;
+    pg.addKeyframe(0, gt[0]);
+    pg.setAnchor(0);
+    SE3 est = gt[0];
+    for (int i = 0; i < N - 1; ++i) {
+      const SE3 true_rel = gt[i].inverse() * gt[i + 1];
+      SE3 meas_rel = true_rel;
+      if (i == gap - 1) {
+        // Corrupt the gap edge with spurious yaw + translation = the dead-reckoned
+        // across-gap junk a tracking loss leaves behind.
+        const SO3 bad(Eigen::Quaterniond(Eigen::AngleAxisd(0.4, Eigen::Vector3d::UnitZ())));
+        meas_rel = SE3(true_rel.so3() * bad,
+                       true_rel.translation() + Eigen::Vector3d(0.5, 0.3, 0.0));
+      }
+      est = est * meas_rel;
+      pg.addKeyframe(i + 1, est);
+      if (i == gap - 1 && soft_gap)
+        pg.addOdometryEdge(i, i + 1, meas_rel, /*sigma_t=*/0.8, /*sigma_r=*/0.4);  // DR-gate cov
+      else
+        pg.addOdometryEdge(i, i + 1, meas_rel, /*sigma_t=*/0.02, /*sigma_r=*/0.01);  // stiff
+    }
+    const SE3 loop_meas = gt[N - 1].inverse() * gt[0];
+    pg.addLoopEdge(N - 1, 0, loop_meas, /*sigma_t=*/0.02, /*sigma_r=*/0.01);
+    pg.optimize();
+    return meanTransError(pg, gt);
+  };
+
+  const double err_stiff = run(false);
+  const double err_soft = run(true);
+  EXPECT_LT(err_soft, err_stiff)
+      << "DR-gate soft gap edge must beat provider-stiff: soft=" << err_soft
+      << " stiff=" << err_stiff;
+  // And the absolute quality with the soft gap should be good (loop straightened it).
+  EXPECT_LT(err_soft, 0.5) << "soft-gap trajectory should be near gt (err=" << err_soft << ")";
+}
+
 // De-risk the offline-driver WELD MATH before trusting it on real submaps: given a
 // relocalization result T_query_match (query body pose in the matched submap's local
 // frame) and the matched KF's local pose matchedKF.T_WB, the loop edge from query→matched
