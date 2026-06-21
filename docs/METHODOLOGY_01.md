@@ -68,12 +68,11 @@ and unlike casa it has GROUND TRUTH → real geometric ATE, not just consistency
   motion issue, not EuRoC). Run VPR-on still ≤0.5 only if GPU-contended by a concurrent session.
 
 ## Multi-session isolation rule (other Claude Code runs KLT_VO on EuRoC)
-Shared resources: (1) ROS topics/nodes — isolate with a unique `ROS_DOMAIN_ID`. (2) the GPU — NOT
-isolable; concurrent OKVIS+TRT sessions starve each other (OKVIS is compute-bound). (3) reaping —
-my benches reap `okvis2x_..._subscriber|provider_fusion_node` BY NAME → could kill the other
-session's OKVIS. RULE:
-- All slamko EuRoC runs set `ROS_DOMAIN_ID` (e.g. 42) so topics never collide.
-- **Reap ONLY by the PIDs this run launched — never blind `pkill -f` by name** while another
-  session may be live.
-- **Hold GPU-heavy EuRoC runs until the user confirms KLT is idle** (GPU is the binding constraint).
-  Pure-code work (the trunk) needs no GPU/bags → proceed anytime.
+UPDATE 2026-06-21 (user): **KLT_VO is TOTALLY independent — it does NOT run OKVIS**, and its bags
+live in `~/datasets/euroc` (mine in `/mnt/data/euroc_bags`). So collision is minimal:
+- **Reaping is SAFE** — my benches reap `okvis2x_..._subscriber|provider_fusion_node`; KLT has none
+  of those. Bag-player reap matches my `/mnt/data/euroc_bags/...` path, not KLT's `~/datasets`.
+- **Topics**: still set `ROS_DOMAIN_ID` (42) so /euroc/* and /okvis/* never alias the other session.
+- **GPU**: the ONLY real shared resource, and only IF KLT uses XFeat/TRT. Check `nvidia-smi` is free
+  before a GPU-heavy run; if KLT is mid-TRT, back off. Otherwise proceed.
+→ slamko EuRoC runs can proceed isolated (ROS_DOMAIN_ID + PID/path reaping + GPU-free check).
