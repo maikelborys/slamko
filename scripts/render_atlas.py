@@ -45,6 +45,8 @@ def load_smap_pts(path):
 ap = argparse.ArgumentParser()
 ap.add_argument("--run-dir", required=True)
 ap.add_argument("--out", required=True)
+ap.add_argument("--min-lm", type=int, default=200,
+                help="drop components with fewer landmarks (sliver maps aren't real maps)")
 a = ap.parse_args()
 
 mapd = os.path.join(a.run_dir, "map")
@@ -71,10 +73,16 @@ for sid in ids:
     c = comp.get(sid, 0)
     per_comp.setdefault(c, []).append(pts)
 
+dropped = []
 for c in sorted(per_comp):
     allp = np.vstack(per_comp[c])
+    if len(allp) < a.min_lm:
+        dropped.append((c, len(allp)))
+        continue
     ax.scatter(allp[:, 0], allp[:, 1], s=0.6, c=[cmap(c % 10)], alpha=0.4,
                linewidths=0, label=f"map {c} ({len(allp)} lm)")
+if dropped:
+    print("dropped sliver components (< %d lm):" % a.min_lm, dropped)
 
 ax.set_aspect("equal"); ax.grid(True, alpha=0.3)
 ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")

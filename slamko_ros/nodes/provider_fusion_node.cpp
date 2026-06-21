@@ -355,6 +355,10 @@ class ProviderFusionNode : public rclcpp::Node {
       // (per-component gauge, etapa 1a) until a feature match welds it back; no match =>
       // it honestly stays dangling. Supersedes the #12 soft-bridge when ON. Opt-in.
       atlas_break_on_loss_ = declare_parameter("atlas_break_on_loss", false);
+      // Coalesce: don't spawn a NEW map until the active one has grown to a real size.
+      // A burst of clustered losses (or a loss right at the end) would otherwise spawn
+      // useless 10-landmark sliver maps; require the active component to be mature first.
+      atlas_min_component_kfs_ = declare_parameter("atlas_min_component_kfs", 20);
       anchor_soft_lm_ = declare_parameter("anchor_soft_lm", 7000);
       // R0.2 ingestion gate: bar degraded-tracking submaps from being reloc match targets.
       gate_degraded_reloc_ = declare_parameter("gate_degraded_reloc", true);
@@ -719,8 +723,10 @@ class ProviderFusionNode : public rclcpp::Node {
         pending_soft_sigma_t_ = std::max(dr_gate_soft_floor_t_, d_trans);
         pending_soft_sigma_r_ = std::max(dr_gate_soft_floor_r_, d_rot_deg * M_PI / 180.0);
       }
-      // ETAPA 1b: tracking was lost -> the post-gap keyframe starts a NEW disjoint map.
-      if (atlas_break_on_loss_) pending_break_ = true;
+      // ETAPA 1b: tracking was lost -> the post-gap keyframe starts a NEW disjoint map,
+      // BUT only once the active map is mature (else clustered/end losses spawn slivers).
+      if (atlas_break_on_loss_ && kfs_in_component_ >= atlas_min_component_kfs_)
+        pending_break_ = true;
     }
     last_odom_t_ = s.t;
     // snapshot the last trustworthy state for the NEXT gap's DR comparison.
@@ -754,6 +760,7 @@ class ProviderFusionNode : public rclcpp::Node {
         // gap. This keyframe starts a NEW disjoint map component that floats (per-component
         // gauge, etapa 1a) until a feature match welds it back. No chain edge added.
         ++component_id_;
+        kfs_in_component_ = 0;   // the new map must mature before it can break again
         pending_break_ = false;
         pending_soft_sigma_t_ = pending_soft_sigma_r_ = 0.0;  // break supersedes #12 bridge
         RCLCPP_WARN(get_logger(),
@@ -993,6 +1000,7 @@ class ProviderFusionNode : public rclcpp::Node {
   // Called once per new chain keyframe (single-threaded executor — no locking).
   // EigenPlaces + XFeat run HERE, at keyframe rate (~1-5 Hz), never per frame.
   void onKeyframe(std::uint64_t id, double t, const slamko::SE3& T_map) {
+    ++kfs_in_component_;  // maturity of the active atlas component (gates break, etapa 1b)
     maybeAddYawPrior(id, t, T_map);  // compass yaw anchor (independent of the VPR path)
     if (!vpr_) return;
     auto nearest = [](const std::deque<std::pair<double, cv::Mat>>& buf, double tq,
@@ -1970,6 +1978,8 @@ class ProviderFusionNode : public rclcpp::Node {
   bool atlas_break_on_loss_ = false;
   bool pending_break_ = false;
   int component_id_ = 0;
+  int atlas_min_component_kfs_ = 20;
+  int kfs_in_component_ = 0;   // keyframes in the ACTIVE component (reset on break)
   std::unordered_map<std::uint64_t, int> submap_component_;  // submap id -> atlas component
   double anchor_soft_sigma_t_ = 1.0, anchor_soft_sigma_r_ = 0.3;
   int anchor_soft_lm_ = 7000;      // segment raw-landmark floor below which the chain edge is SOFT
