@@ -266,6 +266,24 @@ PoseGraph::Result PoseGraph::optimize() {
   return res;
 }
 
+std::unordered_map<std::uint64_t, std::uint64_t> PoseGraph::connectedComponents() const {
+  std::unordered_map<std::uint64_t, std::uint64_t> parent;
+  parent.reserve(nodes_.size());
+  for (const auto& kv : nodes_) parent[kv.first] = kv.first;
+  auto find = [&parent](std::uint64_t x) {
+    while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+  };
+  for (const auto& e : edges_) {
+    if (!parent.count(e.from) || !parent.count(e.to)) continue;
+    parent[find(e.from)] = find(e.to);
+  }
+  std::unordered_map<std::uint64_t, std::uint64_t> root;
+  root.reserve(nodes_.size());
+  for (const auto& kv : nodes_) root[kv.first] = find(kv.first);
+  return root;
+}
+
 SE3 PoseGraph::pose(std::uint64_t id) const {
   auto it = nodes_.find(id);
   if (it == nodes_.end()) throw std::out_of_range("PoseGraph::pose: unknown node id");

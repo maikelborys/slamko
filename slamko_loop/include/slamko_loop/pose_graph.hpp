@@ -25,6 +25,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -107,6 +108,13 @@ class PoseGraph {
   std::vector<std::pair<std::uint64_t, SE3>> poses() const;  // sorted by id
   std::size_t numNodes() const { return nodes_.size(); }
   std::size_t numEdges() const { return edges_.size(); }
+
+  // Connected-component root per node (union-find over the BETWEEN edges; priors don't
+  // connect). Two nodes share a root iff a chain/loop-weld path joins them — i.e. they are
+  // the SAME fused map after the automatic feature-match welds. The Atlas reports/renders
+  // by this (not the break-time tag), so a fragment that welded shows fused and one that
+  // never matched shows dangling. Returns node id -> component root id.
+  std::unordered_map<std::uint64_t, std::uint64_t> connectedComponents() const;
 
  private:
   struct Edge {

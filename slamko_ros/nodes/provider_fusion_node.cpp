@@ -515,6 +515,32 @@ class ProviderFusionNode : public rclcpp::Node {
       RCLCPP_INFO(get_logger(), "shutdown: refreshed %d/%zu sealed anchors from the graph",
                   refreshed, sealed_ids_.size());
     }
+    // ETAPA 2: re-tag each submap by its FINAL connected component (after the automatic
+    // feature-match welds), so the Atlas shows FUSED fragments as one map and a fragment
+    // that never matched as dangling — not the frozen break-time tag. The merge already
+    // happens automatically (a feature-match weld + the per-component gauge); this makes
+    // it visible/measurable.
+    if (!map_dir_.empty() && !sealed_ids_.empty()) {
+      const auto roots = graph_.connectedComponents();
+      std::unordered_map<std::uint64_t, int> root_to_comp;  // graph root -> small display id
+      std::ofstream cf(map_dir_ + "/components.csv");
+      cf << "submap_id,component\n";
+      for (auto sid : sealed_ids_) {
+        int comp = -1;
+        const auto it = submap_first_kf_.find(sid);
+        if (it != submap_first_kf_.end()) {
+          const auto r = roots.find(it->second);
+          if (r != roots.end())
+            comp = root_to_comp.emplace(r->second, (int)root_to_comp.size()).first->second;
+        }
+        if (comp < 0) comp = submap_component_.count(sid) ? submap_component_[sid] : 0;
+        cf << sid << "," << comp << "\n";
+      }
+      RCLCPP_INFO(get_logger(),
+                  "ETAPA 2: %d break-component(s) -> %zu FUSED map(s) after feature-match "
+                  "welds (components.csv re-tagged by final graph connectivity)",
+                  component_id_ + 1, root_to_comp.size());
+    }
     if (fused_file_) std::fclose(fused_file_);
     if (suppressed_dups_ > 0)
       RCLCPP_INFO(get_logger(),
