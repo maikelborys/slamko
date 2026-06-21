@@ -3,6 +3,16 @@
 Living, dated progress log + current test results. Append on every validated
 change (see [`../../docs/DOC_PROCESS.md`](../../docs/DOC_PROCESS.md)).
 
+## 2026-06-21 — SMP6: per-landmark maturity (n_obs) persists (Phase D)
+
+`MapLandmark` gained `int n_obs` (default 1) and the `.smap` codec bumped to **SMP6** —
+an additive trailing per-landmark n_obs block (written last). SMP1–SMP5 still load, n_obs
+defaults to 1 → **full back-compat**. Persists MapPoint MATURITY (how many visits confirmed
+each point) so the consensus + confidence COMPOUND across sessions — the lifelong immortal map
+(consumed by slamko_ros; see [`../../docs/PLAN_PERSISTENT_MAPPOINTS_02.md`](../../docs/PLAN_PERSISTENT_MAPPOINTS_02.md)).
+`test_submap_io.cpp::MaturityRoundTrip` + n_obs checked in every round-trip `expectEqual` —
+**test_submap_io 8/8 green**.
+
 ## 2026-05-27 — Milestone A: foundation shipped (header-only spine)
 
 **What:** slamko is now a buildable colcon workspace with `slamko_core` as its

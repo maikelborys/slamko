@@ -1,5 +1,40 @@
 # Plan 02 — persistent MapPoints, the IMPLEMENTATION (drift-tolerant data association)
 
+## ✅ INITIATIVE COMPLETE (2026-06-21) — A+B+C+D shipped, the PLVS re-observation model
+
+The user's "no-doubling" option B, built end-to-end and validated. The ORB-SLAM3/PLVS
+"re-observe the same physical point" model, brought to slamko's loose-fusion world as
+persistent MapPoint IDENTITY by descriptor — **opt-in, reversible, trajectory-neutral**
+(the loose graph stays poses-only; MapPoints never touch a graph factor). Dated STATUS
+entries below carry the full reasoning; this is the cold-start summary.
+
+| Phase | What it does | Flag (default OFF) | Validated (casa @0.5, VPR) | Commit |
+|---|---|---|---|---|
+| **A** | drift-tolerant descriptor dedup at seal — NO within-session doubling | `mappoint_assoc` | brutal 21360→8948 lm (−58%), neutral | `59b04ac` |
+| **B** | multi-view CONSENSUS refine + back-prop + `n_obs` confidence — APRIETA | `mappoint_refine` | 50% multi-obs, max n_obs 53, neutral | `4de4610` |
+| **C** | seed store from PRIOR map — revisit dedups INTO it, no x-session doubling | `mappoint_xsession` | suave 2240→968 (−57%), 6092 x-culls | `c085fc1` |
+| **D** | `n_obs` persists `.smap` SMP6 + COMPOUNDS across sessions — immortal map | (same flags) | S1 max 37 → S2 65 | `632137f` |
+
+Flags chain: `mappoint_assoc` → `mappoint_refine` → `mappoint_xsession` (each needs the
+previous). Harness: `scripts/ab_phase{A,C,D}.sh` + `bench_pa.sh` envs
+`MAPPOINT_{ASSOC,REFINE,XSESSION}`. Tests: slamko_core 8/0 (`MaturityRoundTrip`),
+slamko_loop 20/0 (`test_mappoint_store`).
+
+**Neutrality proof (the discriminator, not the off-vs-on number):** Phase A–D never touch the
+provider; yet **fused** off-vs-on diverges LESS than the **provider** off-vs-on (e.g. 0.64 vs
+0.71 m on brutal) — if MapPoints moved the trajectory the fused would diverge MORE. The ~1 m
+off-vs-on is OKVIS nondeterminism on the brutal bag, not the feature.
+
+**Honest scope / what's NOT solved:** (1) the **knee is aggressive** (radius 0.4 m / cos 0.82,
+−58%) — sweep a conservative value before defaulting any flag ON. (2) Phase C fires only AFTER
+relocalization succeeds → it kills cross-session **DOUBLING**, not the recall-limited **DANGLING**
+(the EuRoC cross-recording case — that's the viewpoint/recall ceiling, a separate problem, see
+[`../memory`] `slamko-atlas-disjoint-islands`). (3) Follow-on (not blocking): re-save the PRIOR
+submaps with the session's new confirmations (reuse the `mature_` re-save path) for full
+bidirectional on-disk compounding — today the session's OWN output already compounds.
+
+---
+
 ## STATUS 2026-06-21 — Phase D SHIPPED (lifelong maturity: n_obs persists + compounds)
 The PLVS/ORB-SLAM3 MapPoint maturity now SURVIVES a shutdown and COMPOUNDS across sessions —
 the lifelong immortal map. `MapLandmark` gained `int n_obs` (default 1); the .smap codec bumped

@@ -39,6 +39,17 @@ One row per package; updated when a milestone lands (detail in each `docs/STATUS
 | `slamko_sensors` | T1 | P5 | ⬜ deferred | wheel/ZUPT → LiDAR → GPS frontends | — |
 | `slamko_semantic` | T1/T3 | P6 | ⬜ deferred | object-level factors + semantic reloc | — |
 
+**Milestone 2026-06-21 — persistent MapPoints A+B+C+D shipped (kills the revisit doubling).**
+The PLVS/ORB-SLAM3 "re-observe the same point" model, brought to the loose-fusion world as
+persistent point identity by descriptor (`MapPointStore` in `slamko_loop`, hooked into
+`provider_fusion_node`'s seal/destructor path; `.smap` bumped to **SMP6** for per-landmark
+maturity). All opt-in (`mappoint_assoc`→`refine`→`xsession`, default OFF) + trajectory-neutral.
+A: within-session dedup (brutal −58%). B: multi-view consensus refine + `n_obs` confidence.
+C: cross-session seed (suave revisit −57%). D: maturity persists + compounds (S1 max n_obs 37 →
+S2 65). Full doc: [`PLAN_PERSISTENT_MAPPOINTS_02.md`](PLAN_PERSISTENT_MAPPOINTS_02.md). Knee
+aggressive — sweep before defaulting ON; C kills cross-session DOUBLING, not recall-limited
+DANGLING.
+
 **Active next task:** **TUM VI** (multi-floor). Fisheye→pinhole rectifier shipped
 (`scripts/rectify_tumvi.py`); `room1` gate **green** (maps coherently, Sim3-ATE 69 cm,
 drift = no-loop-closure). New interactive default viz `scripts/plot_slamko.py` (Plotly 3D).

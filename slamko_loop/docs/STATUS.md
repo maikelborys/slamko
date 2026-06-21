@@ -2,6 +2,20 @@
 
 Living, dated progress + numbers log. Plan: [`PLAN_P2_loop.md`](PLAN_P2_loop.md).
 
+## 2026-06-21 — MapPointStore: persistent point identity (Phase A/B/C/D)
+
+`include/slamko_loop/mappoint_store.hpp` — the ORB-SLAM3/PLVS abstraction slamko lacked: a global
+store of MapPoints (global position + L2-normalised XFeat descriptor + `n_obs` maturity), header-only.
+- `associate(pos, desc)` — drift-tolerant cross-submap data association (3×3×3 cell stencil, generous
+  radius absorbs VIO drift, descriptor cosine is the discriminator). The Phase A dedup.
+- `refine(id, pos, desc)` — multi-view running-mean consensus (position + descriptor) + bump n_obs.
+  The Phase B "re-observe → tighten".
+- `add(..., n_obs)` / `nObs(id)` / `position(id)` — the cross-session seed (Phase C) + back-propagation
+  and maturity persist (Phase D).
+Used by `slamko_ros::provider_fusion_node` to kill the revisit doubling (numbers there + in
+[`../../docs/PLAN_PERSISTENT_MAPPOINTS_02.md`](../../docs/PLAN_PERSISTENT_MAPPOINTS_02.md)).
+`test/test_mappoint_store.cpp` 3/3 (associate + running-mean refine + null-safety); **suite 20/0**.
+
 ## 2026-06-04 — Thin global pose-graph + offline loop-closure driver (branch klt-fork-loopclosure)
 
 Built the clean "loop closure + optimization, separate" layer (the disposable global

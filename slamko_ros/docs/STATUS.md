@@ -1,5 +1,30 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
+## 2026-06-21 — Persistent MapPoints A+B+C+D: kill the revisit doubling (provider_fusion_node)
+
+The PLVS/ORB-SLAM3 "re-observe the same point" model wired into the seal + destructor path of
+`provider_fusion_node`, **opt-in + trajectory-NEUTRAL** (the loose graph is poses-only; MapPoints
+never touch a graph factor — neutrality shown by the discriminator: fused off-vs-on diverges LESS
+than the raw provider it can't influence, so the ~1 m diff is OKVIS nondeterminism, not MapPoints).
+Flags `mappoint_assoc` → `mappoint_refine` → `mappoint_xsession` (default OFF, each needs the prev).
+Validated on casa (rate 0.5, VPR on):
+
+- **A** (`59b04ac`) — drift-tolerant descriptor data association at seal (`MapPointStore::associate`):
+  brutal 21360 → **8948 lm (−58%)**, the doubled walls collapse, trajectory neutral.
+- **B** (`4de4610`) — multi-view consensus refine + back-propagation into the persisted submaps at
+  shutdown + `n_obs` confidence. 50% multi-observed (max 53); `map/mappoints.csv` +
+  `scripts/render_confidence.py` (map coloured by visit-count).
+- **C** (`c085fc1`) — seed the store from the PRIOR map at load: the revisit dedups INTO the prior
+  instead of doubling it. suave same-bag revisit: seeds 3999 prior pts, culls **6092** cross-session
+  dups the voxel missed, session-2 NEW lm 2240 → **968 (−57%)**. Fires only AFTER reloc succeeds →
+  kills cross-session DOUBLING, not the recall-limited dangling.
+- **D** (`632137f`) — maturity persists (`.smap` SMP6, slamko_core) + COMPOUNDS across sessions:
+  S1 max n_obs 37 → S2 (prior=S1) restores it and climbs to **65**. The lifelong immortal map.
+
+Harness `scripts/ab_phase{A,C,D}.sh` + `bench_pa.sh` envs `MAPPOINT_{ASSOC,REFINE,XSESSION}`.
+**Knee still aggressive (radius 0.4 / cos 0.82, −58%): sweep a conservative value before defaulting
+any flag ON.** Plan + full numbers: [`../../docs/PLAN_PERSISTENT_MAPPOINTS_02.md`](../../docs/PLAN_PERSISTENT_MAPPOINTS_02.md).
+
 ## 2026-06-20 — Live Rerun visualizer (VizSink) + 3-tier candidate→soft→weld edges
 
 Two deliverables from the "online viewer + lost-track edge architecture" research
