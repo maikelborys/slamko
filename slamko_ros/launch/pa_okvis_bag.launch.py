@@ -81,6 +81,8 @@ def setup(context):
                 LaunchConfiguration('occ_refresh').perform(context).lower() == 'true',
             'mappoint_assoc':
                 LaunchConfiguration('mappoint_assoc').perform(context).lower() == 'true',
+            'dr_gate_soft_cov':
+                LaunchConfiguration('dr_gate_soft_cov').perform(context).lower() == 'true',
         }])
 
     return [okvis, fusion]
@@ -109,6 +111,8 @@ def generate_launch_description():
             description='P2: refresh occupancy from loop-corrected anchors (fuse revisits).'),
         DeclareLaunchArgument('mappoint_assoc', default_value='false',
             description='Phase A: drift-tolerant cross-submap data association by descriptor.'),
+        DeclareLaunchArgument('dr_gate_soft_cov', default_value='false',
+            description='#12 trunk: DR-gate uncertainty on the loss-gap chain edge (un-warp).'),
         DeclareLaunchArgument('force_loss_start', default_value='-1.0',
             description='Test: drop odom from this bag-relative time [s] (-1 = off).'),
         DeclareLaunchArgument('force_loss_end', default_value='-1.0',

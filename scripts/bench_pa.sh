@@ -52,6 +52,8 @@ fi
 [ -n "${OCC_REFRESH:-}" ] && EXTRA_ARGS+=("occ_refresh:=$OCC_REFRESH")
 # MAPPOINT_ASSOC=true -> Phase A drift-tolerant cross-submap descriptor association.
 [ -n "${MAPPOINT_ASSOC:-}" ] && EXTRA_ARGS+=("mappoint_assoc:=$MAPPOINT_ASSOC")
+# DR_GATE_SOFT_COV=true -> #12 trunk: DR-gate uncertainty on the loss-gap chain edge.
+[ -n "${DR_GATE_SOFT_COV:-}" ] && EXTRA_ARGS+=("dr_gate_soft_cov:=$DR_GATE_SOFT_COV")
 [ "$PROVIDER" = okvis ] && EXTRA_ARGS+=("imu_rate:=$IMU_RATE")
 # FORCE_LOSS="30,33" -> drop odom in that bag-relative window (test seal+branch).
 [ -n "${FORCE_LOSS:-}" ] && EXTRA_ARGS+=("force_loss_start:=${FORCE_LOSS%,*}" "force_loss_end:=${FORCE_LOSS#*,}")
