@@ -1,5 +1,24 @@
 # Plan 02 — persistent MapPoints, the IMPLEMENTATION (drift-tolerant data association)
 
+## STATUS 2026-06-21 — Phase C SHIPPED (cross-session: seed the store from the prior)
+A 2nd session of the same place no longer DOUBLES the prior — it dedups/refines into it. At
+prior load (when `mappoint_xsession` + a prior + `mappoint_assoc`), the store is seeded with the
+prior map's MapPoints (prior-global position + L2-normalised descriptor; `next_landmark_id_`
+bumped past the max prior id). Once the session cross-session-localizes (T_global_map_ set by the
+relocalizer), its sealed landmarks land in the same prior-global frame and associate into the
+PRIOR points — drift-tolerant where prior_occ_'s voxel test misses. Opt-in (default OFF).
+`scripts/ab_phaseC.sh` (3 serial sessions) + the prior+revisit overlay.
+- **casa suave @0.5, same-bag revisit:** ON seeds the store with **3999 prior MapPoints** (OFF
+  starts ~0 → no cross-session dedup possible); the revisit relocalizes (kf 0, 108 inliers) and
+  Phase C culls **6092** cross-session duplicates the voxel test missed → session-2 NEW landmarks
+  **2240 → 968 (−57%)**. The overlay shows OFF adding an offset doubled layer, ON melting in.
+- **Honest scope:** Phase C only fires AFTER relocalization succeeds — it kills cross-session
+  DOUBLING (where reloc works), not the EuRoC DANGLING (where the match was too weak to reloc at
+  all — that's the recall ceiling, a separate problem). Run-to-run nondeterminism remains (off 5
+  vs on 7 submaps); the isolation is the seed (3999 vs 0) + the descriptor-cull counter (6092).
+- **Next (Phase D):** serialize MapPoint ids + n_obs across sessions (.smap schema bump) so the
+  consensus + maturity compound over many visits — the lifelong immortal map.
+
 ## STATUS 2026-06-21 — Phase B SHIPPED (multi-view refine + back-prop + confidence)
 The PLVS "re-observe the same point" SECOND half: a revisit re-observation no longer just
 dedups (Phase A) — it folds into the MapPoint's running-mean **consensus** (position +

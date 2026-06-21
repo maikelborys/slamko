@@ -341,6 +341,12 @@ class ProviderFusionNode : public rclcpp::Node {
       // Trajectory-neutral by construction (loose graph is poses-only; this only moves stored
       // landmark geometry, never a graph factor). Opt-in (default OFF = today's behaviour).
       mappoint_refine_ = declare_parameter("mappoint_refine", false);
+      // Phase C — CROSS-SESSION (requires mappoint_assoc + a prior map). Seed the store with
+      // the PRIOR map's MapPoints (descriptor + prior-global position) so a revisit of ground
+      // already in the prior associates into the PRIOR point (drift-tolerant) and is culled /
+      // refined instead of sealing a 2nd offset submap = the cross-session doubling. The
+      // descriptor catches what prior_occ_ (voxel) misses under cross-session drift. Opt-in.
+      mappoint_xsession_ = declare_parameter("mappoint_xsession", false);
       // Inter-map anchor edges (R1.1 hard / R1.3 soft): chain edge sigma between
       // consecutive submaps (good odometry) vs SOFT sigma when the segment crossed
       // a visual loss (dead-reckoning — approximate placement only). Hard = loop sigma.
@@ -1009,6 +1015,22 @@ class ProviderFusionNode : public rclcpp::Node {
           // are recognized as redundant and culled from visit 1.
           for (const auto& lm : sm.landmarks)
             prior_occ_.insert(occKey(sm.anchor * lm.position));
+          // Phase C — seed the descriptor store with this prior submap's MapPoints (prior-global
+          // position + L2-normalised descriptor). Once the session cross-session-localizes
+          // (T_global_map_ set), its sealed landmarks land in this same prior-global frame and
+          // associate into these PRIOR points -> the revisit dedups/refines against the prior
+          // instead of doubling it. Drift-tolerant where prior_occ_'s voxel test misses.
+          if (mappoint_xsession_) {
+            for (const auto& lm : sm.landmarks) {
+              if (lm.descriptor_row < 0 || lm.descriptor_row >= sm.descriptors.rows()) continue;
+              Eigen::Matrix<float, 1, 64, Eigen::RowMajor> d =
+                  sm.descriptors.row(lm.descriptor_row);
+              const float nrm = d.norm();
+              if (nrm > 1e-6f) d /= nrm;
+              mp_store_.add(lm.id, sm.anchor * lm.position, d);
+              next_landmark_id_ = std::max(next_landmark_id_, lm.id + 1);  // no id collision
+            }
+          }
           // LIVE VIZ: the prior map cloud (grey, world/prior) — the backdrop the session
           // aligns onto once cross-session-localized.
           if (viz_enable_ && viz_.enabled()) {
@@ -2016,6 +2038,7 @@ class ProviderFusionNode : public rclcpp::Node {
   // points keyed by descriptor for DRIFT-TOLERANT cross-submap association at seal.
   bool mappoint_assoc_ = false;
   bool mappoint_refine_ = false;  // Phase B: fold revisits into the consensus + back-prop
+  bool mappoint_xsession_ = false;  // Phase C: seed the store from the prior map (x-session dedup)
   slamko::MapPointStore mp_store_;
   int culled_mp_ = 0;   // duplicates the voxel cull MISSED, caught by descriptor match
   std::unordered_set<std::int64_t> occ_;

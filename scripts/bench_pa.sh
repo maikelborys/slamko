@@ -54,6 +54,8 @@ fi
 [ -n "${MAPPOINT_ASSOC:-}" ] && EXTRA_ARGS+=("mappoint_assoc:=$MAPPOINT_ASSOC")
 # MAPPOINT_REFINE=true -> Phase B multi-view consensus refine + back-prop (needs MAPPOINT_ASSOC).
 [ -n "${MAPPOINT_REFINE:-}" ] && EXTRA_ARGS+=("mappoint_refine:=$MAPPOINT_REFINE")
+# MAPPOINT_XSESSION=true -> Phase C seed the store from the prior map (needs MAPPOINT_ASSOC + PRIOR_MAP).
+[ -n "${MAPPOINT_XSESSION:-}" ] && EXTRA_ARGS+=("mappoint_xsession:=$MAPPOINT_XSESSION")
 # DR_GATE_SOFT_COV=true -> #12 trunk: DR-gate uncertainty on the loss-gap chain edge.
 [ -n "${DR_GATE_SOFT_COV:-}" ] && EXTRA_ARGS+=("dr_gate_soft_cov:=$DR_GATE_SOFT_COV")
 # ATLAS_BREAK=true -> etapa 1b: tracking loss breaks into a new disjoint map component.
