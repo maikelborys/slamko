@@ -410,6 +410,12 @@ class ProviderFusionNode : public rclcpp::Node {
       // Consistent votes to the SAME prior submap needed to promote a weak (inl<strong)
       // proximity match -> a weld. Accumulated per-submap (robust to interleaved candidates).
       proximity_votes_needed_ = declare_parameter("proximity_votes_needed", 2);
+      // Looser tolerance for ACCUMULATING votes than for a single strong match: weak
+      // cross-recording matches (inl 15-34) have noisy PnP (~0.5-1 m), so consecutive
+      // votes to the SAME place scatter > proximity_agree_m. The submap IDENTITY repeating
+      // is the real signal; this just rejects gross outliers. Precision stays (a false
+      // place won't repeat to the same submap N times within this bound).
+      proximity_vote_agree_m_ = declare_parameter("proximity_vote_agree_m", 2.0);
       min_reloc_period_s_ = declare_parameter("min_reloc_period_s", 0.5);
       lg_model_path_ = declare_parameter(
           "lightglue_model_path",
@@ -1253,7 +1259,7 @@ class ProviderFusionNode : public rclcpp::Node {
       auto& v = prox_votes_[r.submap_id];
       const bool consistent =
           v.count > 0 &&
-          (v.corr.translation() - T_gm_implied.translation()).norm() < proximity_agree_m_;
+          (v.corr.translation() - T_gm_implied.translation()).norm() < proximity_vote_agree_m_;
       if (consistent) {
         // running-mean the correction so small per-match noise keeps accumulating.
         const Eigen::Vector3d mean =
@@ -2062,6 +2068,7 @@ class ProviderFusionNode : public rclcpp::Node {
   struct ProxVote { int count = 0; slamko::SE3 corr; };  // corr = implied session->global
   std::unordered_map<std::uint64_t, ProxVote> prox_votes_;
   int proximity_votes_needed_ = 2;
+  double proximity_vote_agree_m_ = 2.0;
   int prox_candidates_ = 0, prox_promoted_ = 0;
   // Accumulated viz edge segments by class (session frame). Chain/Soft are rebuilt from
   // anchor_edges_ each push; these three accumulate kf<->target links as matches fire.
