@@ -1228,6 +1228,12 @@ class ProviderFusionNode : public rclcpp::Node {
         graph_.hasNode(q_id)) {
       const slamko::SE3 T_global_q = prior_anchor_.at(r.submap_id) * r.T_query_match;
       const slamko::SE3 target_session = T_global_map_.inverse() * T_global_q;
+      // The implied session->global CORRECTION (where this whole map sits in the world).
+      // THIS is the invariant consistent matches agree on — NOT the per-keyframe target
+      // pose, which moves WITH the robot (the bug: votes from different moving keyframes
+      // never agreed -> stuck at vote 1/2). Two matches that place the map at the same
+      // world spot agree, regardless of which keyframe they came from.
+      const slamko::SE3 T_gm_implied = T_global_q * graph_.pose(q_id).inverse();
       ++prox_candidates_;
       if (viz_enable_ && viz_.enabled()) {
         const Eigen::Vector3d pq = graph_.pose(q_id).translation();
@@ -1247,16 +1253,16 @@ class ProviderFusionNode : public rclcpp::Node {
       auto& v = prox_votes_[r.submap_id];
       const bool consistent =
           v.count > 0 &&
-          (v.target.translation() - target_session.translation()).norm() < proximity_agree_m_;
+          (v.corr.translation() - T_gm_implied.translation()).norm() < proximity_agree_m_;
       if (consistent) {
-        // running-mean the target so a slowly-drifting fragment keeps accumulating.
+        // running-mean the correction so small per-match noise keeps accumulating.
         const Eigen::Vector3d mean =
-            (v.target.translation() * v.count + target_session.translation()) / (v.count + 1);
-        v.target = slamko::SE3(target_session.so3(), mean);
+            (v.corr.translation() * v.count + T_gm_implied.translation()) / (v.count + 1);
+        v.corr = slamko::SE3(T_gm_implied.so3(), mean);
         ++v.count;
       } else {
         v.count = 1;
-        v.target = target_session;
+        v.corr = T_gm_implied;
       }
       if (!strong && v.count < proximity_votes_needed_) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
@@ -2053,7 +2059,7 @@ class ProviderFusionNode : public rclcpp::Node {
   int proximity_promote_inliers_ = 40;
   double proximity_agree_m_ = 0.5;
   // ROBUST accumulative 2nd-vote: votes per prior submap (not a single overwriteable slot).
-  struct ProxVote { int count = 0; slamko::SE3 target; };
+  struct ProxVote { int count = 0; slamko::SE3 corr; };  // corr = implied session->global
   std::unordered_map<std::uint64_t, ProxVote> prox_votes_;
   int proximity_votes_needed_ = 2;
   int prox_candidates_ = 0, prox_promoted_ = 0;
