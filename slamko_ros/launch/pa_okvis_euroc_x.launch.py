@@ -84,6 +84,10 @@ def setup(context):
             'prior_map_dir': LaunchConfiguration('prior_map_dir').perform(context),
             'imu_topic': '/euroc/imu0',
             'dr_gate_path': out_dir + '/dr_gate.csv',
+            'atlas_break_on_loss':
+                LaunchConfiguration('atlas_break_on_loss').perform(context).lower() == 'true',
+            'force_loss_start': float(LaunchConfiguration('force_loss_start').perform(context)),
+            'force_loss_end':   float(LaunchConfiguration('force_loss_end').perform(context)),
             'viz': LaunchConfiguration('viz').perform(context).lower() == 'true',
             'viz_endpoint': LaunchConfiguration('viz_endpoint').perform(context),
         }])
@@ -101,6 +105,12 @@ def generate_launch_description():
             description='Bag-relative start [s] — mid->end session 1 (0 = full).'),
         DeclareLaunchArgument('prior_map_dir', default_value='',
             description='Session-1 map dir for cross-session relocalization.'),
+        DeclareLaunchArgument('atlas_break_on_loss', default_value='false',
+            description='Atlas: a tracking loss (or injected blackout) breaks into a new map.'),
+        DeclareLaunchArgument('force_loss_start', default_value='-1.0',
+            description='Inject a blackout: drop odom from this bag-relative time [s] (-1=off).'),
+        DeclareLaunchArgument('force_loss_end', default_value='-1.0',
+            description='... until this bag-relative time [s] -> stale-gap -> atlas break.'),
         DeclareLaunchArgument('viz', default_value='false'),
         DeclareLaunchArgument('viz_endpoint', default_value=''),
         OpaqueFunction(function=setup),
