@@ -825,8 +825,10 @@ class ProviderFusionNode : public rclcpp::Node {
     if (last_odom_t_ >= 0.0) {
       const double dt = std::max(1e-3, s.t - last_odom_t_);
       cur_speed = (s.T_OB.translation() - last_odom_T_.translation()).norm() / dt;
+      const double jump = last_speed_ >= 0.0 ? std::abs(cur_speed - last_speed_) : 0.0;
+      viz_speed_ = cur_speed;   // surfaced on the Rerun timeline so a human can correlate
+      viz_jump_ = jump;         // the speed-jump (incoherence signal) with the actual maneuver
       if (atlas_break_on_quality_) {
-        const double jump = last_speed_ >= 0.0 ? std::abs(cur_speed - last_speed_) : 0.0;
         const double cov_tr = s.cov(0, 0) + s.cov(1, 1) + s.cov(2, 2);
         const bool incoherent = cur_speed > quality_break_speed_ || jump > quality_break_jump_ ||
                                 (quality_break_cov_ > 0.0 && cov_tr > quality_break_cov_);
@@ -1221,6 +1223,12 @@ class ProviderFusionNode : public rclcpp::Node {
           viz_.logScalar("loops", loops_closed_);
           viz_.logScalar("xsession_priors", xsession_priors_added_);
           viz_.logScalar("keypoints", ql.keypoints.rows());
+          // The quality-break signal on the timeline: speed + the incoherence (speed-jump) +
+          // the LOST state square wave — so a human can scrub and correlate a real maneuver
+          // with where the detector fired.
+          viz_.logScalar("speed_mps", viz_speed_);
+          viz_.logScalar("speed_jump_mps", viz_jump_);
+          viz_.logScalar("tracking_lost", tracking_lost_ ? 1.0 : 0.0);
           ++viz_kf_since_match_;
         }
       }
@@ -2172,6 +2180,7 @@ class ProviderFusionNode : public rclcpp::Node {
   double quality_break_speed_ = 6.0, quality_break_jump_ = 1.5, quality_break_cov_ = 0.0;
   double quality_break_cooldown_ = 1.0, last_quality_break_t_ = -1e9, last_speed_ = -1.0;
   int quality_breaks_ = 0, quality_recoveries_ = 0;
+  double viz_speed_ = 0.0, viz_jump_ = 0.0;  // surfaced on the Rerun timeline for human review
   std::unordered_map<std::uint64_t, int> submap_component_;  // submap id -> atlas component
   double anchor_soft_sigma_t_ = 1.0, anchor_soft_sigma_r_ = 0.3;
   int anchor_soft_lm_ = 7000;      // segment raw-landmark floor below which the chain edge is SOFT
