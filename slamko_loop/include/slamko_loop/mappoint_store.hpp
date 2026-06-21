@@ -83,12 +83,38 @@ class MapPointStore {
     id_index_[id] = idx;
   }
 
-  // Record one more observation of an existing MapPoint (Phase B refine hook; for now
-  // just bumps n_obs — the position refinement lands in Phase B so Phase A stays a pure
-  // association/cull with zero geometry change).
+  // Record one more observation of an existing MapPoint (Phase A: pure association/cull,
+  // bumps n_obs only — zero geometry change, keeps Phase A trajectory-neutral).
   void addObservation(std::int64_t id) {
     auto it = id_index_.find((std::uint64_t)id);
     if (it != id_index_.end()) ++points_[(std::size_t)it->second].n_obs;
+  }
+
+  // Phase B — MULTI-VIEW REFINE. Fold a revisit's re-observation of an EXISTING MapPoint
+  // into a running mean (position AND descriptor) and bump n_obs. The stored point becomes
+  // the CONSENSUS of every visit — per-visit VIO noise averages out, so a revisit makes the
+  // map MORE accurate, not just deduplicated (the PLVS "re-observe the same point" win). The
+  // mean shift is << cell_ (cm vs 0.4 m), so the point stays inside the 3x3x3 query stencil
+  // and the spatial index stays valid without re-bucketing. desc = L2-normalised 64-D row.
+  template <typename Desc>
+  void refine(std::int64_t id, const Eigen::Vector3d& p, const Desc& desc) {
+    auto it = id_index_.find((std::uint64_t)id);
+    if (it == id_index_.end()) return;
+    MapPoint& mp = points_[(std::size_t)it->second];
+    const double n = (double)mp.n_obs;
+    mp.pos = (mp.pos * n + p) / (n + 1.0);
+    Eigen::Matrix<float, 1, 64, Eigen::RowMajor> d = mp.desc * (float)n + desc;
+    const float nrm = d.norm();
+    if (nrm > 1e-6f) mp.desc = d / nrm;
+    ++mp.n_obs;
+  }
+
+  // Phase B back-propagation: the refined global position of MapPoint `id`, or nullptr if
+  // unknown. The seal path keeps submap-landmark ids == MapPoint ids, so a sealed submap can
+  // rewrite each landmark from its consensus point (global -> submap-local via the anchor).
+  const Eigen::Vector3d* position(std::uint64_t id) const {
+    auto it = id_index_.find(id);
+    return it == id_index_.end() ? nullptr : &points_[(std::size_t)it->second].pos;
   }
 
  private:

@@ -334,6 +334,13 @@ class ProviderFusionNode : public rclcpp::Node {
           declare_parameter("mappoint_assoc_cell", 0.4),
           declare_parameter("mappoint_assoc_radius", 0.4),
           (float)declare_parameter("mappoint_assoc_cos", 0.82));
+      // Phase B — MULTI-VIEW REFINE (requires mappoint_assoc). On a revisit re-observation
+      // fold the new sighting into the MapPoint's running-mean position+descriptor (consensus)
+      // and, at shutdown, back-propagate the consensus into the persisted submap landmarks +
+      // dump mappoints.csv (id,x,y,z,n_obs = visit confidence). The revisit TIGHTENS the map.
+      // Trajectory-neutral by construction (loose graph is poses-only; this only moves stored
+      // landmark geometry, never a graph factor). Opt-in (default OFF = today's behaviour).
+      mappoint_refine_ = declare_parameter("mappoint_refine", false);
       // Inter-map anchor edges (R1.1 hard / R1.3 soft): chain edge sigma between
       // consecutive submaps (good odometry) vs SOFT sigma when the segment crossed
       // a visual loss (dead-reckoning — approximate placement only). Hard = loop sigma.
@@ -511,7 +518,7 @@ class ProviderFusionNode : public rclcpp::Node {
       }
     }
     if (!map_dir_.empty()) {
-      int refreshed = 0;
+      int refreshed = 0, refined = 0;
       for (auto sid : sealed_ids_) {
         const std::string path = map_dir_ + "/submap_" + std::to_string(sid) + ".smap";
         slamko::SubMap sm;
@@ -519,10 +526,32 @@ class ProviderFusionNode : public rclcpp::Node {
         const auto it = submap_first_kf_.find(sid);
         if (it == submap_first_kf_.end() || !graph_.hasNode(it->second)) continue;
         sm.anchor = graph_.pose(it->second);
+        // Phase B — back-propagate the multi-view CONSENSUS into the persisted landmarks:
+        // rewrite each from its refined MapPoint (global -> this submap's local via the
+        // just-refreshed anchor). The revisit doesn't just dedup, it TIGHTENS the map.
+        if (mappoint_refine_) {
+          const slamko::SE3 to_local = (T_global_map_ * sm.anchor).inverse();
+          for (auto& lm : sm.landmarks) {
+            const Eigen::Vector3d* gp = mp_store_.position(lm.id);
+            if (gp) { lm.position = to_local * (*gp); ++refined; }
+          }
+        }
         if (slamko::saveSubMap(sm, path)) ++refreshed;
       }
       RCLCPP_INFO(get_logger(), "shutdown: refreshed %d/%zu sealed anchors from the graph",
                   refreshed, sealed_ids_.size());
+      // Phase B — dump the consensus MapPoint cloud with per-point visit confidence (n_obs).
+      if (mappoint_refine_) {
+        std::ofstream mpf(map_dir_ + "/mappoints.csv");
+        mpf << "id,x,y,z,n_obs\n";
+        for (const auto& m : mp_store_.points())
+          mpf << m.id << "," << m.pos.x() << "," << m.pos.y() << "," << m.pos.z() << ","
+              << m.n_obs << "\n";
+        RCLCPP_INFO(get_logger(),
+                    "Phase B: back-propagated consensus into %d landmarks; wrote %zu refined "
+                    "MapPoints (mappoints.csv, n_obs = visit confidence)",
+                    refined, mp_store_.size());
+      }
     }
     // ETAPA 2: re-tag each submap by its FINAL connected component (after the automatic
     // feature-match welds), so the Atlas shows FUSED fragments as one map and a fragment
@@ -1750,7 +1779,11 @@ class ProviderFusionNode : public rclcpp::Node {
         if (mp >= 0) {
           // Drift-tolerant duplicate: drop from the stored map, but treat it EXACTLY as a
           // kept point for the backstop denominator + occ_ (so the graph is unaffected).
-          mp_store_.addObservation(mp); ++culled_mp_; ++culled_mp_this;
+          // Phase B: fold this re-observation into the MapPoint consensus (multi-view refine);
+          // otherwise just count it (Phase A pure dedup).
+          if (mappoint_refine_) mp_store_.refine(mp, gpos, drow);
+          else mp_store_.addObservation(mp);
+          ++culled_mp_; ++culled_mp_this;
           mp_culled_ock.push_back(ock);
           continue;
         }
@@ -1982,6 +2015,7 @@ class ProviderFusionNode : public rclcpp::Node {
   // Phase A persistent-MapPoint identity (PLAN_PERSISTENT_MAPPOINTS_02): global store of
   // points keyed by descriptor for DRIFT-TOLERANT cross-submap association at seal.
   bool mappoint_assoc_ = false;
+  bool mappoint_refine_ = false;  // Phase B: fold revisits into the consensus + back-prop
   slamko::MapPointStore mp_store_;
   int culled_mp_ = 0;   // duplicates the voxel cull MISSED, caught by descriptor match
   std::unordered_set<std::int64_t> occ_;

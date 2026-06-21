@@ -1,5 +1,23 @@
 # Plan 02 — persistent MapPoints, the IMPLEMENTATION (drift-tolerant data association)
 
+## STATUS 2026-06-21 — Phase B SHIPPED (multi-view refine + back-prop + confidence)
+The PLVS "re-observe the same point" SECOND half: a revisit re-observation no longer just
+dedups (Phase A) — it folds into the MapPoint's running-mean **consensus** (position +
+descriptor, `MapPointStore::refine`) and at shutdown **back-propagates** the consensus into the
+persisted submap landmarks (global → submap-local via the refreshed anchor). Each point also
+carries `n_obs` = how many visits confirmed it (ORB-SLAM3/PLVS MapPoint maturity). Opt-in
+`mappoint_refine` (requires `mappoint_assoc`; default OFF). Dumps `map/mappoints.csv`
+(id,x,y,z,n_obs); `scripts/render_confidence.py` renders the map coloured by confidence + the
+maturity histogram. Unit tests `slamko_loop/test/test_mappoint_store.cpp` (associate + running-mean
+refine, 3/3 green; full slamko_loop suite 20/0).
+- **casa brutal @0.5 VPR:** 8136 MapPoints, **50% multi-observed** (4053 refined), n_obs max=53
+  mean 2.67; **back-propagated consensus into 8136 landmarks**.
+- **Trajectory-neutral (same discriminator as Phase A):** PhaseA-vs-PhaseB provider diff 0.71 m
+  (OKVIS nondeterminism on brutal), fused diff 0.64 m — fused diverges LESS than the raw provider
+  Phase B can't touch → the back-prop moves only stored landmark geometry, never a graph factor.
+- **Next (Phase C):** seed the store from the prior map at load so revisits associate into PRIOR
+  MapPoints → drives the cross-session merge (kills the EuRoC dangling). Then Phase D serialize.
+
 ## STATUS 2026-06-21 — Phase A RE-VALIDATED on brutal, neutrality proven by discriminator
 Re-ran the A/B on `CASA1_brutal1` @0.5 VPR=true (`scripts/ab_phaseA.sh` + `ab_phaseA_report.py`,
 both committed). Result: **landmarks 21360 → 8948 (−58%)**, submaps 16 → 17 (≈ same). The

@@ -81,6 +81,8 @@ def setup(context):
                 LaunchConfiguration('occ_refresh').perform(context).lower() == 'true',
             'mappoint_assoc':
                 LaunchConfiguration('mappoint_assoc').perform(context).lower() == 'true',
+            'mappoint_refine':
+                LaunchConfiguration('mappoint_refine').perform(context).lower() == 'true',
             'dr_gate_soft_cov':
                 LaunchConfiguration('dr_gate_soft_cov').perform(context).lower() == 'true',
             'atlas_break_on_loss':
@@ -113,6 +115,8 @@ def generate_launch_description():
             description='P2: refresh occupancy from loop-corrected anchors (fuse revisits).'),
         DeclareLaunchArgument('mappoint_assoc', default_value='false',
             description='Phase A: drift-tolerant cross-submap data association by descriptor.'),
+        DeclareLaunchArgument('mappoint_refine', default_value='false',
+            description='Phase B: multi-view consensus refine + back-prop (needs mappoint_assoc).'),
         DeclareLaunchArgument('dr_gate_soft_cov', default_value='false',
             description='#12 trunk: DR-gate uncertainty on the loss-gap chain edge (un-warp).'),
         DeclareLaunchArgument('atlas_break_on_loss', default_value='false',
