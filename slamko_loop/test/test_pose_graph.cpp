@@ -149,6 +149,44 @@ TEST(PoseGraph, DrGateSoftEdgeAbsorbsLossGap) {
   EXPECT_LT(err_soft, 0.5) << "soft-gap trajectory should be near gt (err=" << err_soft << ")";
 }
 
+// Atlas DISJOINT-ISLANDS model (METHODOLOGY_01 etapa 1a): a tracking loss BREAKS the
+// chain into a new map that floats freely (no bridging edge) until a feature match welds
+// it back. Per-component gauge must (a) keep each island well-posed (no singular solve)
+// and (b) let a later weld FUSE one island onto the other. This is the "honest dangling"
+// behaviour the user asked for — the brutal bag should render as fragments, not one warp.
+TEST(PoseGraph, DisjointIslandsGaugedThenWeldFuses) {
+  PoseGraph pg;
+  // Island A: nodes 0,1,2 — straight chain along +x from the origin.
+  pg.addKeyframe(0, SE3());
+  pg.addKeyframe(1, SE3(SO3(), Eigen::Vector3d(1, 0, 0)));
+  pg.addKeyframe(2, SE3(SO3(), Eigen::Vector3d(2, 0, 0)));
+  pg.addOdometryEdge(0, 1, SE3(SO3(), Eigen::Vector3d(1, 0, 0)));
+  pg.addOdometryEdge(1, 2, SE3(SO3(), Eigen::Vector3d(1, 0, 0)));
+  // Island B: nodes 10,11,12 placed FAR away (its OKVIS-drifted estimate) — NO edge to A.
+  pg.addKeyframe(10, SE3(SO3(), Eigen::Vector3d(50, 50, 0)));
+  pg.addKeyframe(11, SE3(SO3(), Eigen::Vector3d(51, 50, 0)));
+  pg.addKeyframe(12, SE3(SO3(), Eigen::Vector3d(52, 50, 0)));
+  pg.addOdometryEdge(10, 11, SE3(SO3(), Eigen::Vector3d(1, 0, 0)));
+  pg.addOdometryEdge(11, 12, SE3(SO3(), Eigen::Vector3d(1, 0, 0)));
+
+  const auto res1 = pg.optimize();
+  ASSERT_TRUE(res1.converged);
+  // Each island stays finite at its OWN gauge (no singular collapse, no fake-coherence).
+  EXPECT_NEAR(pg.pose(2).translation().x(), 2.0, 1e-3);
+  EXPECT_NEAR(pg.pose(12).translation().x(), 52.0, 1e-3);
+  EXPECT_NEAR(pg.pose(12).translation().y(), 50.0, 1e-3);
+
+  // A feature MATCH welds B's node 10 onto A's node 2 (co-located place): meas 2->10 = +x.
+  // The weld merges the components -> ONE gauge (node 0) -> B bends onto A (its far gauge
+  // releases). This is the geometric fusion-for-free.
+  pg.addLoopEdge(2, 10, SE3(SO3(), Eigen::Vector3d(1, 0, 0)), 0.02, 0.01);
+  const auto res2 = pg.optimize();
+  ASSERT_TRUE(res2.converged);
+  EXPECT_NEAR(pg.pose(2).translation().x(), 2.0, 0.3);  // A holds (merged-component gauge)
+  EXPECT_LT((pg.pose(10).translation() - Eigen::Vector3d(3, 0, 0)).norm(), 0.4)
+      << "welded island did not fuse onto A: " << pg.pose(10).translation().transpose();
+}
+
 // De-risk the offline-driver WELD MATH before trusting it on real submaps: given a
 // relocalization result T_query_match (query body pose in the matched submap's local
 // frame) and the matched KF's local pose matchedKF.T_WB, the loop edge from query→matched

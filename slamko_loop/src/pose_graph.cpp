@@ -14,6 +14,7 @@
 #include "slamko_loop/pose_graph.hpp"
 
 #include <stdexcept>
+#include <unordered_map>
 
 #include <Eigen/Geometry>
 #include <ceres/ceres.h>
@@ -216,12 +217,39 @@ PoseGraph::Result PoseGraph::optimize() {
                              it_b->second.data(), it_b->second.data() + 3);
   }
 
-  // Gauge: pin the anchor node (default = smallest id).
-  std::uint64_t anchor = has_anchor_ ? anchor_id_ : nodes_.begin()->first;
-  auto it = nodes_.find(anchor);
-  if (it != nodes_.end()) {
-    problem.SetParameterBlockConstant(it->second.data());
-    problem.SetParameterBlockConstant(it->second.data() + 3);
+  // Gauge per CONNECTED COMPONENT (Atlas disjoint-islands model): a tracking-loss
+  // BREAKS the chain into a new map that floats freely until a feature match welds it
+  // back. Pinning a single global anchor would leave such an island gauge-free ->
+  // singular solve. So union-find the edges and pin the LOWEST-ID node of EACH connected
+  // component. Effects: (1) one connected graph -> identical to before (one gauge);
+  // (2) N islands -> each floats at its own gauge (honest dangling); (3) a weld that
+  // joins two islands merges their component -> ONE gauge -> one bends onto the other
+  // (geometric fusion comes for free). Only edges (not priors) connect components.
+  std::unordered_map<std::uint64_t, std::uint64_t> parent;
+  parent.reserve(nodes_.size());
+  for (const auto& kv : nodes_) parent[kv.first] = kv.first;
+  auto find = [&parent](std::uint64_t x) {
+    while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+  };
+  for (const auto& e : edges_) {
+    if (!nodes_.count(e.from) || !nodes_.count(e.to)) continue;
+    parent[find(e.from)] = find(e.to);
+  }
+  std::unordered_map<std::uint64_t, std::uint64_t> gauge;  // component root -> node to pin
+  for (const auto& kv : nodes_) {
+    const std::uint64_t r = find(kv.first);
+    auto g = gauge.find(r);
+    if (g == gauge.end() || kv.first < g->second) gauge[r] = kv.first;
+  }
+  // Honour an explicit anchor within its own component (keeps the world frame stable).
+  if (has_anchor_ && nodes_.count(anchor_id_)) gauge[find(anchor_id_)] = anchor_id_;
+  for (const auto& kv : gauge) {
+    auto it = nodes_.find(kv.second);
+    if (it != nodes_.end()) {
+      problem.SetParameterBlockConstant(it->second.data());
+      problem.SetParameterBlockConstant(it->second.data() + 3);
+    }
   }
 
   ceres::Solver::Options opts;
