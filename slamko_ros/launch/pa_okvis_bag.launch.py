@@ -83,6 +83,8 @@ def setup(context):
                 LaunchConfiguration('mappoint_assoc').perform(context).lower() == 'true',
             'dr_gate_soft_cov':
                 LaunchConfiguration('dr_gate_soft_cov').perform(context).lower() == 'true',
+            'atlas_break_on_loss':
+                LaunchConfiguration('atlas_break_on_loss').perform(context).lower() == 'true',
         }])
 
     return [okvis, fusion]
@@ -113,6 +115,8 @@ def generate_launch_description():
             description='Phase A: drift-tolerant cross-submap data association by descriptor.'),
         DeclareLaunchArgument('dr_gate_soft_cov', default_value='false',
             description='#12 trunk: DR-gate uncertainty on the loss-gap chain edge (un-warp).'),
+        DeclareLaunchArgument('atlas_break_on_loss', default_value='false',
+            description='Etapa 1b: tracking loss -> break into a new disjoint map component.'),
         DeclareLaunchArgument('force_loss_start', default_value='-1.0',
             description='Test: drop odom from this bag-relative time [s] (-1 = off).'),
         DeclareLaunchArgument('force_loss_end', default_value='-1.0',

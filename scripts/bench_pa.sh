@@ -54,6 +54,8 @@ fi
 [ -n "${MAPPOINT_ASSOC:-}" ] && EXTRA_ARGS+=("mappoint_assoc:=$MAPPOINT_ASSOC")
 # DR_GATE_SOFT_COV=true -> #12 trunk: DR-gate uncertainty on the loss-gap chain edge.
 [ -n "${DR_GATE_SOFT_COV:-}" ] && EXTRA_ARGS+=("dr_gate_soft_cov:=$DR_GATE_SOFT_COV")
+# ATLAS_BREAK=true -> etapa 1b: tracking loss breaks into a new disjoint map component.
+[ -n "${ATLAS_BREAK:-}" ] && EXTRA_ARGS+=("atlas_break_on_loss:=$ATLAS_BREAK")
 [ "$PROVIDER" = okvis ] && EXTRA_ARGS+=("imu_rate:=$IMU_RATE")
 # FORCE_LOSS="30,33" -> drop odom in that bag-relative window (test seal+branch).
 [ -n "${FORCE_LOSS:-}" ] && EXTRA_ARGS+=("force_loss_start:=${FORCE_LOSS%,*}" "force_loss_end:=${FORCE_LOSS#*,}")

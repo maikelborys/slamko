@@ -350,6 +350,11 @@ class ProviderFusionNode : public rclcpp::Node {
       dr_gate_soft_cov_ = declare_parameter("dr_gate_soft_cov", false);
       dr_gate_soft_floor_t_ = declare_parameter("dr_gate_soft_floor_t", 0.05);
       dr_gate_soft_floor_r_ = declare_parameter("dr_gate_soft_floor_r", 0.02);
+      // ATLAS disjoint-islands (etapa 1b, METHODOLOGY_01): a tracking loss BREAKS the
+      // chain into a NEW map component instead of soft-bridging it. The island floats
+      // (per-component gauge, etapa 1a) until a feature match welds it back; no match =>
+      // it honestly stays dangling. Supersedes the #12 soft-bridge when ON. Opt-in.
+      atlas_break_on_loss_ = declare_parameter("atlas_break_on_loss", false);
       anchor_soft_lm_ = declare_parameter("anchor_soft_lm", 7000);
       // R0.2 ingestion gate: bar degraded-tracking submaps from being reloc match targets.
       gate_degraded_reloc_ = declare_parameter("gate_degraded_reloc", true);
@@ -714,6 +719,8 @@ class ProviderFusionNode : public rclcpp::Node {
         pending_soft_sigma_t_ = std::max(dr_gate_soft_floor_t_, d_trans);
         pending_soft_sigma_r_ = std::max(dr_gate_soft_floor_r_, d_rot_deg * M_PI / 180.0);
       }
+      // ETAPA 1b: tracking was lost -> the post-gap keyframe starts a NEW disjoint map.
+      if (atlas_break_on_loss_) pending_break_ = true;
     }
     last_odom_t_ = s.t;
     // snapshot the last trustworthy state for the NEXT gap's DR comparison.
@@ -742,10 +749,17 @@ class ProviderFusionNode : public rclcpp::Node {
       const slamko::SE3 T_map_to = graph_.pose(edge->from) * edge->T_from_to;
       graph_.addKeyframe(edge->to, T_map_to);
       node_time_[edge->to] = s.t;
-      // #12: if a stale-gap was just detected, this edge spans it -> use the DR-gate
-      // uncertainty instead of the provider's over-confident covariance, so the graph
-      // can yield here and a loop straightens the segment.
-      if (pending_soft_sigma_t_ > 0.0) {
+      if (pending_break_) {
+        // ETAPA 1b — ATLAS BREAK: tracking was lost, so do NOT bridge the dead-reckoned
+        // gap. This keyframe starts a NEW disjoint map component that floats (per-component
+        // gauge, etapa 1a) until a feature match welds it back. No chain edge added.
+        ++component_id_;
+        pending_break_ = false;
+        pending_soft_sigma_t_ = pending_soft_sigma_r_ = 0.0;  // break supersedes #12 bridge
+        RCLCPP_WARN(get_logger(),
+                    "ATLAS BREAK: kf %llu starts new map component %d (loss -> disjoint island)",
+                    (unsigned long long)edge->to, component_id_);
+      } else if (pending_soft_sigma_t_ > 0.0) {
         Eigen::Matrix<double, 6, 6> info = Eigen::Matrix<double, 6, 6>::Zero();
         const double it = 1.0 / (pending_soft_sigma_t_ * pending_soft_sigma_t_);
         const double ir = 1.0 / (pending_soft_sigma_r_ * pending_soft_sigma_r_);
@@ -1770,6 +1784,12 @@ class ProviderFusionNode : public rclcpp::Node {
         sealed_ids_.push_back(sm.id);
         std::ofstream mf(map_dir_ + "/submaps.manifest");
         for (auto sid : sealed_ids_) mf << sid << "\n";
+        // ETAPA 1b/1c: tag this submap with its atlas component (which disjoint island it
+        // belongs to) + dump a sidecar so the renderer can colour fragments separately.
+        submap_component_[sm.id] = component_id_;
+        std::ofstream cf(map_dir_ + "/components.csv");
+        cf << "submap_id,component\n";
+        for (auto sid : sealed_ids_) cf << sid << "," << submap_component_[sid] << "\n";
       }
     }
     RCLCPP_INFO(get_logger(), "sealed submap %llu (%zu KF, %d->%zu lm %.1fx dedup, VPR)%s",
@@ -1946,6 +1966,11 @@ class ProviderFusionNode : public rclcpp::Node {
   bool dr_gate_soft_cov_ = false;
   double dr_gate_soft_floor_t_ = 0.05, dr_gate_soft_floor_r_ = 0.02;
   double pending_soft_sigma_t_ = 0.0, pending_soft_sigma_r_ = 0.0;
+  // ATLAS disjoint islands (etapa 1b): break the chain on loss -> new map component.
+  bool atlas_break_on_loss_ = false;
+  bool pending_break_ = false;
+  int component_id_ = 0;
+  std::unordered_map<std::uint64_t, int> submap_component_;  // submap id -> atlas component
   double anchor_soft_sigma_t_ = 1.0, anchor_soft_sigma_r_ = 0.3;
   int anchor_soft_lm_ = 7000;      // segment raw-landmark floor below which the chain edge is SOFT
   int prior_min_inliers_ = 15;
