@@ -1,5 +1,20 @@
 # Plan 02 — persistent MapPoints, the IMPLEMENTATION (drift-tolerant data association)
 
+## STATUS 2026-06-21 — Phase A RE-VALIDATED on brutal, neutrality proven by discriminator
+Re-ran the A/B on `CASA1_brutal1` @0.5 VPR=true (`scripts/ab_phaseA.sh` + `ab_phaseA_report.py`,
+both committed). Result: **landmarks 21360 → 8948 (−58%)**, submaps 16 → 17 (≈ same). The
+doubling collapse is visible in the side-by-side top-down (`/tmp/phaseA_ab.png`): baseline walls
+are doubled/thick, Phase A walls are single.
+
+**Neutrality — the clean discriminator (not the off-vs-on number).** The raw off-vs-on trajectory
+diff is 1.0 m mean — but that is OKVIS NONDETERMINISM on the brutal bag (223 vs 245 `TRACKING
+FAILURE: quality=0`, different OKVIS paths), NOT Phase A. Proof: Phase A NEVER touches the provider,
+yet **provider** off-vs-on = 1.10 m mean while **fused** off-vs-on = 0.99 m mean — the fused
+diverges LESS than the raw provider it can't influence. If Phase A moved the trajectory the fused
+would diverge MORE than the provider; it diverges less (loops pull both runs to the same map). So
+Phase A is neutral by-construction AND empirically. The fine 4.6 cm neutrality number lives on SUAVE
+(deterministic enough); brutal can only show the doubling collapse, not byte-neutrality.
+
 ## STATUS 2026-06-20 — Phase A SHIPPED (opt-in, validated on casa)
 `MapPointStore` (header-only, slamko_loop) + `sealSubmap` hook behind `mappoint_assoc` (default
 OFF). Drift-tolerant cross-submap dedup by descriptor cosine + position radius. **Made provably
