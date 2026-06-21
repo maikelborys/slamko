@@ -407,6 +407,9 @@ class ProviderFusionNode : public rclcpp::Node {
       proximity_promote_inliers_ = declare_parameter("proximity_promote_inliers", 40);
       // Max translation [m] between two candidate corrections for them to "agree" (2nd vote).
       proximity_agree_m_ = declare_parameter("proximity_agree_m", 0.5);
+      // Consistent votes to the SAME prior submap needed to promote a weak (inl<strong)
+      // proximity match -> a weld. Accumulated per-submap (robust to interleaved candidates).
+      proximity_votes_needed_ = declare_parameter("proximity_votes_needed", 2);
       min_reloc_period_s_ = declare_parameter("min_reloc_period_s", 0.5);
       lg_model_path_ = declare_parameter(
           "lightglue_model_path",
@@ -1234,22 +1237,37 @@ class ProviderFusionNode : public rclcpp::Node {
         pushGraphEdgesToViz();
       }
       const bool strong = r.num_inliers >= proximity_promote_inliers_;
-      const bool agree =
-          have_prox_cand_ && prox_cand_submap_ == r.submap_id &&
-          (prox_cand_target_.translation() - target_session.translation()).norm() <
-              proximity_agree_m_;
-      if (!strong && !agree) {
-        have_prox_cand_ = true;
-        prox_cand_submap_ = r.submap_id;
-        prox_cand_target_ = target_session;
+      // ROBUST 2nd-vote: accumulate votes PER prior submap (not a single overwriteable
+      // slot — intervening candidates to OTHER submaps used to wipe it, so the 3 votes to
+      // submap 1 on EuRoC never counted). A vote counts only if its implied target AGREES
+      // with the running target (within proximity_agree_m) -> random false matches don't
+      // agree, so they never accumulate (the precision defense survives). Promote when a
+      // submap reaches proximity_votes_needed consistent votes: the cross-recording matches
+      // EXIST at inl 15-36, they just need to be COUNTED instead of dropped below inl 40.
+      auto& v = prox_votes_[r.submap_id];
+      const bool consistent =
+          v.count > 0 &&
+          (v.target.translation() - target_session.translation()).norm() < proximity_agree_m_;
+      if (consistent) {
+        // running-mean the target so a slowly-drifting fragment keeps accumulating.
+        const Eigen::Vector3d mean =
+            (v.target.translation() * v.count + target_session.translation()) / (v.count + 1);
+        v.target = slamko::SE3(target_session.so3(), mean);
+        ++v.count;
+      } else {
+        v.count = 1;
+        v.target = target_session;
+      }
+      if (!strong && v.count < proximity_votes_needed_) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
                              "proximity CANDIDATE held: kf %llu -> prior submap %llu inl=%d "
-                             "(awaiting promote: strong>=%d or a 2nd vote)",
+                             "(vote %d/%d, or strong>=%d)",
                              (unsigned long long)q_id, (unsigned long long)r.submap_id,
-                             r.num_inliers, proximity_promote_inliers_);
+                             r.num_inliers, v.count, proximity_votes_needed_,
+                             proximity_promote_inliers_);
         return;
       }
-      have_prox_cand_ = false;
+      prox_votes_.erase(r.submap_id);  // promoted -> clear this submap's accumulated votes
       viz_cand_segs_.clear();  // promoted -> the candidate becomes a real (green) prior edge
       ++prox_promoted_;
     }
@@ -2034,9 +2052,10 @@ class ProviderFusionNode : public rclcpp::Node {
   bool proximity_three_tier_ = true;
   int proximity_promote_inliers_ = 40;
   double proximity_agree_m_ = 0.5;
-  bool have_prox_cand_ = false;       // a proximity candidate is pending a 2nd vote
-  std::uint64_t prox_cand_submap_ = 0;
-  slamko::SE3 prox_cand_target_;      // its implied session-frame target pose for q
+  // ROBUST accumulative 2nd-vote: votes per prior submap (not a single overwriteable slot).
+  struct ProxVote { int count = 0; slamko::SE3 target; };
+  std::unordered_map<std::uint64_t, ProxVote> prox_votes_;
+  int proximity_votes_needed_ = 2;
   int prox_candidates_ = 0, prox_promoted_ = 0;
   // Accumulated viz edge segments by class (session frame). Chain/Soft are rebuilt from
   // anchor_edges_ each push; these three accumulate kf<->target links as matches fire.
