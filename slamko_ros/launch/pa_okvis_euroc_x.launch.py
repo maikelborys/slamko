@@ -88,6 +88,12 @@ def setup(context):
                 LaunchConfiguration('atlas_break_on_loss').perform(context).lower() == 'true',
             'force_loss_start': float(LaunchConfiguration('force_loss_start').perform(context)),
             'force_loss_end':   float(LaunchConfiguration('force_loss_end').perform(context)),
+            'mappoint_assoc':
+                LaunchConfiguration('mappoint_assoc').perform(context).lower() == 'true',
+            'mappoint_refine':
+                LaunchConfiguration('mappoint_refine').perform(context).lower() == 'true',
+            'mappoint_xsession':
+                LaunchConfiguration('mappoint_xsession').perform(context).lower() == 'true',
             'viz': LaunchConfiguration('viz').perform(context).lower() == 'true',
             'viz_endpoint': LaunchConfiguration('viz_endpoint').perform(context),
         }])
@@ -111,6 +117,12 @@ def generate_launch_description():
             description='Inject a blackout: drop odom from this bag-relative time [s] (-1=off).'),
         DeclareLaunchArgument('force_loss_end', default_value='-1.0',
             description='... until this bag-relative time [s] -> stale-gap -> atlas break.'),
+        DeclareLaunchArgument('mappoint_assoc', default_value='false',
+            description='Phase A: drift-tolerant cross-submap data association by descriptor.'),
+        DeclareLaunchArgument('mappoint_refine', default_value='false',
+            description='Phase B: multi-view consensus refine + back-prop (needs mappoint_assoc).'),
+        DeclareLaunchArgument('mappoint_xsession', default_value='false',
+            description='Phase C: seed the store from the prior map (cross-session dedup).'),
         DeclareLaunchArgument('viz', default_value='false'),
         DeclareLaunchArgument('viz_endpoint', default_value=''),
         OpaqueFunction(function=setup),

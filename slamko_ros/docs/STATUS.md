@@ -1,5 +1,29 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
+## 2026-06-21 — EuRoC MH_01 blackout/localization campaign (GT-backed, MapPoints ON)
+
+`scripts/bench_mh1_campaign.sh` (+ `mh1_report.py`): MH_01 normal reference + 3 injected blackouts
+(early 40-44 / mid 90-94 / long 90-100 s) + a cross-session localize run, all with assoc+refine ON
+and prior runs adding xsession (Phase C). Rate 1.0 (EuRoC OKVIS-stable), ROS_DOMAIN_ID=42.
+
+| run | blackout | ATE fused | ATE graph | submaps | comps | reloc | breaks |
+|---|---|---|---|---|---|---|---|
+| normal | - | **3.65 cm** | 7.43 | 14 | 1 | 0 | 0 |
+| bk_early | 40-44 | 10.94 | 8.44 | 14 | 2 | 1 | 1 |
+| bk_mid | 90-94 | 11.09 | 10.08 | 13 | 2 | 1 | 1 |
+| bk_long | 90-100 (10s) | 14.61 | **8.42** | 12 | 2 | 1 | 1 |
+| localize | - (prior) | 9.82 | 6.07 | 13 | 1 | 1 | 0 |
+
+**Works:** submaps created (12-14/run); every blackout breaks into a disjoint island (ATLAS BREAK)
+and recovers; every prior run relocalizes (LOCALIZED in prior); ATE-fused degrades with blackout
+length but the OPTIMIZED graph absorbs the gap (stays ~8-10 cm, bk_long graph 8.42 cm).
+**Honest findings (the two known ceilings, now GT-measured on MH_01):** (1) the cross-session reloc
+is WEAK — **15 inliers** on every prior run (strong bar 40), the EuRoC viewpoint/recall ceiling;
+T_global_map ~0.3 m so plausibly right, but marginal. (2) `localize` (prior, no blackout) REGRESSES
+ATE 3.65->9.82 cm — the cross-session re-anchoring cost (the same VPR-on regression seen on MH_03).
+(3) The post-blackout fragment DANGLES within-session (2 comps) — MH_01 never revisits the blackout
+spot, so the honest hang; it still anchors to the prior separately. Plotly `results/mh1/mh1_trajectories.html`.
+
 ## 2026-06-21 — Persistent MapPoints A+B+C+D: kill the revisit doubling (provider_fusion_node)
 
 The PLVS/ORB-SLAM3 "re-observe the same point" model wired into the seal + destructor path of
