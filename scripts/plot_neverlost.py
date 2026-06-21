@@ -69,7 +69,7 @@ def load_smap(path):
     already moved to the MAP frame (anchor·local). Keyframes + descriptors skipped."""
     with open(path, "rb") as fh:
         d = fh.read()
-    if d[:4] not in (b"SMP1", b"SMP2", b"SMP3", b"SMP4", b"SMP5"):
+    if d[:4] not in (b"SMP1", b"SMP2", b"SMP3", b"SMP4", b"SMP5", b"SMP6"):
         raise SystemExit(f"{path}: bad magic {d[:4]!r}")
     off = 4 + 8                                   # magic + id(u64)
     q = struct.unpack_from("<7d", d, off); off += 56   # anchor quat(xyzw)+t
