@@ -27,8 +27,13 @@
 //         with CombinedImuFactor (Phase B.2, see docs/PLAN_BA_GLOBAL.md). First KF
 //         of a submap stores nimu=0 (no previous KF in this submap). Legacy maps
 //         (SMP1–SMP4) load with imu_since_prev empty.
+//   SMP6 (additive): a trailing per-landmark observation-count block — nl (uint64) ·
+//         nl × int32 n_obs, aligned 1:1 with the landmark block. Persists MapPoint
+//         MATURITY (how many visits confirmed each point) so the consensus + confidence
+//         COMPOUND across sessions (Phase D, the lifelong immortal map — see
+//         docs/PLAN_PERSISTENT_MAPPOINTS_02.md). Legacy maps load with n_obs = 1.
 //
-// Loads accept all five versions; older formats leave the newer fields empty (the
+// Loads accept all six versions; older formats leave the newer fields empty (the
 // downstream backends gate on .empty()). Same-architecture assumption (x86 robot +
 // dev box); a portable fixed-width codec is a later refinement. CustomData (dense
 // payloads) is NOT serialized here — that is a per-payload concern (TSDF slab,
@@ -80,10 +85,9 @@ inline bool saveSubMap(const SubMap& sm, const std::string& path) {
   using namespace submap_io_detail;
   std::ofstream f(path, std::ios::binary);
   if (!f) return false;
-  // SMP5 adds per-keyframe IMU window inside each kf_obs block (the BA substrate for
-  // CombinedImuFactor in the global smoother); SMP1–SMP4 still load (newer fields
-  // stay empty).
-  f.write("SMP5", 4);
+  // SMP6 adds a trailing per-landmark n_obs (maturity) block; SMP1–SMP5 still load
+  // (newer fields stay empty / n_obs defaults to 1).
+  f.write("SMP6", 4);
   wr(f, sm.id);
   wrSE3(f, sm.anchor);
 
@@ -160,6 +164,14 @@ inline bool saveSubMap(const SubMap& sm, const std::string& path) {
       f.write(reinterpret_cast<const char*>(rec), sizeof(rec));
     }
   }
+
+  // SMP6: trailing per-landmark observation count (maturity), aligned 1:1 with the
+  // landmark block. nl int32 — restored on load to compound MapPoint maturity across
+  // sessions (Phase D). Written last so SMP1–SMP5 readers stop cleanly before it.
+  for (const auto& l : sm.landmarks) {
+    const std::int32_t no = l.n_obs;
+    wr(f, no);
+  }
   return static_cast<bool>(f);
 }
 
@@ -171,7 +183,9 @@ inline bool loadSubMap(SubMap& sm, const std::string& path) {
   char magic[4];
   f.read(magic, 4);
   const std::string ver(magic, 4);
-  if (ver != "SMP1" && ver != "SMP2" && ver != "SMP3" && ver != "SMP4" && ver != "SMP5") return false;
+  if (ver != "SMP1" && ver != "SMP2" && ver != "SMP3" && ver != "SMP4" && ver != "SMP5" &&
+      ver != "SMP6")
+    return false;
   rd(f, sm.id);
   sm.anchor = rdSE3(f);
 
@@ -207,7 +221,8 @@ inline bool loadSubMap(SubMap& sm, const std::string& path) {
 
   sm.global_descriptor.resize(0);
   sm.kf_obs.clear();
-  if (ver == "SMP2" || ver == "SMP3" || ver == "SMP4" || ver == "SMP5") {  // SMP1 leaves global_descriptor empty
+  if (ver == "SMP2" || ver == "SMP3" || ver == "SMP4" || ver == "SMP5" ||
+      ver == "SMP6") {  // SMP1 leaves global_descriptor empty
     std::uint64_t gdim = 0;
     rd(f, gdim);
     if (gdim) {
@@ -216,7 +231,8 @@ inline bool loadSubMap(SubMap& sm, const std::string& path) {
              sizeof(float) * gdim);
     }
   }
-  if (ver == "SMP3" || ver == "SMP4" || ver == "SMP5") {  // SMP1/SMP2 leave kf_obs empty (BA substrate absent)
+  if (ver == "SMP3" || ver == "SMP4" || ver == "SMP5" ||
+      ver == "SMP6") {  // SMP1/SMP2 leave kf_obs empty (BA substrate absent)
     std::uint64_t nk_obs = 0;
     rd(f, nk_obs);
     sm.kf_obs.resize(nk_obs);
@@ -237,7 +253,7 @@ inline bool loadSubMap(SubMap& sm, const std::string& path) {
         f.read(reinterpret_cast<char*>(ko.uv_right.data()),
                sizeof(float) * N * 2);
       }
-      if (ver == "SMP4" || ver == "SMP5") {  // SMP3 leaves per-KF VPR descriptor empty
+      if (ver == "SMP4" || ver == "SMP5" || ver == "SMP6") {  // SMP3 leaves per-KF VPR empty
         std::uint64_t kf_gdim = 0;
         rd(f, kf_gdim);
         if (kf_gdim) {
@@ -246,7 +262,7 @@ inline bool loadSubMap(SubMap& sm, const std::string& path) {
                  sizeof(float) * kf_gdim);
         }
       }
-      if (ver == "SMP5") {  // SMP1–SMP4 leave per-KF IMU window empty
+      if (ver == "SMP5" || ver == "SMP6") {  // SMP1–SMP4 leave per-KF IMU window empty
         std::uint64_t nimu = 0;
         rd(f, nimu);
         ko.imu_since_prev.resize(nimu);
@@ -258,6 +274,15 @@ inline bool loadSubMap(SubMap& sm, const std::string& path) {
           s.gyro  = Eigen::Vector3d(rec[4], rec[5], rec[6]);
         }
       }
+    }
+  }
+  // SMP6: trailing per-landmark maturity (n_obs), aligned 1:1 with the landmark block.
+  // SMP1–SMP5 leave n_obs at its default 1.
+  if (ver == "SMP6") {
+    for (auto& l : sm.landmarks) {
+      std::int32_t no = 1;
+      rd(f, no);
+      l.n_obs = no;
     }
   }
   return static_cast<bool>(f);

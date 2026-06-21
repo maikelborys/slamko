@@ -1,5 +1,23 @@
 # Plan 02 — persistent MapPoints, the IMPLEMENTATION (drift-tolerant data association)
 
+## STATUS 2026-06-21 — Phase D SHIPPED (lifelong maturity: n_obs persists + compounds)
+The PLVS/ORB-SLAM3 MapPoint maturity now SURVIVES a shutdown and COMPOUNDS across sessions —
+the lifelong immortal map. `MapLandmark` gained `int n_obs` (default 1); the .smap codec bumped
+to **SMP6** (additive trailing per-landmark n_obs block — SMP1–SMP5 still load, n_obs defaults
+to 1, full back-compat). The destructor back-prop (Phase B) writes each kept landmark's store
+maturity before save; Phase C's prior seed RESTORES it (`MapPointStore::add(..., n_obs)` /
+`nObs(id)`) instead of resetting to 1. Unit test `test_submap_io.cpp::MaturityRoundTrip` (+ n_obs
+in every round-trip `expectEqual`); slamko_core 8/0.
+- **casa suave @0.5, 2 sessions of the same place (refine on both, S2 prior=S1):** S1 max n_obs
+  **37** (mean 3.17, 1165 confirmed ≥4); S2 loaded the SMP6 prior, the store started populated
+  (4051 pts, maturity restored), re-confirmed, and S2 max n_obs **65** (mean 3.88, 1617 ≥4) —
+  confidence climbed ABOVE a single session. Without SMP6 S2 would restart near 37.
+- **THE INITIATIVE IS COMPLETE: A (within-session dedup) + B (multi-view refine + confidence)
+  + C (cross-session seed) + D (persist + compound) all SHIPPED, opt-in, trajectory-neutral.**
+  Follow-on (not blocking): re-save the PRIOR submaps with the session's new confirmations (reuse
+  the `mature_` re-save path) so a point re-confirmed in S2 also bumps the on-disk PRIOR, not just
+  S2's store/output — full bidirectional compounding. Today S2's OWN output already compounds.
+
 ## STATUS 2026-06-21 — Phase C SHIPPED (cross-session: seed the store from the prior)
 A 2nd session of the same place no longer DOUBLES the prior — it dedups/refines into it. At
 prior load (when `mappoint_xsession` + a prior + `mappoint_assoc`), the store is seeded with the

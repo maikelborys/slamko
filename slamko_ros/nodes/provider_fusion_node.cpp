@@ -540,6 +540,9 @@ class ProviderFusionNode : public rclcpp::Node {
           for (auto& lm : sm.landmarks) {
             const Eigen::Vector3d* gp = mp_store_.position(lm.id);
             if (gp) { lm.position = to_local * (*gp); ++refined; }
+            // Phase D: persist the accumulated maturity (SMP6) so it compounds next session.
+            const int no = mp_store_.nObs(lm.id);
+            if (no > 0) lm.n_obs = no;
           }
         }
         if (slamko::saveSubMap(sm, path)) ++refreshed;
@@ -1027,7 +1030,9 @@ class ProviderFusionNode : public rclcpp::Node {
                   sm.descriptors.row(lm.descriptor_row);
               const float nrm = d.norm();
               if (nrm > 1e-6f) d /= nrm;
-              mp_store_.add(lm.id, sm.anchor * lm.position, d);
+              // Phase D: restore the prior point's MATURITY so consensus compounds across
+              // sessions (a point confirmed N times stays confirmed N times on reload).
+              mp_store_.add(lm.id, sm.anchor * lm.position, d, std::max(1, lm.n_obs));
               next_landmark_id_ = std::max(next_landmark_id_, lm.id + 1);  // no id collision
             }
           }

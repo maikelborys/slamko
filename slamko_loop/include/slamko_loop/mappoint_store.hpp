@@ -75,12 +75,21 @@ class MapPointStore {
 
   // Register a genuinely-new MapPoint. id is the caller's global landmark id (kept in
   // sync with the node's next_landmark_id_ so submap landmarks and MapPoints share ids).
+  // n_obs seeds the maturity — 1 for a fresh point, or the PRIOR map's persisted count
+  // when seeding the store cross-session (Phase D) so maturity COMPOUNDS across sessions.
   template <typename Desc>
-  void add(std::uint64_t id, const Eigen::Vector3d& p, const Desc& desc) {
+  void add(std::uint64_t id, const Eigen::Vector3d& p, const Desc& desc, int n_obs = 1) {
     const int idx = (int)points_.size();
-    points_.push_back(MapPoint{id, p, desc, 1});
+    points_.push_back(MapPoint{id, p, desc, n_obs});
     cells_[key(cell(p.x()), cell(p.y()), cell(p.z()))].push_back(idx);
     id_index_[id] = idx;
+  }
+
+  // Phase D: the maturity (visit count) of MapPoint `id`, or 0 if unknown. The seal path
+  // reads this back into each persisted landmark so n_obs survives to disk (SMP6).
+  int nObs(std::uint64_t id) const {
+    auto it = id_index_.find(id);
+    return it == id_index_.end() ? 0 : points_[(std::size_t)it->second].n_obs;
   }
 
   // Record one more observation of an existing MapPoint (Phase A: pure association/cull,

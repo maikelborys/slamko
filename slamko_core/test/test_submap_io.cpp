@@ -44,6 +44,7 @@ SubMap synthetic(std::uint64_t id, int n_lm, int n_kf) {
     lm.id = static_cast<std::uint64_t>(1000 + i);
     lm.position = Eigen::Vector3d(0.01 * i, -0.02 * i, 0.5 + 0.001 * i);
     lm.descriptor_row = i;
+    lm.n_obs = 1 + (i % 9);  // SMP6 maturity — distinct per landmark so a swap is visible
     sm.landmarks.push_back(lm);
     for (int d = 0; d < 64; ++d) sm.descriptors(i, d) = 0.001f * (i * 64 + d);
   }
@@ -64,6 +65,7 @@ void expectEqual(const SubMap& a, const SubMap& b) {
   for (size_t i = 0; i < a.landmarks.size(); ++i) {
     EXPECT_EQ(a.landmarks[i].id, b.landmarks[i].id);
     EXPECT_EQ(a.landmarks[i].descriptor_row, b.landmarks[i].descriptor_row);
+    EXPECT_EQ(a.landmarks[i].n_obs, b.landmarks[i].n_obs);  // SMP6 maturity survives
     EXPECT_LT((a.landmarks[i].position - b.landmarks[i].position).norm(), 1e-12);
   }
   ASSERT_EQ(a.descriptors.rows(), b.descriptors.rows());
@@ -249,4 +251,24 @@ TEST(SubMapIO, PerKeyframeImuRoundTrip) {
   EXPECT_TRUE(got.kf_obs[2].hasImu());
   EXPECT_EQ(got.kf_obs[1].imu_since_prev.size(), 5u);
   EXPECT_EQ(got.kf_obs[2].imu_since_prev.size(), 7u);
+}
+
+// SMP6 per-landmark maturity (n_obs) round-trip. The visit count must survive to disk so
+// MapPoint consensus/confidence COMPOUND across sessions (Phase D, the lifelong immortal
+// map). Distinct values catch a swap; a fresh landmark defaults to 1 (the legacy value an
+// SMP1–SMP5 map loads with), so old maps keep working.
+TEST(SubMapIO, MaturityRoundTrip) {
+  SubMap sm = synthetic(19, /*n_lm=*/12, /*n_kf=*/2);
+  sm.landmarks[0].n_obs = 53;   // a heavily re-observed point (Phase B scale)
+  sm.landmarks[3].n_obs = 1;    // a one-shot point
+  const std::string path = tmpdir() + "_maturity.smap";
+  std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+  ASSERT_TRUE(saveSubMap(sm, path));
+  SubMap got;
+  ASSERT_TRUE(loadSubMap(got, path));
+  expectEqual(sm, got);
+  EXPECT_EQ(got.landmarks[0].n_obs, 53);
+  EXPECT_EQ(got.landmarks[3].n_obs, 1);
+  // A default-constructed landmark (what a legacy SMP1–SMP5 load yields) is mature=1.
+  EXPECT_EQ(slamko::MapLandmark{}.n_obs, 1);
 }

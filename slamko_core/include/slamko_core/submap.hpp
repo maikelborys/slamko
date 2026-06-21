@@ -32,6 +32,8 @@ struct MapLandmark {
   std::uint64_t id = 0;
   Eigen::Vector3d position = Eigen::Vector3d::Zero();  // submap-local
   int descriptor_row = -1;  // index into the submap descriptor block, or -1
+  int n_obs = 1;  // how many visits confirmed this point (MapPoint maturity, Phase D).
+                  // Persisted (SMP6) so consensus/confidence COMPOUND across sessions.
 };
 
 // Per-keyframe 2D OBSERVATIONS of landmarks (left image, optional right). One block
