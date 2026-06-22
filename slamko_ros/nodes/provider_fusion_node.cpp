@@ -432,6 +432,9 @@ class ProviderFusionNode : public rclcpp::Node {
       // E (proximity detection): radius [m] around the estimated global pose within which
       // prior submaps are geometrically verified independent of VPR retrieval. 0 = off.
       proximity_radius_ = declare_parameter("proximity_radius", 3.0);
+      // Extend the proximity (E) check to WITHIN-session loops: close a return the VPR retrieval
+      // misses (different heading) by verifying geometrically when near an old session submap.
+      proximity_within_session_ = declare_parameter("proximity_within_session", false);
       // 3-TIER candidate->soft->weld (RESEARCH_LIFELONG_FUSION_01 §arch; Kimera/maplab
       // precedent). A proximity match (E) is VPR-independent = weaker appearance evidence,
       // so it enters a CANDIDATE tier first (viz-only, NOT optimised) and is promoted to a
@@ -1351,8 +1354,18 @@ class ProviderFusionNode : public rclcpp::Node {
   // PnP inliers >= reloc_min_inliers_ AND the matched submap is older than
   // min_loop_gap_s_ (adjacent-corridor matches are not loops).
   void tryRelocalize(std::uint64_t q_id, double t, const slamko::Features& query) {
-    if (reloc_ && reloc_->numSubMaps() > 0)
+    if (reloc_ && reloc_->numSubMaps() > 0) {
       processRelocResult(reloc_->relocalize(query), q_id, t);
+      // WITHIN-SESSION PROXIMITY (the 100cm-revisit fix): VPR retrieval can MISS a return the
+      // odometry knows about (came back facing a different heading -> low appearance cosine). If
+      // our estimated SESSION pose is near an OLD session submap, verify it geometrically too
+      // (VPR-independent) so the loop still closes. Session submaps live in the graph frame, so
+      // the query pose is graph_.pose(q_id) directly (no T_global_map_, that's cross-session).
+      if (proximity_within_session_ && proximity_radius_ > 0.0 && graph_.hasNode(q_id))
+        processRelocResult(
+            reloc_->relocalizeNear(query, graph_.pose(q_id), proximity_radius_), q_id, t,
+            /*from_proximity=*/true);
+    }
     if (reloc_prior_) {
       processRelocResult(reloc_prior_->relocalize(query), q_id, t);
       // E — PROXIMITY DETECTION: once roughly localized, ALSO verify against prior submaps
@@ -2254,6 +2267,7 @@ class ProviderFusionNode : public rclcpp::Node {
   double xsession_prior_jump_max_ = 2.0;
   int xsession_priors_added_ = 0;
   double proximity_radius_ = 3.0;   // E: proximity-detection radius [m] (0 = off)
+  bool proximity_within_session_ = false;  // close VPR-missed within-session returns geometrically
   // 3-tier candidate->soft->weld for the proximity path (never-false-merge defense).
   bool proximity_three_tier_ = true;
   int proximity_promote_inliers_ = 40;

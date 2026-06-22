@@ -94,6 +94,8 @@ def setup(context):
             'quality_soft_bridge':
                 LaunchConfiguration('quality_soft_bridge').perform(context).lower() == 'true',
             'loop_min_coverage': float(LaunchConfiguration('loop_min_coverage').perform(context)),
+            'proximity_within_session':
+                LaunchConfiguration('proximity_within_session').perform(context).lower() == 'true',
         }])
 
     return [okvis, fusion]
@@ -136,6 +138,8 @@ def generate_launch_description():
             description='Quality loss -> SOFT bridge (keep chain connected) instead of breaking.'),
         DeclareLaunchArgument('loop_min_coverage', default_value='0.0',
             description='Multi-factor gate: min inliers/submap-landmarks for a loop (0=off).'),
+        DeclareLaunchArgument('proximity_within_session', default_value='false',
+            description='Close VPR-missed within-session returns geometrically (proximity E).'),
         DeclareLaunchArgument('force_loss_start', default_value='-1.0',
             description='Test: drop odom from this bag-relative time [s] (-1 = off).'),
         DeclareLaunchArgument('force_loss_end', default_value='-1.0',
