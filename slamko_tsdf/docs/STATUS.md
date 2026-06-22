@@ -66,6 +66,21 @@ resize src→model, disp@model → depth (`fx_model = fx·640/848`), resize dept
   rect_848.npz supplies fx/baseline (P0[0,0]=426.15, baseline=0.095056), HW-rectified so
   no remap needed.
 
+## 2026-06-22 — CROSS-SESSION doubling: the dramatic bend ✅🎯
+
+The deterministic, dramatic version of the bend. Ran casa100 with casa40 as prior
+(`PRIOR_MAP=…/tsdf_casa40/map`, 848, VPR) → 88 reloc/anchor lines, casa100 re-anchored
+onto casa40's frame. Built a COMBINED map (`scripts/viz_xsession_doubling.py`):
+- **RAW** (casa40 + casa100 at its OWN odometry frame): the house appears **TWICE** —
+  visibly rotated + offset, because the two OKVIS frames started at different
+  orientations. This is what a raw-odometry nvblox (rtabmap-style) produces.
+- **CORRECTED** (casa40 + casa100 at its RE-ANCHORED anchor∘T_WB): the two **fuse into
+  ONE** coherent house (walls overlap). slamko's cross-session reloc pulls session 2 onto
+  session 1.
+This is slamko's lifelong value made visual — and unlike the within-session bend
+(cm-scale here because OKVIS is accurate), the cross-session offset is large + DETERMINISTIC
+(frame difference, not random drift). The clearest proof that slamko ≠ raw-odometry nvblox.
+
 ## 2026-06-22 — the BEND A/B: corrected vs raw poses ✅
 
 `slamko_tsdf_export --raw-tum=<provider.tum>` integrates the SAME depth at the provider's
