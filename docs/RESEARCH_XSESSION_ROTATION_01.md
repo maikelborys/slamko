@@ -69,8 +69,40 @@ practice; ORB-SLAM3 Atlas = Sim3 weld + welding-window local BA).
 - Consensus: refine ROTATION too (currently translation-only), or rely on ≥2–3 spatially
   diverse between-factors to fix it via co-optimization.
 
+## SOTA confirmation (3rd agent) — what mature systems actually do
+
+**THE crux (most actionable):** removing the rotation needs **≥2 spatially-separated
+inter-session matches**, co-optimized. ONE match is degenerate — gauge-equivalent to a soft
+prior, aligns a single point. TWO well-separated relative constraints **over-determine** the
+relative SE3 (a rigid body has only 6 DoF); with internal drift no single rigid offset
+satisfies both, so the optimizer's only way to cut cost is to **rotate AND bend both
+trajectories** → inter-map rotation driven to zero, residual distributed. This is the precise
+reason slamko's per-keyframe UNARY prior fails (each is a 1-point gauge pull) and the precise
+fix (per-match BINARY between-factors).
+
+**Canonical pattern (ORB-SLAM3 Atlas `MergeLocal`/`MergeLocal2`):** rigid Sim3/SE3 init
+(Horn on 3 matches, RANSAC) is ONLY initialization → **welding-window local BA** jointly
+re-optimizes both maps' covisible keyframes + fused points (this physically removes the
+rotation in the overlap; duplicate points fused → no doubling) → **whole-map essential-graph
+PGO** keeping the weld fixed (spreads the residual across both full trajectories). Order is
+the point: rigid-init → local-BA-removes-rotation → graph-PGO-spreads-residual → re-render.
+
+**Same skeleton everywhere:** RTAB-Map (loop + proximity links → GTSAM/g2o co-deform both
+graphs; Vertigo robust); maplab `relax` (relative 6-DoF edges → global opt → `optvi` VI-BA);
+Kimera-Multi/RPGO (GNC robust two-stage PGO, replaced PCM); COVINS-G (per-loop PGO from
+2D-2D RANSAC relative pose). NONE uses a single global prior to merge.
+
+**Explicit verdict on slamko's adopted design:** the "A = weighted PRIOR FACTOR not rigid
+re-base" ([[slamko-lifelong-fusion-ABE]]) is still the WRONG factor type — a prior (even soft,
+even per-keyframe) constrains B's ABSOLUTE GAUGE; it carries zero information about B's shape
+RELATIVE to A, so it provably leaves the rotation + distance-growing residual. Convert the
+cross-session matches from prior factors to **per-match robust BetweenFactors at ≥2 separated
+keyframes**, co-optimize (iSAM2/LM), gauge = one anchored session-1 node.
+
 ## Sources
-Grisetti pose-graph tutorial (gauge/node-fix); g2o (Kümmerle 2011); Umeyama 1991
-(Kabsch/Sim3); Switchable Constraints (Sünderhauf 2012); DCS (Agarwal 2013); Max-Mixtures
-(Olson 2012); GNC (Yang 2020). ORB-SLAM3 Atlas, RTAB-Map multi-session, maplab, Kimera-Multi
-(SOTA agent — pending).
+Grisetti pose-graph tutorial (gauge/node-fix); g2o (Kümmerle 2011); Umeyama 1991 / Horn 1987
+(Kabsch/Sim3 closed-form + reflection fix); Switchable Constraints (Sünderhauf 2012); DCS
+(Agarwal 2013); Max-Mixtures (Olson 2012); GNC (Yang/Carlone 2020); PCM (Mangelson 2018);
+iSAM2 (Kaess 2012). Systems: ORB-SLAM3 Atlas (T-RO 2021), RTAB-Map multi-session (JFR 2019),
+maplab 2.0, Kimera-Multi/RPGO, COVINS/COVINS-G. Dense re-warp: Sumner embedded-deformation
+2007, ElasticFusion (RSS 2015), Hydra (RSS 2022), BAD-SLAM.
