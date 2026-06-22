@@ -66,10 +66,20 @@ resize src→model, disp@model → depth (`fx_model = fx·640/848`), resize dept
   rect_848.npz supplies fx/baseline (P0[0,0]=426.15, baseline=0.095056), HW-rectified so
   no remap needed.
 
-**Next:** (1) per-column floor-anchored costmap slice (RTAB `costmap_esdf_slice.py`
-trick) for a clean Nav2 map + route an A→B; (2) the A/B that proves slamko's value —
-integrate at corrected vs raw provider poses, show the bend removes revisit doubling;
-(3) HITNet depth upgrade.
+## 2026-06-22 — A→B routing over the floor-anchored costmap ✅🎯
+
+`scripts/route_costmap.py`: floor-anchored 2D nav costmap from the HITNet TSDF mesh
+(obstacles = vertices in the robot height band [floor+0.1, floor+1.6] flattened + inflated
+by robot radius; free = explored trajectory tube ∪ near-obstacle, minus inflation) + **A\*
+A→B** (8-connected, goal = farthest free cell in A's connected component → guarantees a
+route). casa40: grid 292×179, 3098 free cells, **route FOUND (145 steps)** — the planned
+path is straighter/more direct than the recorded wander. The navigation goal ("ruta de A
+a B") works end-to-end over the slamko-built map. GOTCHA: goal must be in the SAME
+connected component as the start (an isolated free speck is unreachable → NONE).
+
+**Next:** (1) the bend A/B (corrected vs raw provider poses → doubling) — needs a
+bigger-drift / cross-session bag (casa40's loop correction is only ~7 cm); (2) wire the
+PGM/YAML costmap into Nav2 proper; (3) semantic layer (phase 2).
 
 ## 2026-06-22 — offline driver + depth-IO + submap→pose glue ✅
 
