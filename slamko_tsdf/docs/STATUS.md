@@ -66,20 +66,28 @@ resize src→model, disp@model → depth (`fx_model = fx·640/848`), resize dept
   rect_848.npz supplies fx/baseline (P0[0,0]=426.15, baseline=0.095056), HW-rectified so
   no remap needed.
 
-## 2026-06-22 — CROSS-SESSION doubling: the dramatic bend ✅🎯
+## 2026-06-22 — CROSS-SESSION combine + REVISIT voxel behaviour (HONEST) ⚠️
 
-The deterministic, dramatic version of the bend. Ran casa100 with casa40 as prior
-(`PRIOR_MAP=…/tsdf_casa40/map`, 848, VPR) → 88 reloc/anchor lines, casa100 re-anchored
-onto casa40's frame. Built a COMBINED map (`scripts/viz_xsession_doubling.py`):
-- **RAW** (casa40 + casa100 at its OWN odometry frame): the house appears **TWICE** —
-  visibly rotated + offset, because the two OKVIS frames started at different
-  orientations. This is what a raw-odometry nvblox (rtabmap-style) produces.
-- **CORRECTED** (casa40 + casa100 at its RE-ANCHORED anchor∘T_WB): the two **fuse into
-  ONE** coherent house (walls overlap). slamko's cross-session reloc pulls session 2 onto
-  session 1.
-This is slamko's lifelong value made visual — and unlike the within-session bend
-(cm-scale here because OKVIS is accurate), the cross-session offset is large + DETERMINISTIC
-(frame difference, not random drift). The clearest proof that slamko ≠ raw-odometry nvblox.
+Ran casa100 with casa40 as prior (88 reloc/anchor lines). **CORRECTION (earlier over-claim
+fixed):** measured casa100→casa40 NN distance is **~0.38 m median for BOTH corrected and
+raw** (centroid offset 2.01 vs 2.11 m) — i.e. the cross-session re-anchoring **barely moved
+casa100**. Two reasons: (1) the bno_ab bags share a START (salon) → the two OKVIS frames are
+already ~aligned (both at origin), so raw casa100 is already roughly on casa40; (2) slamko
+applies cross-session as a **soft PRIOR factor**, not a rigid re-base → gentle, leaving the
+~0.38 m residual. So blue (casa40) and green (casa100) do NOT cleanly overlap — the user
+caught this. The within-session bend stays cm-scale (OKVIS accurate).
+
+**REVISIT / voxel question (the real finding).** `slamko_tsdf_export --map2/--depth2/
+--raw-tum2` fuses a 2nd session INTO ONE TSDF (kf_ids offset by 1e9 → no collision; 957
+frames). A revisited voxel gets the **weighted average** of both sessions' depth — so the
+outcome depends on reloc residual vs nvblox truncation (~0.2 m at 5 cm voxels):
+- residual < truncation → surfaces fuse → revisit **REFINES** (one wall, more weight).
+- residual > truncation (our 0.38 m) → surfaces are too far → **DOUBLED walls** (two parallel
+  surfaces ~0.4 m apart), NOT fused. `revisit_zoom.png` shows exactly this.
+**Implication:** clean lifelong fusion needs reloc residual < voxel truncation, OR the
+persistent-MapPoint cross-session dedup (separate mechanism), OR a stiffer cross-session
+correction. The volumetric layer alone fuses-or-doubles by that threshold — a load-bearing
+design fact for the lifelong map.
 
 ## 2026-06-22 — the BEND A/B: corrected vs raw poses ✅
 

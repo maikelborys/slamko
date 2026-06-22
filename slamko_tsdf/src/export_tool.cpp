@@ -73,6 +73,39 @@ std::unordered_map<std::uint64_t, SE3> rawKeyframePoses(
   return poses;
 }
 
+// Load every *.skdf in a dir into the mapper, offsetting kf_ids (so a 2nd session
+// can share one volume without colliding with session 1's kf numbering).
+std::size_t loadDepthInto(VolumetricMapper& m, const std::string& dir,
+                          std::uint64_t off) {
+  if (!fs::is_directory(dir)) return 0;
+  std::vector<fs::path> files;
+  for (const auto& e : fs::directory_iterator(dir))
+    if (e.path().extension() == ".skdf") files.push_back(e.path());
+  std::sort(files.begin(), files.end());
+  std::size_t n = 0;
+  for (const auto& p : files) {
+    DepthFrame f;
+    if (loadDepthFrame(f, p.string())) {
+      f.kf_id += off;
+      m.addFrame(std::move(f));
+      ++n;
+    }
+  }
+  return n;
+}
+
+// A session's kf_world_pose (corrected anchor∘T_WB, or raw if raw_tum set), keyed
+// with the same offset used for its depth frames.
+std::unordered_map<std::uint64_t, SE3> sessionPoses(
+    const std::vector<SubMap>& sm, const std::string& raw_tum,
+    std::uint64_t off) {
+  auto base = raw_tum.empty() ? keyframeWorldPoses(sm)
+                              : rawKeyframePoses(sm, loadTum(raw_tum));
+  std::unordered_map<std::uint64_t, SE3> p;
+  for (const auto& [id, pose] : base) p[id + off] = pose;
+  return p;
+}
+
 // Nav2 occupancy PGM (P5) + YAML. CostmapSlice has +row → +y; Nav2 reads the top
 // image row as the HIGHEST y, so we emit rows bottom-up. origin = bottom-left.
 bool writeOccupancyMap(const CostmapSlice& m, const std::string& prefix) {
@@ -116,10 +149,13 @@ int main(int argc, char** argv) {
   VolumetricParams vp;
   CostmapParams cp;
   cp.occupancy = true;
-  std::string raw_tum;                       // --raw-tum=PATH → bend A/B (raw poses)
+  std::string raw_tum, map2, depth2, raw_tum2;  // --raw-tum / --map2 / --depth2 / --raw-tum2
   for (int i = 4; i < argc; ++i) {
     const std::string s = argv[i];
     if (s.rfind("--raw-tum=", 0) == 0) raw_tum = s.substr(10);
+    else if (s.rfind("--map2=", 0) == 0) map2 = s.substr(7);
+    else if (s.rfind("--depth2=", 0) == 0) depth2 = s.substr(9);
+    else if (s.rfind("--raw-tum2=", 0) == 0) raw_tum2 = s.substr(11);
     else if (i == 4) vp.voxel_size_m = std::stod(s);
     else if (i == 5) cp.slice_height_m = std::stod(s);
   }
@@ -130,43 +166,41 @@ int main(int argc, char** argv) {
     std::cerr << "FAIL: could not load submap archive: " << submap_dir << "\n";
     return 1;
   }
-  std::unordered_map<std::uint64_t, SE3> poses;
-  if (!raw_tum.empty()) {
-    poses = rawKeyframePoses(submaps, loadTum(raw_tum));
-    std::cout << "RAW poses from " << raw_tum << " (uncorrected, bend A/B): ";
-  } else {
-    poses = keyframeWorldPoses(submaps);
-    std::cout << "CORRECTED poses (anchor∘T_WB): ";
-  }
-  std::cout << "loaded " << submaps.size() << " submaps, " << poses.size()
-            << " keyframe poses\n";
 
   VolumetricMapper mapper(std::make_unique<NvbloxBackend>(vp), vp);
   if (!mapper.backendAvailable())
     std::cerr << "WARN: nvblox backend not built (-DSLAMKO_WITH_NVBLOX=OFF) — "
                  "costmap will be EMPTY (CUDA-free smoke)\n";
 
-  std::size_t loaded = 0;
-  if (fs::is_directory(depth_dir)) {
-    std::vector<fs::path> files;
-    for (const auto& e : fs::directory_iterator(depth_dir))
-      if (e.path().extension() == ".skdf") files.push_back(e.path());
-    std::sort(files.begin(), files.end());
-    for (const auto& p : files) {
-      DepthFrame f;
-      if (loadDepthFrame(f, p.string())) {
-        mapper.addFrame(std::move(f));
-        ++loaded;
-      } else {
-        std::cerr << "WARN: bad depth file skipped: " << p << "\n";
-      }
+  // Session 1.
+  auto poses = sessionPoses(submaps, raw_tum, 0);
+  std::size_t loaded = loadDepthInto(mapper, depth_dir, 0);
+  std::cout << "session1 " << (raw_tum.empty() ? "CORRECTED" : "RAW") << ": "
+            << submaps.size() << " submaps, " << poses.size() << " poses, "
+            << loaded << " depth frames\n";
+
+  // Optional session 2 fused INTO THE SAME volume (revisit/combined map). kf_ids
+  // are offset so the two sessions don't collide; both sets of depth re-integrate
+  // into one TSDF — revisited voxels get the weighted average of BOTH sessions.
+  if (!map2.empty()) {
+    const std::uint64_t OFF = 1000000000ull;
+    std::vector<SubMap> sm2;
+    if (loadSubMaps(sm2, map2)) {
+      auto p2 = sessionPoses(sm2, raw_tum2, OFF);
+      for (const auto& [k, v] : p2) poses[k] = v;
+      const std::size_t l2 = loadDepthInto(mapper, depth2, OFF);
+      loaded += l2;
+      std::cout << "session2 " << (raw_tum2.empty() ? "CORRECTED" : "RAW") << ": +"
+                << sm2.size() << " submaps, +" << p2.size() << " poses, +" << l2
+                << " depth frames (one volume)\n";
+    } else {
+      std::cerr << "WARN: could not load session2 archive: " << map2 << "\n";
     }
   }
-  std::cout << "loaded " << loaded << " depth frames\n";
 
   const std::size_t integrated = mapper.reintegrate(poses);
   std::cout << "integrated " << integrated << "/" << mapper.numFrames()
-            << " frames at corrected poses (skipped = unanchored/invalid)\n";
+            << " frames into one TSDF\n";
 
   const CostmapSlice cm = mapper.exportCostmap(cp);
   if (writeOccupancyMap(cm, out_prefix))
