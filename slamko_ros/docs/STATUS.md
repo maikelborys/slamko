@@ -1,5 +1,44 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
+## 2026-06-22 — Soft-bridge + multi-factor gate + within-session proximity; validated on NEW real bags
+
+Four opt-in robustness features (default OFF) + a real-bag campaign on two freshly-recorded 848 casa
+bags (40cm + 100cm height) and the 640 casa Suave/Escaleras.
+
+**Features built (provider_fusion_node):**
+- **Soft-bridge** (`quality_soft_bridge`, needs `atlas_break_on_quality`): a quality LOST stretch no
+  longer breaks into a dangling island (which fragmented the map) — the lost-stretch chain edges go
+  SOFT (`quality_soft_sigma_t/r`, reuses the #12 mechanism) so the good chunks stay in ONE map and a
+  loop pulls the bad joint straight. Validated: casa40 3 quality-losses -> 3 soft bridges, map stayed
+  1 component (vs pure-break fragmenting to 5-7).
+- **Multi-factor loop gate** (`loop_min_coverage`): reject a loop that re-observes < this fraction of
+  the matched submap's landmarks (weak overlap = noisy correction) — the COVERAGE factor on top of
+  inlier-count + PCM. `submap_lm_count_` is the denominator. (Inlier-ratio deferred — needs a
+  relocalizer putative-count; PCM already supplies the sustained factor.)
+- **Within-session proximity** (`proximity_within_session`): close a return the VPR retrieval misses
+  (came back facing a different heading) by verifying geometrically near an old SESSION submap.
+- `OKVIS_CONFIG` env in bench_pa.sh (the 848 casa bags need `rsD455_map848`, NOT the 640 config).
+
+**Real-bag findings (the recall picture, on the user's own house):**
+- **40cm** (848): 4 within-session loops (to its own submap 0 + 3), map coherent. Same-heading return.
+- **100cm** (848): physically closed the loop (start-end **0.57 m**) but **0 loops** — returned at a
+  DIFFERENT heading -> no feature overlap (max 28 inliers anywhere). The VIEWPOINT-coverage ceiling on
+  fresh data: 40cm same-heading closed 4, 100cm different-heading closed 0. Within-session proximity
+  TRIED (geometric, VPR-independent) but can't conjure overlap that isn't there.
+- **Cross-session 40cm(prior) -> 100cm: 92% certain.** Localized to the prior at kf 0 (37 inl). The
+  prior map gives the WHOLE path to match against (not one return point) -> heights DO recognize each
+  other where they overlap along the way. Cross-session beats the single within-session return.
+- **Suave(prior) -> Escaleras FUSES** (same 640 config + common start = the salon): localized kf 0
+  (19 inl, max 95 later), **18542 cross-session duplicates culled** (the shared salon deduped, not
+  doubled), **1 component** (one coherent map: Suave salon + Escaleras stairs extending it). Contrast:
+  casa-848 vs escaleras-640 CANNOT cross-match (different intrinsics) — config must match to fuse.
+- Escaleras (new stack, 640): 10 strong loops (114..32 inl) + 2 quality-losses -> 9 soft edges; the
+  new features didn't regress it (vs 9 loops before).
+
+Renders: `scripts/render_edges.py` (edges by type hard/soft/loop), `plot_map3d.py` (--prior-dir
+overlay). New bags `/mnt/data/bno_ab/CASA1_{40,100}cmH_Stereo60_RGB30_BNO_848{,_trim}` (trimmed via
+`scripts/trim_static_bag.py`). All features opt-in. Commits 6dbdba3, c339e36, 1bd7c31, f5e0dc4.
+
 ## 2026-06-21 — EuRoC MH_01 blackout/localization campaign (GT-backed, MapPoints ON)
 
 `scripts/bench_mh1_campaign.sh` (+ `mh1_report.py`): MH_01 normal reference + 3 injected blackouts
