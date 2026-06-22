@@ -91,6 +91,9 @@ def setup(context):
                 LaunchConfiguration('atlas_break_on_loss').perform(context).lower() == 'true',
             'atlas_break_on_quality':
                 LaunchConfiguration('atlas_break_on_quality').perform(context).lower() == 'true',
+            'quality_soft_bridge':
+                LaunchConfiguration('quality_soft_bridge').perform(context).lower() == 'true',
+            'loop_min_coverage': float(LaunchConfiguration('loop_min_coverage').perform(context)),
         }])
 
     return [okvis, fusion]
@@ -129,6 +132,10 @@ def generate_launch_description():
             description='Etapa 1b: tracking loss -> break into a new disjoint map component.'),
         DeclareLaunchArgument('atlas_break_on_quality', default_value='false',
             description="Etapa 1b': incoherent transition / cov spike -> break (false-traj island)."),
+        DeclareLaunchArgument('quality_soft_bridge', default_value='false',
+            description='Quality loss -> SOFT bridge (keep chain connected) instead of breaking.'),
+        DeclareLaunchArgument('loop_min_coverage', default_value='0.0',
+            description='Multi-factor gate: min inliers/submap-landmarks for a loop (0=off).'),
         DeclareLaunchArgument('force_loss_start', default_value='-1.0',
             description='Test: drop odom from this bag-relative time [s] (-1 = off).'),
         DeclareLaunchArgument('force_loss_end', default_value='-1.0',

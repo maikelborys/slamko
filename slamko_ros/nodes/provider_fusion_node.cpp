@@ -283,6 +283,10 @@ class ProviderFusionNode : public rclcpp::Node {
       reloc_enabled_ = declare_parameter("reloc", true);
       min_loop_gap_s_ = declare_parameter("min_loop_gap_s", 25.0);
       reloc_min_inliers_ = declare_parameter("reloc_min_inliers", 25);
+      // Multi-factor loop gate — add a COVERAGE factor on top of inlier-count + PCM consensus:
+      // a loop must re-observe at least this fraction of the matched submap's landmarks (too
+      // little overlap = a geometrically-weak/noisy match even if a few points align). 0 = off.
+      loop_min_coverage_ = declare_parameter("loop_min_coverage", 0.0);
       max_kf_landmarks_ = declare_parameter("max_kf_landmarks", 200);
       // ORB-SLAM-style structure-only map cleanup at seal (task #9): voxel size for
       // landmark dedup, and min observations to survive culling (the one-off rays).
@@ -385,6 +389,12 @@ class ProviderFusionNode : public rclcpp::Node {
       quality_break_cooldown_ = declare_parameter("quality_break_cooldown", 1.0);  // s
       quality_recover_samples_ =
           declare_parameter("quality_recover_samples", 30);  // sustained-coherent to recover
+      // SOFT-BRIDGE mode (needs atlas_break_on_quality): instead of breaking the bad maneuver
+      // into a dangling island, keep the chain connected but make the lost-stretch edges SOFT
+      // (high covariance) so the good chunks stay in one map and a loop corrects the bad joint.
+      quality_soft_bridge_ = declare_parameter("quality_soft_bridge", false);
+      quality_soft_sigma_t_ = declare_parameter("quality_soft_sigma_t", 0.5);   // m, soft joint
+      quality_soft_sigma_r_ = declare_parameter("quality_soft_sigma_r", 0.2);   // rad (~11deg)
       anchor_soft_lm_ = declare_parameter("anchor_soft_lm", 7000);
       // R0.2 ingestion gate: bar degraded-tracking submaps from being reloc match targets.
       gate_degraded_reloc_ = declare_parameter("gate_degraded_reloc", true);
@@ -455,6 +465,7 @@ class ProviderFusionNode : public rclcpp::Node {
           for (const auto& sm : prior_submaps_) {
             prior_ids_.insert(sm.id);
             prior_anchor_[sm.id] = sm.anchor;
+            submap_lm_count_[sm.id] = (int)sm.landmarks.size();  // prior submap loop coverage
             next_submap_id_ = std::max(next_submap_id_, sm.id + 1);
           }
           RCLCPP_INFO(get_logger(), "prior map loaded: %zu submaps from %s",
@@ -834,33 +845,51 @@ class ProviderFusionNode : public rclcpp::Node {
                                 (quality_break_cov_ > 0.0 && cov_tr > quality_break_cov_);
         if (!tracking_lost_) {
           if (incoherent && kfs_in_component_ >= atlas_min_component_kfs_) {
-            // ENTER LOST: seal the GOOD map up to here, start a dangling bad-bridge island.
+            // ENTER LOST: seal the GOOD map up to here. In BREAK mode the bad bridge becomes a
+            // dangling island; in SOFT-BRIDGE mode the chain stays connected but the whole bad
+            // stretch is down-weighted (soft edges), so the good chunks don't fragment and a
+            // later loop can pull the bad joint straight (anchor-don't-weld).
             RCLCPP_WARN(get_logger(),
                         "QUALITY LOST: incoherent transition @t=%.1f (speed=%.1f jump=%.1f "
-                        "cov=%.2g) -> seal good map, tracking LOST until recovery",
-                        rel, cur_speed, jump, cov_tr);
+                        "cov=%.2g) -> seal good map, tracking LOST until recovery (%s)",
+                        rel, cur_speed, jump, cov_tr,
+                        quality_soft_bridge_ ? "SOFT bridge" : "BREAK");
             if (!map_dir_.empty() && pending_kfs_.size() >= 2) sealSubmap();
             tracking_lost_ = true;
             coherent_streak_ = 0;
             loss_in_segment_ = true;
             seg_hard_loss_ = true;
-            pending_break_ = true;     // the bad bridge is its own (dangling) component
+            if (!quality_soft_bridge_)
+              pending_break_ = true;   // the bad bridge is its own (dangling) component
             ++quality_breaks_;
           }
         } else {
           // LOST: the maneuver. Everything here is suspect; wait for SUSTAINED coherence.
           loss_in_segment_ = true;
           seg_hard_loss_ = true;
+          if (quality_soft_bridge_) {
+            // keep the chain SOFT through the whole bad stretch: every lost-period edge gets a
+            // high covariance (set each sample; consumed at the next keyframe edge).
+            pending_soft_sigma_t_ = quality_soft_sigma_t_;
+            pending_soft_sigma_r_ = quality_soft_sigma_r_;
+          }
           if (incoherent) {
             coherent_streak_ = 0;
           } else if (++coherent_streak_ >= quality_recover_samples_) {
-            // RECOVERED: tracking coherent again -> seal the bad bridge + start a CLEAN island.
+            // RECOVERED: tracking coherent again -> seal the bad bridge. BREAK -> a CLEAN new
+            // island; SOFT -> one last soft joint, then stiff edges resume (chain unbroken).
             RCLCPP_WARN(get_logger(),
-                        "QUALITY RECOVERED @t=%.1f (%d coherent samples) -> new CLEAN island",
-                        rel, coherent_streak_);
+                        "QUALITY RECOVERED @t=%.1f (%d coherent samples) -> %s",
+                        rel, coherent_streak_,
+                        quality_soft_bridge_ ? "stiff resumes (soft bridge kept)" : "new CLEAN island");
             if (!map_dir_.empty() && pending_kfs_.size() >= 2) sealSubmap();
             tracking_lost_ = false;
-            pending_break_ = true;     // the clean resume is a fresh component
+            if (quality_soft_bridge_) {
+              pending_soft_sigma_t_ = quality_soft_sigma_t_;
+              pending_soft_sigma_r_ = quality_soft_sigma_r_;
+            } else {
+              pending_break_ = true;   // the clean resume is a fresh component
+            }
             ++quality_recoveries_;
           }
         }
@@ -1351,6 +1380,21 @@ class ProviderFusionNode : public rclcpp::Node {
     if (!r.found ||
         r.num_inliers < (is_prior ? prior_min_inliers_ : reloc_min_inliers_))
       return;
+    // Multi-factor gate — COVERAGE: reject a match that re-observes too small a fraction of the
+    // target submap (weak geometric overlap -> noisy correction), even if the inlier count passed.
+    if (loop_min_coverage_ > 0.0) {
+      const auto lc = submap_lm_count_.find(r.submap_id);
+      if (lc != submap_lm_count_.end() && lc->second > 0) {
+        const double cov = (double)r.num_inliers / (double)lc->second;
+        if (cov < loop_min_coverage_) {
+          RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+                               "loop gate: coverage %.2f < %.2f (submap %llu, %d/%d inl) -> reject",
+                               cov, loop_min_coverage_, (unsigned long long)r.submap_id,
+                               r.num_inliers, lc->second);
+          return;
+        }
+      }
+    }
 
     // 3-TIER candidate->soft->weld gate for the PROXIMITY path (RESEARCH_LIFELONG_
     // FUSION_01 §arch). A proximity match is VPR-INDEPENDENT = weaker appearance
@@ -1999,6 +2043,7 @@ class ProviderFusionNode : public rclcpp::Node {
                   mp_store_.size(), culled_mp_);
     // Defer relocalizer registration until the submap is older than the loop gap.
     submap_first_kf_[sm.id] = sm.keyframes.front().id;
+    submap_lm_count_[sm.id] = (int)sm.landmarks.size();   // for the loop coverage gate
     submap_last_t_[sm.id] = pending_kfs_.back().t;
     // LIVE VIZ window B: this submap's landmark cloud (session frame) + the typed edges.
     // A submap sealed across a true loss / during degraded tracking renders DANGLING
@@ -2052,6 +2097,7 @@ class ProviderFusionNode : public rclcpp::Node {
   std::vector<std::uint64_t> sealed_ids_;
   std::deque<std::pair<slamko::SubMap, double>> sealed_unregistered_;
   std::unordered_map<std::uint64_t, std::uint64_t> submap_first_kf_;
+  std::unordered_map<std::uint64_t, int> submap_lm_count_;  // landmarks per submap (loop coverage)
   std::unordered_map<std::uint64_t, double> submap_last_t_;
   std::uint64_t next_submap_id_ = 0, next_landmark_id_ = 0;
   std::string map_dir_;
@@ -2142,6 +2188,7 @@ class ProviderFusionNode : public rclcpp::Node {
   int crop_x_ = 0;
   slamko::SE3 body_T_cam_;
   double min_loop_gap_s_ = 25.0, loop_sigma_t_ = 0.10, loop_sigma_r_ = 0.05;
+  double loop_min_coverage_ = 0.0;  // multi-factor gate: min inliers/submap-landmarks for a loop
   double max_loop_disagree_m_ = 30.0;
   int pcm_consec_ = 3;
   int reloc_min_inliers_ = 25, max_kf_landmarks_ = 200;
@@ -2180,6 +2227,8 @@ class ProviderFusionNode : public rclcpp::Node {
   double quality_break_speed_ = 6.0, quality_break_jump_ = 1.5, quality_break_cov_ = 0.0;
   double quality_break_cooldown_ = 1.0, last_quality_break_t_ = -1e9, last_speed_ = -1.0;
   int quality_breaks_ = 0, quality_recoveries_ = 0;
+  bool quality_soft_bridge_ = false;  // soft-connect the bad maneuver instead of breaking it off
+  double quality_soft_sigma_t_ = 0.5, quality_soft_sigma_r_ = 0.2;  // the soft-joint covariance
   double viz_speed_ = 0.0, viz_jump_ = 0.0;  // surfaced on the Rerun timeline for human review
   std::unordered_map<std::uint64_t, int> submap_component_;  // submap id -> atlas component
   double anchor_soft_sigma_t_ = 1.0, anchor_soft_sigma_r_ = 0.3;

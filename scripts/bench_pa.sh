@@ -62,7 +62,13 @@ fi
 [ -n "${ATLAS_BREAK:-}" ] && EXTRA_ARGS+=("atlas_break_on_loss:=$ATLAS_BREAK")
 # ATLAS_BREAK_QUALITY=true -> etapa 1b': incoherent transition / cov spike -> break (false-traj).
 [ -n "${ATLAS_BREAK_QUALITY:-}" ] && EXTRA_ARGS+=("atlas_break_on_quality:=$ATLAS_BREAK_QUALITY")
+# QUALITY_SOFT_BRIDGE=true -> quality loss becomes a SOFT bridge (connected) not a break.
+[ -n "${QUALITY_SOFT_BRIDGE:-}" ] && EXTRA_ARGS+=("quality_soft_bridge:=$QUALITY_SOFT_BRIDGE")
+# LOOP_MIN_COVERAGE=0.X -> multi-factor loop gate: min inliers/submap-landmarks (0=off).
+[ -n "${LOOP_MIN_COVERAGE:-}" ] && EXTRA_ARGS+=("loop_min_coverage:=$LOOP_MIN_COVERAGE")
 [ "$PROVIDER" = okvis ] && EXTRA_ARGS+=("imu_rate:=$IMU_RATE")
+# OKVIS_CONFIG=<dir> -> OKVIS config dir (rsD455_map_odom=640 default; rsD455_map848=848 bags).
+[ -n "${OKVIS_CONFIG:-}" ] && EXTRA_ARGS+=("okvis_config:=$OKVIS_CONFIG")
 # FORCE_LOSS="30,33" -> drop odom in that bag-relative window (test seal+branch).
 [ -n "${FORCE_LOSS:-}" ] && EXTRA_ARGS+=("force_loss_start:=${FORCE_LOSS%,*}" "force_loss_end:=${FORCE_LOSS#*,}")
 setsid ros2 launch slamko_ros $LAUNCH_FILE \
