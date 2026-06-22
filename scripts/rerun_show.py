@@ -91,8 +91,19 @@ def main():
     else:
         rr.save(out)
 
-    # 1) volumetric TSDF surface (height-coloured)
-    if F is not None:
+    # 1) volumetric TSDF — either the marching-cubes surface, or nvblox-style voxel CUBES
+    if "--cubes" in flags:
+        vox = 0.05
+        key = np.round(V / vox).astype(np.int64)
+        _, idx = np.unique(key, axis=0, return_index=True)   # one cube per occupied voxel
+        centers = (key[idx] * vox).astype(np.float32)
+        cz = centers[:, 2]
+        ccol = viridis(np.clip((cz - lo) / (hi - lo + 1e-9), 0, 1))
+        rr.log("world/voxels", rr.Boxes3D(
+            centers=centers, half_sizes=np.full((len(centers), 3), vox * 0.5, np.float32),
+            colors=ccol, fill_mode="solid"), static=True)
+        print(f"  voxel cubes: {len(centers)} occupied voxels @ {vox} m")
+    elif F is not None:
         rr.log("world/volumetric",
                rr.Mesh3D(vertex_positions=V, triangle_indices=F, vertex_colors=cols),
                static=True)
