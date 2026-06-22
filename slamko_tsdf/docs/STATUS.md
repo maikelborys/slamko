@@ -31,6 +31,29 @@ policy unit-tested CUDA-free**.
   `libcudart`. CMake needs `find_package(glog/gflags)` BEFORE `find_package(nvblox)` —
   nvbloxConfig doesn't pull its own imported targets (fixed).
 
+## 2026-06-22 — FIRST REAL MAP: casa40 nvblox TSDF, corrected poses ✅🎉
+
+End-to-end on the user's house. slamko (VPR on, rsD455_map848, rate 0.5) → 11 submaps,
+483 keyframes. `scripts/make_depth_skdf.py` (SGBM + **WLS edge-aware filter** +
+confidence mask, baseline 0.0950564 m, T_SC0 extrinsic) → 483 `.skdf` depth files.
+`slamko_tsdf_export -DSLAMKO_WITH_NVBLOX=ON` → **483/483 frames integrated at the
+CORRECTED poses** in ~2.6 s → mesh 291k verts (post-WLS; was 992k raw SGBM = noise) +
+Nav2 costmap 280×408 @ 5 cm. `scripts/viz_tsdf.py`: the **mid-height horizontal cut shows
+the house floorplan** (walls as outline) with the trajectory through it; floor→ceiling
+slices; 3D. z robust range [-1.57, 2.38] m.
+
+- **Bugfix (segfault):** `EsdfSlicer::sliceLayerToDistanceImage` fills the output Image in
+  **device** memory regardless of the requested type → a host `memcpy` from
+  `dataConstPtr()` crashed. Fixed: allocate the slice `kDevice` and `Image::copyTo(host)`.
+- **Depth quality:** raw SGBM floods the TSDF with speckle (992k noisy verts); WLS
+  (lambda 8000, sigma 1.5) + confidence ≥110 + max-depth 5 m → 291k clean verts, crisp
+  walls. SGBM is the v0 source; HITNet/ESS is the quality upgrade behind the same .skdf.
+
+**Next:** (1) per-column floor-anchored costmap slice (RTAB `costmap_esdf_slice.py`
+trick) for a clean Nav2 map + route an A→B; (2) the A/B that proves slamko's value —
+integrate at corrected vs raw provider poses, show the bend removes revisit doubling;
+(3) HITNet depth upgrade.
+
 ## 2026-06-22 — offline driver + depth-IO + submap→pose glue ✅
 
 The v0 offline pipeline is wired end-to-end (everything but the GPU fusion + the

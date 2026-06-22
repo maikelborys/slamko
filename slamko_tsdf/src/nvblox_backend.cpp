@@ -101,17 +101,20 @@ CostmapSlice NvbloxBackend::exportCostmap(const CostmapParams& params) {
       impl_->slicer.getAabbOfLayerAtHeight(esdf, h);
   if (aabb.isEmpty()) return out;  // nothing observed yet
 
-  nvblox::Image<float> dist(nvblox::MemoryType::kHost);
+  // The slicer fills the image on the GPU (it reallocates to device memory
+  // regardless of the type we pass), so we must copyTo a host buffer — a direct
+  // memcpy from dataConstPtr() would dereference a device pointer (segfault).
+  nvblox::Image<float> dist(nvblox::MemoryType::kDevice);
   impl_->slicer.sliceLayerToDistanceImage(esdf, h, out.unknown_value, aabb,
                                           &dist);
+  if (dist.rows() <= 0 || dist.cols() <= 0) return out;
 
   out.height = dist.rows();
   out.width = dist.cols();
   out.origin_x = aabb.min().x();
   out.origin_y = aabb.min().y();
-  out.data.assign(dist.dataConstPtr(),
-                  dist.dataConstPtr() + static_cast<std::size_t>(out.width) *
-                                            out.height);
+  out.data.resize(static_cast<std::size_t>(out.width) * out.height);
+  dist.copyTo(out.data.data());  // device → host
 
   if (params.occupancy) {
     const float occ = static_cast<float>(params.occupied_distance_m);
