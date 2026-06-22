@@ -49,6 +49,23 @@ slices; 3D. z robust range [-1.57, 2.38] m.
   (lambda 8000, sigma 1.5) + confidence ≥110 + max-depth 5 m → 291k clean verts, crisp
   walls. SGBM is the v0 source; HITNet/ESS is the quality upgrade behind the same .skdf.
 
+## 2026-06-22 — HITNet (GPU TRT) depth vs SGBM ✅
+
+`make_depth_skdf.py --engine hitnet` runs the **proven d455_hitnet_adapter path** on GPU:
+the eth3d 480×640 fp16 TRT engine via `SingleEngineTrtRunner` (FFS venv torch+TRT),
+resize src→model, disp@model → depth (`fx_model = fx·640/848`), resize depth back to src
+→ FULL src intrinsics (same as SGBM). **483 frames in ~10 s on GPU** (vs CPU onnxruntime
+~6 min — system ort is CPU-only; the FFS venv has the GPU TRT path). Run with
+`~/coding/FFS/.venv/bin/python` (has torch+TRT+rosbag2). casa40: 333k mesh verts.
+- **vs SGBM+WLS (291k, honest holes):** HITNet **fills the textureless walls** SGBM left
+  as gaps → continuous walls / more complete floorplan (denser, can hallucinate). Matches
+  the RTAB-Map insight (`RTABmap/STEREO_DISPARITY_RTABMAP.md`): the clean-sparse look =
+  conservative filtering (holes not guesses); HITNet trades that honesty for density.
+- GOTCHA: the FFS venv's cv2 lacks `ximgproc.createRightMatcher` → the SGBM/WLS setup is
+  now guarded behind `--engine sgbm`. Only one engine on disk (480×640); the adapter
+  rect_848.npz supplies fx/baseline (P0[0,0]=426.15, baseline=0.095056), HW-rectified so
+  no remap needed.
+
 **Next:** (1) per-column floor-anchored costmap slice (RTAB `costmap_esdf_slice.py`
 trick) for a clean Nav2 map + route an A→B; (2) the A/B that proves slamko's value —
 integrate at corrected vs raw provider poses, show the bend removes revisit doubling;

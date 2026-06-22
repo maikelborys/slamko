@@ -108,6 +108,13 @@ def main():
     ap.add_argument("--tol", type=float, default=0.02)
     ap.add_argument("--min-conf", type=float, default=110.0,
                     help="WLS confidence [0-255] below which depth is dropped")
+    ap.add_argument("--engine", choices=["sgbm", "hitnet"], default="sgbm")
+    ap.add_argument("--hitnet-engine", default=os.path.expanduser(
+        "~/coding/hitnet/engines/hitnet_eth3d_480x640_fp16.engine"),
+        help="HITNet TRT engine (run this script with the FFS venv python for GPU)")
+    ap.add_argument("--model-w", type=int, default=640)
+    ap.add_argument("--model-h", type=int, default=480)
+    ap.add_argument("--stride", type=int, default=1, help="use every Nth keyframe")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
 
@@ -119,34 +126,71 @@ def main():
     pairs = collect_stereo(a.bag, [ts for _, ts in kfs], a.tol)
     print(f"matched stereo for {len(pairs)}/{len(kfs)} keyframes (tol {a.tol}s)")
 
-    # max disparity for the closest depth we trust → numDisparities (mult of 16).
-    max_disp = int(np.ceil(a.fx * a.baseline / a.min_depth))
-    num_disp = int(np.ceil(max_disp / 16.0)) * 16
-    bs = 5
-    left_m = cv2.StereoSGBM_create(
-        minDisparity=0, numDisparities=num_disp, blockSize=bs,
-        P1=8 * bs * bs, P2=32 * bs * bs, disp12MaxDiff=1, uniquenessRatio=12,
-        speckleWindowSize=200, speckleRange=1,
-        mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY)
-    # WLS edge-aware filter (left+right matcher + confidence) — kills the SGBM
-    # speckle/streak noise that otherwise floods the TSDF with floating geometry.
-    right_m = cv2.ximgproc.createRightMatcher(left_m)
-    wls = cv2.ximgproc.createDisparityWLSFilter(left_m)
-    wls.setLambda(8000.0)
-    wls.setSigmaColor(1.5)
+    left_m = right_m = wls = None
+    if a.engine == "sgbm":
+        # max disparity for the closest depth we trust → numDisparities (mult 16).
+        max_disp = int(np.ceil(a.fx * a.baseline / a.min_depth))
+        num_disp = int(np.ceil(max_disp / 16.0)) * 16
+        bs = 5
+        left_m = cv2.StereoSGBM_create(
+            minDisparity=0, numDisparities=num_disp, blockSize=bs,
+            P1=8 * bs * bs, P2=32 * bs * bs, disp12MaxDiff=1, uniquenessRatio=12,
+            speckleWindowSize=200, speckleRange=1,
+            mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY)
+        # WLS edge-aware filter (left+right matcher + confidence) — kills the SGBM
+        # speckle/streak noise that floods the TSDF with floating geometry.
+        right_m = cv2.ximgproc.createRightMatcher(left_m)
+        wls = cv2.ximgproc.createDisparityWLSFilter(left_m)
+        wls.setLambda(8000.0)
+        wls.setSigmaColor(1.5)
+
+    # HITNet (learned stereo, GPU TRT): denser than SGBM (fills textureless walls)
+    # but can hallucinate. Replicates the proven d455_hitnet_adapter path — resize
+    # src→model (640x480), TRT, disp@model → depth (fx_model=fx*model_w/src_w),
+    # resize depth back to src → FULL src intrinsics (same as SGBM). Run this script
+    # with the FFS venv python (torch+TRT): ~/coding/FFS/.venv/bin/python ...
+    runner = None
+    if a.engine == "hitnet":
+        import sys
+        sys.path.insert(0, os.path.expanduser(
+            "~/coding/FFS/Fast-FoundationStereo/scripts"))
+        import torch
+        from run_demo_single_trt import SingleEngineTrtRunner
+        runner = SingleEngineTrtRunner(a.hitnet_engine)
+        mw, mh = a.model_w, a.model_h
+        fx_model = a.fx * mw / 848.0
+        runner({"input": torch.zeros((1, 2, mh, mw),
+                                     dtype=torch.float32, device="cuda")})  # warmup
+        print(f"HITNet TRT ready (fx_model={fx_model:.1f})", flush=True)
+    cx_out = a.cx  # depth is resized back to src res → src intrinsics either way
 
     written = 0
     for i, (kid, _ts) in enumerate(kfs):
-        if i not in pairs:
+        if i not in pairs or (i % a.stride):
             continue
         left, right = pairs[i]
-        dl = left_m.compute(left, right)
-        dr = right_m.compute(right, left)
-        filt = wls.filter(dl, left, disparity_map_right=dr).astype(np.float32) / 16.0
-        conf = wls.getConfidenceMap()  # 0-255, same size
-        depth = np.zeros_like(filt)
-        valid = (filt > 0.5) & (conf >= a.min_conf)
-        depth[valid] = a.fx * a.baseline / filt[valid]
+
+        if a.engine == "hitnet":
+            l = cv2.resize(left, (mw, mh))
+            r = cv2.resize(right, (mw, mh))
+            comb = np.stack([l, r], axis=0).astype(np.float32) / 255.0
+            t = torch.from_numpy(comb).unsqueeze(0).cuda()
+            out = runner({"input": t})
+            disp = out["reference_output_disparity"].squeeze().detach().cpu().numpy()
+            dm = np.zeros_like(disp, dtype=np.float32)
+            v = disp > 0.1
+            dm[v] = fx_model * a.baseline / disp[v]
+            depth = cv2.resize(dm, (left.shape[1], left.shape[0]),
+                               interpolation=cv2.INTER_NEAREST)
+        else:
+            dl = left_m.compute(left, right)
+            dr = right_m.compute(right, left)
+            filt = wls.filter(dl, left, disparity_map_right=dr).astype(np.float32) / 16.0
+            conf = wls.getConfidenceMap()
+            depth = np.zeros_like(filt)
+            valid = (filt > 0.5) & (conf >= a.min_conf)
+            depth[valid] = a.fx * a.baseline / filt[valid]
+
         depth[(depth < a.min_depth) | (depth > a.max_depth)] = 0.0
         h, w = depth.shape
 
@@ -156,10 +200,12 @@ def main():
             o.write(struct.pack("<i", 1))
             o.write(struct.pack("<Q", kid))
             o.write(struct.pack("<ii", w, h))
-            o.write(struct.pack("<4d", a.fx, a.fy, a.cx, a.cy))
+            o.write(struct.pack("<4d", a.fx, a.fy, cx_out, a.cy))
             o.write(struct.pack("<16d", *T_BODY_CAM.reshape(-1)))
             o.write(depth.astype("<f4").tobytes())
         written += 1
+        if a.engine == "hitnet" and written % 20 == 0:
+            print(f"  ...{written} frames", flush=True)
     print(f"wrote {written} .skdf depth files -> {a.out}")
 
 
