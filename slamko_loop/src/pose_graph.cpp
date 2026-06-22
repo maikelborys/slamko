@@ -236,14 +236,28 @@ PoseGraph::Result PoseGraph::optimize() {
     if (!nodes_.count(e.from) || !nodes_.count(e.to)) continue;
     parent[find(e.from)] = find(e.to);
   }
+  // Pin every explicitly-FIXED node (a loaded prior map's anchors): they ARE the
+  // gauge for their component, and holding ALL of them constant keeps the prior
+  // map rigid while the new session's cross-session BETWEEN edges bend it on.
+  std::unordered_map<std::uint64_t, bool> comp_has_fixed;
+  for (std::uint64_t id : fixed_) {
+    auto it = nodes_.find(id);
+    if (it == nodes_.end()) continue;
+    problem.SetParameterBlockConstant(it->second.data());
+    problem.SetParameterBlockConstant(it->second.data() + 3);
+    comp_has_fixed[find(id)] = true;
+  }
+  // Auto-gauge the LOWEST-ID node of each component that has NO fixed node.
   std::unordered_map<std::uint64_t, std::uint64_t> gauge;  // component root -> node to pin
   for (const auto& kv : nodes_) {
     const std::uint64_t r = find(kv.first);
+    if (comp_has_fixed.count(r)) continue;  // already pinned by a fixed node
     auto g = gauge.find(r);
     if (g == gauge.end() || kv.first < g->second) gauge[r] = kv.first;
   }
   // Honour an explicit anchor within its own component (keeps the world frame stable).
-  if (has_anchor_ && nodes_.count(anchor_id_)) gauge[find(anchor_id_)] = anchor_id_;
+  if (has_anchor_ && nodes_.count(anchor_id_) && !comp_has_fixed.count(find(anchor_id_)))
+    gauge[find(anchor_id_)] = anchor_id_;
   for (const auto& kv : gauge) {
     auto it = nodes_.find(kv.second);
     if (it != nodes_.end()) {

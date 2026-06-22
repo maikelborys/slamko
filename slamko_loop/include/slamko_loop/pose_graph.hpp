@@ -25,6 +25,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -100,6 +101,15 @@ class PoseGraph {
   // is anchored automatically.
   void setAnchor(std::uint64_t id) { anchor_id_ = id; has_anchor_ = true; }
 
+  // Hold this node's pose CONSTANT during optimize() (in addition to the
+  // per-component gauge). Use to pin a loaded PRIOR map's anchor/keyframe nodes so
+  // cross-session BETWEEN edges bend the NEW session onto the fixed prior WITHOUT
+  // deforming it (the SOTA multi-session merge: relative factors at ≥2 separated
+  // matches + co-optimize; the fixed prior is session-1, the gauge). A component
+  // that contains a fixed node uses it as the gauge — no extra auto-pin.
+  void setFixed(std::uint64_t id) { fixed_.insert(id); }
+  bool isFixed(std::uint64_t id) const { return fixed_.count(id) > 0; }
+
   // Solve. Returns stats; no-op (converged=false) if < 2 nodes or no edges.
   Result optimize();
 
@@ -146,6 +156,7 @@ class PoseGraph {
   std::vector<Edge> edges_;
   std::vector<Prior> priors_;
   std::vector<YawPrior> yaw_priors_;
+  std::set<std::uint64_t> fixed_;  // nodes held constant (prior-map gauge)
   std::uint64_t anchor_id_ = 0;
   bool has_anchor_ = false;
 };

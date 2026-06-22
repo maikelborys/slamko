@@ -224,3 +224,65 @@ TEST(PoseGraph, NoOpWithoutEdges) {
   EXPECT_FALSE(res.converged);  // no edges => nothing to solve
   EXPECT_EQ(res.num_nodes, 2);
 }
+
+// ---- Cross-session merge: BETWEEN edges to FIXED prior nodes (the rotation fix) ----
+// docs/RESEARCH_XSESSION_ROTATION_01.md. A 2nd session of the same place, expressed in its
+// own frame (ROTATED 20° + per-edge internal drift), is merged onto a FIXED prior by
+// cross-session feature matches modelled as relative BETWEEN edges (meas = the relative pose
+// of the matched keyframe pair) — NOT the buggy unary prior toward a frozen global frame.
+// The prior must NOT deform → setFixed on all its nodes (multi-fixed gauge). Two facts:
+//   (1) ≥2 spatially-separated between-edges DISTRIBUTE the session's internal drift (both
+//       ends pinned) → low error everywhere; ONE match pins one end and the drift piles up
+//       at the far end (the doubled/offset tail the user saw).
+//   (2) the prior map stays rigid throughout.
+namespace {
+SE3 yawPose(double x, double y, double yaw) {
+  return SE3(SO3::exp(Eigen::Vector3d(0, 0, yaw)), Eigen::Vector3d(x, y, 0));
+}
+// Prior (fixed straight line) + a rotated, internally-drifted query session. `n_match`
+// cross-session BETWEEN edges (1 = far end only at start; 2 = both ends). Returns far-end
+// query position error vs its prior twin.
+double mergeFarEndError(int N, double drift_deg, int n_match) {
+  PoseGraph pg;
+  std::vector<SE3> P(N);
+  for (int i = 0; i < N; ++i) {
+    P[i] = yawPose(i * 1.0, 0, 0);
+    pg.addKeyframe(1000 + i, P[i]);
+    pg.setFixed(1000 + i);
+  }
+  const SO3 drift = SO3::exp(Eigen::Vector3d(0, 0, drift_deg * M_PI / 180.0));
+  SE3 est = yawPose(0, 0, 20.0 * M_PI / 180.0) * P[0];  // session frame rotated 20°
+  pg.addKeyframe(0, est);
+  for (int i = 0; i + 1 < N; ++i) {
+    const SE3 rel = P[i].inverse() * P[i + 1];
+    const SE3 biased(rel.so3() * drift, rel.translation());
+    est = est * biased;
+    pg.addKeyframe(i + 1, est);
+    pg.addOdometryEdge(i, i + 1, biased, 0.05, 0.02);
+  }
+  pg.addLoopEdge(1000 + 0, 0, SE3(), 0.02, 0.01);              // match at the start
+  if (n_match >= 2)
+    pg.addLoopEdge(1000 + (N - 1), N - 1, SE3(), 0.02, 0.01);  // + match at the far end
+  pg.optimize();
+  // The prior map must stay RIGID no matter what.
+  for (int i = 0; i < N; ++i)
+    if ((pg.pose(1000 + i).translation() - P[i].translation()).norm() > 1e-9)
+      ADD_FAILURE() << "prior node " << i << " moved (not rigid)";
+  return (pg.pose(N - 1).translation() - P[N - 1].translation()).norm();
+}
+}  // namespace
+
+TEST(PoseGraph, CrossSessionTwoBetweenEdgesDistributeDrift) {
+  // Both ends pinned → the session is bent onto the rigid prior, drift distributed.
+  EXPECT_LT(mergeFarEndError(8, /*drift_deg=*/3.0, /*n_match=*/2), 0.15);
+}
+
+TEST(PoseGraph, CrossSessionOneMatchPilesDriftAtFarEnd) {
+  const int N = 8;
+  const double far_1 = mergeFarEndError(N, /*drift_deg=*/3.0, /*n_match=*/1);
+  const double far_2 = mergeFarEndError(N, /*drift_deg=*/3.0, /*n_match=*/2);
+  // One match pins the start but the internal drift accumulates to the far end;
+  // a 2nd separated match distributes it → the far-end error collapses.
+  EXPECT_GT(far_1, 0.3) << "one match should leave a far-end error (drift tail)";
+  EXPECT_LT(far_2, 0.4 * far_1) << ">=2 separated matches must distribute the drift";
+}
