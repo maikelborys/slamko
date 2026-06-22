@@ -99,10 +99,30 @@ def main():
         centers = (key[idx] * vox).astype(np.float32)
         cz = centers[:, 2]
         ccol = viridis(np.clip((cz - lo) / (hi - lo + 1e-9), 0, 1))
-        rr.log("world/voxels", rr.Boxes3D(
-            centers=centers, half_sizes=np.full((len(centers), 3), vox * 0.5, np.float32),
-            colors=ccol, fill_mode="solid"), static=True)
-        print(f"  voxel cubes: {len(centers)} occupied voxels @ {vox} m")
+        hs = np.full((len(centers), 3), vox * 0.5, np.float32)
+        if "--anim" in flags:
+            # Each voxel is "born" when the camera first passes nearest to it → scrubbing
+            # the timeline REPLAYS the TSDF building from scratch (offline data, animated).
+            P = np.loadtxt(trajs[0])[:, 1:4]
+            Pd = P[:: max(1, len(P) // 200)]            # ~200 traj anchors
+            birth = np.empty(len(centers), np.int64)
+            for s in range(0, len(centers), 20000):
+                ch = centers[s:s + 20000]
+                d = ((ch[:, None, :] - Pd[None, :, :]) ** 2).sum(2)
+                birth[s:s + 20000] = d.argmin(1)
+            nb = len(Pd)
+            for b in range(nb):                          # log each batch ONCE at its birth time
+                m = birth == b
+                if not m.any():
+                    continue
+                rr.set_time("frame", sequence=int(b * len(P) / nb))
+                rr.log(f"world/voxels/b{b}", rr.Boxes3D(
+                    centers=centers[m], half_sizes=hs[m], colors=ccol[m], fill_mode="solid"))
+            print(f"  voxel cubes ANIMATED: {len(centers)} voxels over {nb} time steps")
+        else:
+            rr.log("world/voxels", rr.Boxes3D(
+                centers=centers, half_sizes=hs, colors=ccol, fill_mode="solid"), static=True)
+            print(f"  voxel cubes: {len(centers)} occupied voxels @ {vox} m")
     elif F is not None:
         rr.log("world/volumetric",
                rr.Mesh3D(vertex_positions=V, triangle_indices=F, vertex_colors=cols),
