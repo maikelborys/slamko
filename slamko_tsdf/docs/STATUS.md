@@ -104,6 +104,18 @@ alignment < truncation (~0.2 m); slamko's soft cross-session leaves 0.38 m → d
 grows.** Tighter correction reaches the 0.18 m floor (borderline fuse); below that needs
 non-rigid per-submap deformation or the MapPoint dedup.
 
+**WHY they're not aligned (diagnosed, not hand-waved).** Decomposed the residual:
+scale = 1.0004 (Sim3 vs rigid same → NOT scale); residual-vs-distance-from-start
+correlation = **+0.56**, residual heatmap dark at the salon/start and bright (~0.5 m)
+at the extremities ⇒ **accumulated per-session VIO drift (NON-RIGID)**, not a fixable
+rigid offset or the camera heights. Each session drifts independently as it leaves the
+start; near the salon they coincide, far away they diverge — so a single rigid transform
+can't fit (0.18 m floor, growing to 0.5 m at the edges). slamko's cross-session is a SOFT
+GLOBAL prior → pins them roughly but doesn't co-optimize the non-rigid warp. **Fix: a
+per-submap cross-session correction** (re-anchor each session-2 submap onto its session-1
+match, distributing the correction along the trajectory) → pulls the bright edges to the
+reconstruction floor (~5–10 cm) → below truncation → clean fusion + bounded voxels.
+
 ## 2026-06-22 — the BEND A/B: corrected vs raw poses ✅
 
 `slamko_tsdf_export --raw-tum=<provider.tum>` integrates the SAME depth at the provider's
