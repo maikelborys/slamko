@@ -424,6 +424,7 @@ class ProviderFusionNode : public rclcpp::Node {
       // toward the prior-implied pose) and re-optimizes — so the graph BENDS the
       // session onto the prior instead of a rigid re-base that leaves a doubled copy.
       xsession_prior_factor_ = declare_parameter("xsession_prior_factor", true);
+      xsession_between_factor_ = declare_parameter("xsession_between_factor", true);
       xsession_prior_sigma_t_ = declare_parameter("xsession_prior_sigma_t", 0.15);
       xsession_prior_sigma_r_ = declare_parameter("xsession_prior_sigma_r", 0.08);
       // Jumps below this apply as a prior factor (legit drift correction); bigger jumps
@@ -558,12 +559,17 @@ class ProviderFusionNode : public rclcpp::Node {
         if (!slamko::loadSubMap(sm, path)) continue;
         const auto it = submap_first_kf_.find(sid);
         if (it == submap_first_kf_.end() || !graph_.hasNode(it->second)) continue;
-        sm.anchor = graph_.pose(it->second);
+        // Save the anchor in the GLOBAL (prior) frame, not the session frame: cross-session
+        // the two differ by T_global_map_, and the export/reload treat the archive as global
+        // (a no-prior mapping run has T_global_map_=identity, so single-session is unchanged).
+        // Without this the persisted map sits T_global_map_-rotated from the prior it localised
+        // into — the visible cross-session ROTATION (docs/RESEARCH_XSESSION_ROTATION_01.md).
+        sm.anchor = T_global_map_ * graph_.pose(it->second);
         // Phase B — back-propagate the multi-view CONSENSUS into the persisted landmarks:
         // rewrite each from its refined MapPoint (global -> this submap's local via the
-        // just-refreshed anchor). The revisit doesn't just dedup, it TIGHTENS the map.
+        // just-refreshed anchor, now already global). The revisit dedups AND tightens.
         if (mappoint_refine_) {
-          const slamko::SE3 to_local = (T_global_map_ * sm.anchor).inverse();
+          const slamko::SE3 to_local = sm.anchor.inverse();
           for (auto& lm : sm.landmarks) {
             const Eigen::Vector3d* gp = mp_store_.position(lm.id);
             if (gp) { lm.position = to_local * (*gp); ++refined; }
@@ -1514,6 +1520,52 @@ class ProviderFusionNode : public rclcpp::Node {
       const slamko::SE3 T_global_q = prior_anchor_.at(r.submap_id) * r.T_query_match;
       const slamko::SE3 T_new = T_global_q * graph_.pose(q_id).inverse();
       const char* tag = "LOCALIZED";
+
+      // === THE ROTATION FIX (docs/RESEARCH_XSESSION_ROTATION_01.md) ===
+      // Relative BETWEEN edge to the prior submap's anchor, held as a FIXED node in the
+      // SESSION frame (placed via T_global_map_, whose bias cancels in display). ≥2
+      // separated matches over-determine the relative SE3 → the graph rotates+bends the
+      // session onto the rigid prior, removing the global rotation a unary prior left.
+      if (xsession_between_factor_) {
+        if (!localized_) {
+          T_global_map_ = T_new;  // common display transform (its rotation bias cancels)
+          localized_ = true;
+          viz_.setSessionTransform(T_global_map_, true);
+        }
+        const std::uint64_t pid = kPriorNodeBase + r.submap_id;
+        if (!graph_.hasNode(pid)) {  // prior anchor as a FIXED node (session frame)
+          graph_.addKeyframe(pid, T_global_map_.inverse() * prior_anchor_.at(r.submap_id));
+          graph_.setFixed(pid);
+        }
+        // Inflate the rotation sigma when the PnP support is thin — the 40↔100 cm
+        // viewpoint biases the relative rotation (Hard Rule #3: covariance, not an if).
+        const double inl_ref = 30.0;
+        const double rot_infl =
+            std::max(1.0, std::sqrt(inl_ref / std::max(r.num_inliers, 1)));
+        graph_.addLoopEdge(pid, q_id, r.T_query_match, xsession_prior_sigma_t_,
+                           xsession_prior_sigma_r_ * rot_infl);
+        const auto res = graph_.optimize();
+        T_map_odom_target_ = graph_.pose(q_id) * chain_.lastKeyframe().T_OB.inverse();
+        refreshOcc();
+        ++xsession_priors_added_;
+        RCLCPP_INFO(get_logger(),
+            "X-SESSION between #%d: kf %llu <-> prior submap %llu inl=%d rot_infl=%.1f "
+            "cost %.2e->%.2e",
+            xsession_priors_added_, (unsigned long long)q_id,
+            (unsigned long long)r.submap_id, r.num_inliers, rot_infl,
+            res.initial_cost, res.final_cost);
+        if (viz_enable_ && viz_.enabled()) {
+          viz_prior_segs_.push_back(
+              {(T_global_map_.inverse() * prior_anchor_.at(r.submap_id)).translation(),
+               graph_.pose(q_id).translation()});
+          viz_kf_since_match_ = 0;
+          pushGraphEdgesToViz();
+        }
+        markCoverage(node_time_.count(q_id) ? node_time_[q_id] : 0.0, r.submap_id,
+                     r.num_inliers);
+        return;
+      }
+
       if (!localized_) {
         T_global_map_ = T_new;
         localized_ = true;
@@ -2263,6 +2315,14 @@ class ProviderFusionNode : public rclcpp::Node {
   bool have_big_cand_ = false;
   // cross-session drift correction via per-keyframe prior factors (A: fix doubling)
   bool xsession_prior_factor_ = true;
+  // The cross-session ROTATION fix (docs/RESEARCH_XSESSION_ROTATION_01.md): replace the
+  // UNARY prior (re-bases toward a frozen, viewpoint-biased frame → leaves a global
+  // rotation) with relative BETWEEN edges to the prior map's anchors held as FIXED nodes.
+  // ≥2 separated matches over-determine the relative SE3 → the graph rotates+bends the
+  // session onto the rigid prior. The frozen T_global_map_ stays as a common display
+  // transform (its bias cancels). robust Huber on the cross-edge handles aliasing.
+  bool xsession_between_factor_ = true;
+  static constexpr std::uint64_t kPriorNodeBase = 1000000000000000ull;  // prior submap nodes
   double xsession_prior_sigma_t_ = 0.15, xsession_prior_sigma_r_ = 0.08;
   double xsession_prior_jump_max_ = 2.0;
   int xsession_priors_added_ = 0;
