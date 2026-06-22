@@ -89,6 +89,21 @@ persistent-MapPoint cross-session dedup (separate mechanism), OR a stiffer cross
 correction. The volumetric layer alone fuses-or-doubles by that threshold — a load-bearing
 design fact for the lifelong map.
 
+**CORRECTION 2 (the NN metric fooled me; user pushed back twice — right both times).**
+Per-keyframe corrected(anchor∘T_WB)-vs-raw(provider): translation diff **median 0.34 m,
+max 0.81 m**, yaw median 1.4°. So the cross-session DID move casa100 ~0.34 m — corrected ≠
+raw (my "barely moved" was wrong; NN-to-casa40 is a weak overlap metric, not alignment).
+But the two sessions STILL don't coincide: best rigid ICP of casa100→casa40 only reaches
+**0.18 m median** (from 0.38 m) — a ~0.18 m floor that is NOT a rigid offset:
+reconstruction-level difference (40 cm vs 100 cm camera heights → different views/HITNet
+depth + per-session non-rigid drift). **Does the voxel count grow per revisit?** Not
+inherently — nvblox is a fixed spatial grid, an aligned revisit REUSES voxels (bounded by
+AREA). With misalignment it grows by the doubled fraction: combined 500 k verts vs 333 k
+(full-fuse) vs 601 k (full-double) ⇒ ~60% reused, ~40% extra. So **clean lifelong needs
+alignment < truncation (~0.2 m); slamko's soft cross-session leaves 0.38 m → doubles →
+grows.** Tighter correction reaches the 0.18 m floor (borderline fuse); below that needs
+non-rigid per-submap deformation or the MapPoint dedup.
+
 ## 2026-06-22 — the BEND A/B: corrected vs raw poses ✅
 
 `slamko_tsdf_export --raw-tum=<provider.tum>` integrates the SAME depth at the provider's
