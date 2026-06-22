@@ -31,7 +31,27 @@ policy unit-tested CUDA-free**.
   `libcudart`. CMake needs `find_package(glog/gflags)` BEFORE `find_package(nvblox)` —
   nvbloxConfig doesn't pull its own imported targets (fixed).
 
-**Next:** (1) depth producer — HITNet/ESS on casa-bag kf stereo → `DepthFrame`;
-(2) slamko-side glue — build `kf_world_pose` from sealed submaps (`anchor * kf.T_WB`);
-(3) offline driver → export costmap on casa40/100/Suave → confirm a global planner routes
-A→B + the revisit bend is correct (no doubling).
+## 2026-06-22 — offline driver + depth-IO + submap→pose glue ✅
+
+The v0 offline pipeline is wired end-to-end (everything but the GPU fusion + the
+HITNet producer).
+
+- **`submap_poses.hpp`** — `keyframeWorldPoses(submaps)` = the bend's input: each kf's
+  corrected world pose = `submap.anchor ∘ kf.T_WB` (later submap wins on a dup id).
+- **`depth_io.hpp`** — `SKDF` binary per-kf DepthFrame format (kf_id, w/h, intrinsics,
+  T_body_cam, float32 depth). The handoff from the depth producer (HITNet, Python) to
+  the C++ driver. Pose never stored (comes from the corrected archive → the bend).
+- **`slamko_tsdf_export`** — driver: `loadSubMaps` → `keyframeWorldPoses` → load `*.skdf`
+  → `reintegrate(poses)` → Nav2 costmap (PGM + YAML, rows bottom-up, origin bottom-left)
+  + mesh PLY. No-op CUDA-free (empty costmap) → real with `-DSLAMKO_WITH_NVBLOX`.
+- **GATE — +4 gtests** (depth-IO round-trip incl. extrinsic binary-exact + bad-magic
+  reject; pose glue composes anchor∘local + later-submap-wins). Suite: **10 tests, 0
+  failures**. **Smoke:** the tool on a 3-submap archive → "loaded 3 submaps, 4 keyframe
+  poses … exit 0" (load + glue + reintegrate path verified, no GPU).
+
+**Next (needs a GPU run):** (1) HITNet/ESS depth producer (Python) — run on the casa-bag
+keyframe stereo, write `*.skdf`; needs slamko to dump kf stereo + ids alongside the
+submap archive. (2) Run `slamko_tsdf_export` with `-DSLAMKO_WITH_NVBLOX=ON` on
+casa40/100/Suave → first real costmap. (3) Validate: a global planner routes A→B + the
+revisit bend is correct (no doubling) vs. integrating at raw provider poses (the A/B that
+proves slamko's value over rtabmap-nvblox).

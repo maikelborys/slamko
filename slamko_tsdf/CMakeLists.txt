@@ -54,10 +54,17 @@ else()
   message(STATUS "slamko_tsdf: nvblox backend OFF (no-op stub) — CUDA-free build")
 endif()
 
+# Offline driver: submap archive + per-kf depth → re-integrate at corrected poses
+# → Nav2 costmap (PGM/YAML) + mesh (PLY). Real output needs -DSLAMKO_WITH_NVBLOX.
+add_executable(slamko_tsdf_export src/export_tool.cpp)
+target_link_libraries(slamko_tsdf_export slamko_tsdf Eigen3::Eigen)
+ament_target_dependencies(slamko_tsdf_export slamko_core)
+
 install(TARGETS slamko_tsdf
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin)
+install(TARGETS slamko_tsdf_export RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 
 if(BUILD_TESTING)
@@ -65,6 +72,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_volumetric_mapper test/test_volumetric_mapper.cpp)
   target_link_libraries(test_volumetric_mapper slamko_tsdf Eigen3::Eigen)
   ament_target_dependencies(test_volumetric_mapper slamko_core)
+
+  ament_add_gtest(test_tsdf_io test/test_io.cpp)
+  target_link_libraries(test_tsdf_io slamko_tsdf Eigen3::Eigen)
+  ament_target_dependencies(test_tsdf_io slamko_core)
 endif()
 
 ament_export_include_directories(include)
