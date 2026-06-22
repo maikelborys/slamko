@@ -116,6 +116,17 @@ per-submap cross-session correction** (re-anchor each session-2 submap onto its 
 match, distributing the correction along the trajectory) → pulls the bright edges to the
 reconstruction floor (~5–10 cm) → below truncation → clean fusion + bounded voxels.
 
+## 2026-06-22 — total volumetric: Suave + Escaleras (multi-level, fix on 640) ✅
+
+The cross-session rotation fix validated on 640 + MULTI-LEVEL. Ran Escaleras (640) with
+Suave (640) as prior → 39 between-edges over 26 distinct kfs; the stairs climb z = -0.07 → 6.61 m
+(6.7 m vertical, Z NOT collapsed). Combined Suave+Escaleras into ONE TSDF (1130 frames,
+679k verts): the house (Suave, ground) + the staircase zig-zag climbing 6.7 m. Ground-floor
+salon overlap fuses: median NN 0.05 m, 62% within nvblox truncation (0.2 m) → the shared
+salon walls coincide; the stairs are NEW structure extending the map vertically.
+`scripts/viz_tsdf.py` (Suave standalone) + an inline 3D + elevation render
+(total_volumetric.png/.html). Confirms the fix is not casa-848-specific.
+
 ## 2026-06-22 — the BEND A/B: corrected vs raw poses ✅
 
 `slamko_tsdf_export --raw-tum=<provider.tum>` integrates the SAME depth at the provider's
