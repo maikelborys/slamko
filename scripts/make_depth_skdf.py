@@ -158,10 +158,9 @@ def main():
         from run_demo_single_trt import SingleEngineTrtRunner
         runner = SingleEngineTrtRunner(a.hitnet_engine)
         mw, mh = a.model_w, a.model_h
-        fx_model = a.fx * mw / 848.0
         runner({"input": torch.zeros((1, 2, mh, mw),
                                      dtype=torch.float32, device="cuda")})  # warmup
-        print(f"HITNet TRT ready (fx_model={fx_model:.1f})", flush=True)
+        print("HITNet TRT ready", flush=True)
     cx_out = a.cx  # depth is resized back to src res → src intrinsics either way
 
     written = 0
@@ -177,9 +176,10 @@ def main():
             t = torch.from_numpy(comb).unsqueeze(0).cuda()
             out = runner({"input": t})
             disp = out["reference_output_disparity"].squeeze().detach().cpu().numpy()
+            fxm = a.fx * mw / left.shape[1]   # fx at model width (handles 640 vs 848)
             dm = np.zeros_like(disp, dtype=np.float32)
             v = disp > 0.1
-            dm[v] = fx_model * a.baseline / disp[v]
+            dm[v] = fxm * a.baseline / disp[v]
             depth = cv2.resize(dm, (left.shape[1], left.shape[0]),
                                interpolation=cv2.INTER_NEAREST)
         else:

@@ -17,6 +17,7 @@
 // (load → re-integrate → export) but the costmap is empty — a CUDA-free smoke.
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -24,6 +25,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+
+#include <Eigen/Geometry>
 
 #include "slamko_core/submap.hpp"
 #include "slamko_core/submap_io.hpp"
@@ -36,6 +39,39 @@ namespace fs = std::filesystem;
 using namespace slamko;
 
 namespace {
+
+// Load a TUM trajectory (timestamp tx ty tz qx qy qz qw) → (ts, pose) pairs.
+std::vector<std::pair<double, SE3>> loadTum(const std::string& path) {
+  std::vector<std::pair<double, SE3>> out;
+  std::ifstream f(path);
+  double t, x, y, z, qx, qy, qz, qw;
+  while (f >> t >> x >> y >> z >> qx >> qy >> qz >> qw) {
+    Eigen::Quaterniond q(qw, qx, qy, qz);
+    out.emplace_back(t, SE3(SO3(q), Eigen::Vector3d(x, y, z)));
+  }
+  return out;
+}
+
+// RAW poses for the bend A/B: each keyframe placed at the provider's UNCORRECTED
+// odometry pose (nearest TUM sample to the kf timestamp), NOT the loop-corrected
+// anchor∘T_WB. Integrating depth here shows the drift/doubling the bend removes.
+std::unordered_map<std::uint64_t, SE3> rawKeyframePoses(
+    const std::vector<SubMap>& submaps,
+    const std::vector<std::pair<double, SE3>>& tum) {
+  std::unordered_map<std::uint64_t, SE3> poses;
+  for (const auto& sm : submaps) {
+    for (const auto& kf : sm.keyframes) {
+      double best = 1e18;
+      const SE3* hit = nullptr;
+      for (const auto& [ts, p] : tum) {
+        const double d = std::abs(ts - kf.timestamp);
+        if (d < best) { best = d; hit = &p; }
+      }
+      if (hit && best < 0.05) poses[kf.id] = *hit;  // 50 ms match window
+    }
+  }
+  return poses;
+}
 
 // Nav2 occupancy PGM (P5) + YAML. CostmapSlice has +row → +y; Nav2 reads the top
 // image row as the HIGHEST y, so we emit rows bottom-up. origin = bottom-left.
@@ -78,18 +114,30 @@ int main(int argc, char** argv) {
   const std::string out_prefix = argv[3];
 
   VolumetricParams vp;
-  if (argc > 4) vp.voxel_size_m = std::stod(argv[4]);
   CostmapParams cp;
   cp.occupancy = true;
+  std::string raw_tum;                       // --raw-tum=PATH → bend A/B (raw poses)
+  for (int i = 4; i < argc; ++i) {
+    const std::string s = argv[i];
+    if (s.rfind("--raw-tum=", 0) == 0) raw_tum = s.substr(10);
+    else if (i == 4) vp.voxel_size_m = std::stod(s);
+    else if (i == 5) cp.slice_height_m = std::stod(s);
+  }
   cp.resolution_m = vp.voxel_size_m;
-  if (argc > 5) cp.slice_height_m = std::stod(argv[5]);
 
   std::vector<SubMap> submaps;
   if (!loadSubMaps(submaps, submap_dir)) {
     std::cerr << "FAIL: could not load submap archive: " << submap_dir << "\n";
     return 1;
   }
-  const auto poses = keyframeWorldPoses(submaps);
+  std::unordered_map<std::uint64_t, SE3> poses;
+  if (!raw_tum.empty()) {
+    poses = rawKeyframePoses(submaps, loadTum(raw_tum));
+    std::cout << "RAW poses from " << raw_tum << " (uncorrected, bend A/B): ";
+  } else {
+    poses = keyframeWorldPoses(submaps);
+    std::cout << "CORRECTED poses (anchor∘T_WB): ";
+  }
   std::cout << "loaded " << submaps.size() << " submaps, " << poses.size()
             << " keyframe poses\n";
 

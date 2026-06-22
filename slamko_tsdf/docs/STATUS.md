@@ -66,6 +66,21 @@ resize src→model, disp@model → depth (`fx_model = fx·640/848`), resize dept
   rect_848.npz supplies fx/baseline (P0[0,0]=426.15, baseline=0.095056), HW-rectified so
   no remap needed.
 
+## 2026-06-22 — the BEND A/B: corrected vs raw poses ✅
+
+`slamko_tsdf_export --raw-tum=<provider.tum>` integrates the SAME depth at the provider's
+UNCORRECTED odometry poses (nearest TUM sample to each kf timestamp, 50 ms window) instead
+of `anchor∘T_WB` — what a raw-odometry nvblox (rtabmap-style) would build. CASA1_Suave
+(640, HITNet, 369 kf): two TSDFs exported, overlaid (raw=red, corrected=blue). The walls
+separate by the loop-correction magnitude where odometry drifted; slamko pulls them to the
+loop-consistent position. **HONEST magnitude: ~0.12–0.22 m here** — OKVIS is *accurate* on
+these bags at rate 0.5–1.0 (a good sign), so the within-session bend is cm-scale, not the
+metre-scale doubling of a high-drift/contention run. The mechanism is proven; the dramatic
+doubling needs genuine large drift or a CROSS-SESSION combined map (two sessions in
+different frames → house appears twice raw, once corrected) — the next, deterministic demo.
+GOTCHA: Suave is 640×480 (fx=385.95, cx=319.70), NOT 848 — pass the 640 intrinsics; the
+HITNet `fx_model` now uses the actual src width (was hardcoded /848).
+
 ## 2026-06-22 — A→B routing over the floor-anchored costmap ✅🎯
 
 `scripts/route_costmap.py`: floor-anchored 2D nav costmap from the HITNet TSDF mesh
