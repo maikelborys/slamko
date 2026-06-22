@@ -24,9 +24,14 @@ policy unit-tested CUDA-free**.
 - **GATE — 4 gtests** with a fake backend (reset-once-then-fuse, corrected poses passed
   through, dangling-kf skipped, invalid-frame skipped, available() accessor). Suite
   green: **5 tests, 0 failures**. Build: slamko_core + slamko_tsdf finished, no-op path.
+- **nvblox GPU path COMPILE-VERIFIED** ✅ — `-DSLAMKO_WITH_NVBLOX=ON` builds clean
+  against the installed nvblox (`~/ros2_ws/install/nvblox_ros`, CUDA 12.6): the whole
+  `nvblox_backend.cpp` (Mapper/MapperParams/DepthImage/Camera/integrateDepth/EsdfSlicer)
+  matches the real API, zero drift. `libslamko_tsdf.so` links `libnvblox_lib.so` +
+  `libcudart`. CMake needs `find_package(glog/gflags)` BEFORE `find_package(nvblox)` —
+  nvbloxConfig doesn't pull its own imported targets (fixed).
 
-**Next:** (1) compile-verify the nvblox backend with `-DSLAMKO_WITH_NVBLOX=ON` against
-the installed nvblox (catch API drift); (2) depth producer — HITNet/ESS on casa-bag kf
-stereo → `DepthFrame`; (3) slamko-side glue — build `kf_world_pose` from sealed submaps
-(`anchor * kf.T_WB`); (4) offline driver → export costmap on casa40/100/Suave → confirm
-a global planner routes A→B + the revisit bend is correct (no doubling).
+**Next:** (1) depth producer — HITNet/ESS on casa-bag kf stereo → `DepthFrame`;
+(2) slamko-side glue — build `kf_world_pose` from sealed submaps (`anchor * kf.T_WB`);
+(3) offline driver → export costmap on casa40/100/Suave → confirm a global planner routes
+A→B + the revisit bend is correct (no doubling).

@@ -42,6 +42,10 @@ if(SLAMKO_WITH_NVBLOX)
   # headers under <prefix>/include). Provide it on CMAKE_PREFIX_PATH, or set
   # nvblox_DIR. CUDA toolkit + glog/gflags are transitive nvblox deps.
   find_package(CUDAToolkit REQUIRED)
+  # nvbloxConfig.cmake exposes nvblox::nvblox_lib but does NOT pull its own
+  # transitive imported targets — find them first or the link interface breaks.
+  find_package(glog REQUIRED)
+  find_package(gflags REQUIRED)
   find_package(nvblox REQUIRED)
   target_compile_definitions(slamko_tsdf PRIVATE SLAMKO_WITH_NVBLOX)
   target_link_libraries(slamko_tsdf nvblox::nvblox_lib CUDA::cudart)
