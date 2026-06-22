@@ -3,6 +3,18 @@
 Living, dated progress log + current test results. Append on every validated
 change (see [`../../docs/DOC_PROCESS.md`](../../docs/DOC_PROCESS.md)).
 
+## 2026-06-22 — volumetric_map.hpp contract (slamko_tsdf) ✅
+
+New contract `volumetric_map.hpp` for the volumetric layer: `DepthFrame` (per-keyframe
+re-poseable depth SOURCE — world pose deliberately NOT stored, supplied at integration
+time so the bend is free), `CostmapSlice` (2D ESDF/occupancy in map frame),
+`VolumetricBackend` (integrate-at-pose / reset / exportCostmap / mesh), plus
+`VolumetricParams`/`CostmapParams`. Header-only, depends only on `se3.hpp`. The
+load-bearing decision (a fused TSDF is fuse-and-forget → the bend is an architecture
+property: keep the source, re-integrate the derived TSDF from corrected poses) lives in
+the header's why-block. Consumed by the new `slamko_tsdf` package. No core .cpp/tests
+changed; core suite unaffected.
+
 ## 2026-06-21 — SMP6: per-landmark maturity (n_obs) persists (Phase D)
 
 `MapLandmark` gained `int n_obs` (default 1) and the `.smap` codec bumped to **SMP6** —

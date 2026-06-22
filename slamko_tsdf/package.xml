@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>slamko_tsdf</name>
+  <version>0.0.1</version>
+  <description>slamko volumetric layer: a dense map that BENDS with the pose-graph
+    (per-keyframe depth source re-integrated at corrected poses — PLVS/RTAB
+    on-demand assembly, not nvblox_submap's rigid anchor) and exports a 2D
+    costmap/ESDF for global A→B planning. Backend pluggable behind the slamko_core
+    VolumetricBackend contract; nvblox (GPU TSDF→ESDF) is the first impl, gated by
+    -DSLAMKO_WITH_NVBLOX so the workspace builds CUDA-free. Depends on slamko_core
+    contracts only (Hard Rule #2). Apache-2.0. See docs/PLAN_SLAMKO_TSDF_01.md.</description>
+
+  <maintainer email="maikelborys@gmail.com">Maikel Borys</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <build_depend>eigen3_cmake_module</build_depend>
+  <build_depend>eigen</build_depend>
+
+  <depend>slamko_core</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
