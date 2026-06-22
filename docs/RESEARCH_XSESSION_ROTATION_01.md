@@ -1,4 +1,28 @@
-<!-- validated: diagnosis 2026-06-22, fix not yet implemented -->
+<!-- validated: fix SHIPPED + validated 2026-06-22 (d5719dd) — rotation 18.2°→0.0° -->
+
+## ✅ FIX SHIPPED + VALIDATED (2026-06-22)
+
+Implemented in 3 steps and validated end-to-end on casa40+casa100:
+- **Step 1+2** (`baea772`): `PoseGraph::setFixed()` (multi-fixed gauge) so a loaded prior
+  map's anchors stay rigid. The relative-between machinery (`addEdge`/`addLoopEdge` + Huber)
+  already existed. Unit tests in slamko's own Ceres solver: ≥2 separated between-edges
+  distribute the session's drift onto the fixed prior (far-end < 0.15 m, prior rigid); 1
+  match leaves a drift tail (>0.3 m), 2 collapse it to <0.4× — proves the ≥2-matches insight.
+- **Step 3** (`d5719dd`, `provider_fusion_node.cpp`): TWO bugs. (a) **Save frame** — the
+  archive persisted `graph_.pose()` (SESSION frame) without `T_global_map_`, so a cross-session
+  map sat `T_global_map_`-rotated from its prior (the visible ~18°). Fixed: save
+  `T_global_map_ * graph_.pose()` (GLOBAL; single-session unchanged). (b) **Unary→binary**
+  (`xsession_between_factor`, default on): each match adds a relative BETWEEN edge to the prior
+  submap anchor held as a FIXED node, robust Huber, rotation σ inflated by 1/√inliers; dropped
+  the frozen-frame + jump-gate that rejected corrective matches.
+
+**Result (casa40 prior + casa100, 78 between-edges over 54 distinct keyframes):**
+ICP rotation **18.2° → 0.0°**; residual **0.38 m → 0.06 m** (= the best-possible rigid fit =
+voxel/HITNet reconstruction noise; **< nvblox truncation 0.2 m → clean fusion, bounded
+voxels on revisit**). Combined single-volume map **500k → 405k verts** (doubling largely gone).
+HONEST: both sub-fixes contribute — (a) removes the gross rotation, (b) distributes residual
+drift; an A/B with `xsession_between_factor:=false` to isolate each is the remaining check.
+
 # Cross-session map rotation — root cause + fix (research)
 
 > **Symptom (user-spotted):** running casa100 with casa40 as prior, the combined map
