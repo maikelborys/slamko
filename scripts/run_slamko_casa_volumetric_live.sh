@@ -19,7 +19,7 @@ OUT=/tmp/slamko_casa_vol
 CFG=/home/maikel/coding/OKVIS2-X/src/OKVIS2-X/config/rsD455_odom848
 QOS=/home/maikel/coding/d455_setup/casa2_qos_override.yaml
 rm -rf "$OUT"; mkdir -p "$OUT/map"
-pkill -9 -f 'okvis2x|provider_fusion_node|d455_splitter_auto|cam_info_pub|bag play' 2>/dev/null
+pkill -9 -f 'okvis2x|provider_fusion_node|d455_splitter_auto|cam_info_inject|bag play' 2>/dev/null
 sleep 2
 
 echo "[1] camera_info injector..."
@@ -76,7 +76,7 @@ ros2 service call /okvis/shutdown std_srvs/srv/SetBool "{data: true}" > "$OUT/sh
 sleep 5
 echo "[8b] INT provider_fusion (triggers final volumetric bend + mesh export)..."
 pkill -INT -f provider_fusion_node 2>/dev/null; sleep 6
-pkill -9 -f 'okvis2x|provider_fusion_node|d455_splitter_auto|cam_info_pub' 2>/dev/null
+pkill -9 -f 'okvis2x|provider_fusion_node|d455_splitter_auto|cam_info_inject' 2>/dev/null
 echo "[9] DONE -> $OUT"
 echo "--- fusion volumetric log ---"; grep -iE 'VOLUMETRIC|volumetric|nvblox|no-depth' "$OUT/fusion.log" | tail -20
 echo "--- submaps: $(ls $OUT/map/submap_*.smap 2>/dev/null | wc -l) | graph.tum: $(wc -l < $OUT/graph.tum 2>/dev/null) ---"
