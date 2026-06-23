@@ -569,7 +569,15 @@ class ProviderFusionNode : public rclcpp::Node {
           std::make_unique<slamko::NvbloxBackend>(vp), vp, lp);
       const auto depth_topic = declare_parameter(
           "depth_topic", std::string("/camera/camera/depth/image_rect_raw"));
-      auto dqos = rclcpp::QoS(rclcpp::KeepLast(30)).durability_volatile();
+      // Depth-pick window for the volumetric layer — WIDER than image_tol_s_: under
+      // real-time GPU load the single-thread executor starves onDepth during the
+      // heavy keyframe work (XFeat+nvblox), so depth_buf_ has gaps. A wider window
+      // (+ a deeper queue below) recovers keyframes that would otherwise integrate
+      // empty (measured: 18 no-depth kf @rate1.0). The depth is fused at the
+      // keyframe's CORRECTED pose, so a slightly-stale frame just adds small parallax.
+      vmap_depth_tol_s_ = declare_parameter("volumetric_depth_tol_s", 0.12);
+      // Deeper queue absorbs depth bursts that arrive while the thread is busy.
+      auto dqos = rclcpp::QoS(rclcpp::KeepLast(90)).durability_volatile();
       if (declare_parameter("depth_best_effort", true)) dqos.best_effort();
       else dqos.reliable();
       sub_depth_ = create_subscription<sensor_msgs::msg::Image>(
@@ -1186,7 +1194,7 @@ class ProviderFusionNode : public rclcpp::Node {
     double bdt = 1e9;
     for (const auto& e : depth_buf_)
       if (std::abs(e.first - t) < bdt) { bdt = std::abs(e.first - t); best = &e; }
-    if (!best || bdt > image_tol_s_) { ++vmap_no_depth_; return; }
+    if (!best || bdt > vmap_depth_tol_s_) { ++vmap_no_depth_; return; }
 
     const cv::Mat& dm = best->second;
     slamko::DepthFrame f;
@@ -2524,6 +2532,7 @@ class ProviderFusionNode : public rclcpp::Node {
   double depth_fx_ = 0, depth_fy_ = 0, depth_cx_ = 0, depth_cy_ = 0;
   slamko::SE3 depth_extrinsic_;
   double volumetric_voxel_ = 0.05, volumetric_slice_h_ = 0.10;
+  double vmap_depth_tol_s_ = 0.12;  // depth-pick window (wider than image_tol_s_)
   int volumetric_correct_every_ = 10, vmap_kf_since_correct_ = 0;
   std::size_t vmap_no_depth_ = 0;
   std::string volumetric_mesh_path_;
