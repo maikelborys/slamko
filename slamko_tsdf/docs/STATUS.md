@@ -44,8 +44,30 @@ caught only 35 kf; the readiness gate fixed it). Matches the offline map, but bu
   problem, confirmed). `enforceBudget` is the lever; the bound A/B (budget on/off vs map coherence)
   is the next gate.
 
-**Next:** bound-the-store A/B (set `volumetric_store_budget_mb`, confirm sealing bounds RAM while the
-map stays coherent); the geometric loop channel; live RViz/Rerun costmap viz.
+**BOUND-THE-STORE A/B — VALIDATED** (2026-06-23, same casa flashbag): `volumetric_store_budget_mb:=200`,
+`keep_recent:=60` vs the unbounded baseline.
+
+| | unbounded | bounded 200 MB |
+|---|---|---|
+| store RAM at end | **946 MB** | **213 MB** (sealed 448 frames, kept 131) |
+| keyframes / loop closed / fused comp | 581 / ✅ / 1 | 579 / ✅ / 1 |
+| mesh verts | 284 892 | **124 216 (−56%)** |
+
+**Verdict:** the bound WORKS — RAM 946→213 MB (4.4×), the map stays topologically COHERENT (loop still
+closed, 1 fused component), and at voxel/costmap resolution (0.05–0.125 m) the house structure is intact
+(navigable map preserved). The COST is −56% fine-mesh density: a late loop closure moves the OLD frames
+(submap 0), but those are SEALED → can't re-pose, and a neighbouring unsealed frame's `clearRegion` can
+wipe baked voxels that only a sealed frame covered → thinned reconstruction in early-explored regions.
+**The seal-vs-late-correction tension is the real lifelong tradeoff, now measured.** Refinements (next):
+(a) larger budget / keep_recent → less density loss; (b) smarter seal — don't seal frames in submaps that
+are still plausible loop targets (seal only settled, already-loop-closed regions); (c) guard `clearRegion`
+to NOT clear blocks only sealed frames cover (leave stale-but-present geometry vs holing it).
+
+**Next:** the seal-policy refinement (b/c above); the depth source is now the splitter's emitter-ON
+`/nvblox/depth` (94% coverage, decoupled — agent-verified safe for OKVIS/XFeat); the geometric loop
+channel; live RViz/Rerun costmap viz. **Reliability reframe (2-agent architecture refresh):** the
+volumetric map's fidelity is bounded by POSE quality (OKVIS odom + XFeat reloc), not depth quality — a
+0.1 m pose error dominates the ±2% depth error at indoor range. Invest reliability in odometry/reloc first.
 
 ## 2026-06-23 — LIVE path foundation: incremental fuse + touched-window bend + store bound ✅
 
