@@ -26,6 +26,7 @@ find_package(ament_cmake REQUIRED)
 find_package(slamko_core REQUIRED)
 find_package(slamko_loop REQUIRED)
 find_package(slamko_vio REQUIRED)   # TRT feature wrappers (EigenPlaces) — composition-root use
+find_package(slamko_tsdf REQUIRED)  # live volumetric engine (nvblox hidden behind its PIMPL)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(OpenCV 4 REQUIRED)
@@ -54,8 +55,8 @@ add_executable(provider_fusion_node nodes/provider_fusion_node.cpp src/viz_sink.
 target_include_directories(provider_fusion_node PRIVATE
   ${TENSORRT_INCLUDE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/include)
 ament_target_dependencies(provider_fusion_node
-  slamko_core slamko_loop slamko_vio rclcpp nav_msgs sensor_msgs geometry_msgs
-  tf2_ros ament_index_cpp)
+  slamko_core slamko_loop slamko_vio slamko_tsdf rclcpp nav_msgs sensor_msgs
+  geometry_msgs tf2_ros ament_index_cpp)
 # After ament deps so cudart/TRT land at the END of the link line (slamko_vio_core
 # has undefined cudart/nvinfer refs the consumer must satisfy).
 target_link_libraries(provider_fusion_node Eigen3::Eigen ${OpenCV_LIBS}

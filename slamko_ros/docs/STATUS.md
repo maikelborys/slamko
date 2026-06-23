@@ -1,5 +1,27 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
+## 2026-06-23 — LIVE VOLUMETRIC wiring: D455 HW depth → live TSDF → OccupancyGrid ✅ (build-validated)
+
+provider_fusion_node now drives `slamko_tsdf`'s `VolumetricLiveDriver` so a running slamko builds a
+live volumetric map that BENDS with the pose-graph. Opt-in (`volumetric:=true`, default OFF).
+
+- **Source = D455 HW depth topic** `/camera/camera/depth/image_rect_raw` (16UC1 mm → m, on-ASIC, no
+  GPU for depth). New `onDepth` buffers depth by timestamp (`depth_buf_`, like `img_buf_`).
+- **Hook:** `volumetricOnKeyframe(id,t,T_map)` at each new keyframe → nearest depth → `DepthFrame`
+  (848×480 depth intrinsics + extrinsic, all params) → `addKeyframe` at `worldPose(id)=T_global_map ∘
+  graph.pose(id)`. Every `volumetric_correct_every` kf: snapshot `graph_.poses()` → `applyCorrection`
+  (window the moved kfs = the bend) → `enforceBudget` (seal old frames past `volumetric_store_budget_mb`)
+  → publish `nav_msgs/OccupancyGrid` on `~/volumetric_costmap` (transient_local). Destructor: final
+  bend at the optimized graph + `volumetric_mesh_path` PLY export.
+- **Decoupling:** nvblox hidden behind slamko_tsdf's PIMPL → the node compiles CUDA-free and links only
+  `libslamko_tsdf.so`. **CUDA-free build green; GPU build green + linked** (node →
+  libslamko_tsdf.so → libnvblox_lib.so). nvblox OFF → no-op backend (empty costmap), harmless. OKVIS
+  never sees depth (hard-rule #4). Params: `volumetric_voxel_m`(0.05), `volumetric_max_range_m`(5.0),
+  `volumetric_correct_every`(10), `volumetric_store_budget_mb`(0=unbounded), `volumetric_keep_recent`(60),
+  `depth_topic`, `depth_fx/fy/cx/cy`, `depth_extrinsic_xyz`, `volumetric_mesh_path`.
+- **NOT yet run live** under the 3-way GPU load (OKVIS + XFeat-TRT + nvblox) — that's the next gate
+  (rate ≤0.5, zombie discipline). The wiring + the engine are validated by build + 19 slamko_tsdf gtests.
+
 ## 2026-06-22 — Soft-bridge + multi-factor gate + within-session proximity; validated on NEW real bags
 
 Four opt-in robustness features (default OFF) + a real-bag campaign on two freshly-recorded 848 casa

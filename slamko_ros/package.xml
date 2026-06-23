@@ -20,6 +20,7 @@
   <depend>slamko_core</depend>
   <depend>slamko_loop</depend>
   <depend>slamko_vio</depend>
+  <depend>slamko_tsdf</depend>
   <depend>rclcpp</depend>
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>

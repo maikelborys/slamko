@@ -3,6 +3,39 @@
 Validated milestones (dated, with numbers). Newest first. See
 [`../README.md`](../README.md) + [`../../docs/PLAN_SLAMKO_TSDF_01.md`](../../docs/PLAN_SLAMKO_TSDF_01.md).
 
+## 2026-06-23 — LIVE driver (policy) + slamko_ros node wiring (D455 HW depth) ✅
+
+Increment 2: the live POLICY over the engine + the ROS composition-root wiring, so a
+running slamko fuses a live volumetric map from the D455 hardware depth stream.
+
+- **`VolumetricLiveDriver`** (`live_driver.hpp/.cpp`, pure C++, +6 gtests) — the policy
+  the node drives: `addKeyframe(frame, world_pose)` forward-fuses + tracks; `applyCorrection(
+  world_poses)` DIFFS the latest corrected poses against where each kf was last fused and
+  windows ONLY the moved set (decoupled from the optimizer — a loop just shows up as moved
+  poses on the next snapshot); `enforceBudget()` seals oldest frames outside `keep_recent`
+  once the store passes a byte budget. KEY correctness: the move-diff baseline is the last
+  INTEGRATION (not the last snapshot) so a slow sub-threshold creep accumulates and fires
+  (test `SubThresholdDriftAccumulatesNotResets`). Suite: **19 tests, 0 failures** CUDA-free.
+- **Live depth source = D455 HW depth topic** (`/camera/camera/depth/image_rect_raw`, 16UC1
+  mm → float m). NO SGBM/HITNet, NO GPU for depth (on-ASIC). Intrinsics 848×480
+  fx=fy=426.1532 cx=423.6672 cy=240.5506, extrinsic from make_depth_skdf_frombag — all params.
+- **provider_fusion_node wiring** (gated by `volumetric:=true`): subscribes the depth topic
+  (timestamp buffer like img_buf_), `volumetricOnKeyframe` picks the nearest depth → DepthFrame
+  → `addKeyframe` at `worldPose(id)=T_global_map ∘ graph.pose(id)`; on a cadence
+  (`volumetric_correct_every`, default 10 kf) snapshots `graph_.poses()` → `applyCorrection`
+  (the bend) → `enforceBudget` → publishes a Nav2 `OccupancyGrid` on `~/volumetric_costmap`
+  (transient_local). Destructor does a final bend at the optimized graph + mesh export.
+- **Decoupling preserved:** nvblox stays hidden behind slamko_tsdf's PIMPL — slamko_ros links
+  only `libslamko_tsdf.so` (which pulls nvblox transitively when built `-DSLAMKO_WITH_NVBLOX`);
+  the node's own compile is CUDA-free. Verified: CUDA-free node build green; **GPU build green +
+  linked** (`provider_fusion_node` → `libslamko_tsdf.so` → `libnvblox_lib.so`). With nvblox OFF
+  the driver runs a no-op backend (empty costmap) — harmless. Hard-rule #4 intact (OKVIS never
+  sees depth; depth feeds only the map layer).
+
+**Next:** the live GPU run on the casa flashbag (`volumetric:=true`) — prove a costmap +
+mesh come out under the 3-way GPU load (OKVIS + XFeat-TRT + nvblox; rate ≤0.5, zombie
+discipline). Then: bound-the-store A/B (budget on/off store MB), and the geometric loop channel.
+
 ## 2026-06-23 — LIVE path foundation: incremental fuse + touched-window bend + store bound ✅
 
 The engine the slamko_ros volumetric node will drive (increment 1: pure C++, CUDA-free

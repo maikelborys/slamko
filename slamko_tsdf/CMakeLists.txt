@@ -29,6 +29,7 @@ find_package(Eigen3 REQUIRED)
 
 add_library(slamko_tsdf SHARED
   src/volumetric_mapper.cpp
+  src/live_driver.cpp
   src/nvblox_backend.cpp)
 target_include_directories(slamko_tsdf PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -76,6 +77,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_tsdf_io test/test_io.cpp)
   target_link_libraries(test_tsdf_io slamko_tsdf Eigen3::Eigen)
   ament_target_dependencies(test_tsdf_io slamko_core)
+
+  ament_add_gtest(test_live_driver test/test_live_driver.cpp)
+  target_link_libraries(test_live_driver slamko_tsdf Eigen3::Eigen)
+  ament_target_dependencies(test_live_driver slamko_core)
 endif()
 
 ament_export_include_directories(include)

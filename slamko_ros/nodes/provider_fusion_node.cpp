@@ -45,6 +45,7 @@
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/imu.hpp>
@@ -67,6 +68,8 @@
 #include "slamko_loop/pose_graph.hpp"
 #include "slamko_loop/xfeat_relocalizer.hpp"
 #include "slamko_ros/viz_sink.hpp"
+#include "slamko_tsdf/live_driver.hpp"
+#include "slamko_tsdf/nvblox_backend.hpp"
 #include "slamko_vio/feature/eigenplaces.h"
 #include "slamko_vio/feature/xfeat.h"
 
@@ -530,6 +533,61 @@ class ProviderFusionNode : public rclcpp::Node {
                   viz_endpoint_.empty() ? "default endpoint" : viz_endpoint_.c_str());
     }
 
+    // ----- LIVE VOLUMETRIC (slamko_tsdf): the D455 HW depth stream → a live TSDF
+    // that BENDS with the pose-graph → a Nav2 OccupancyGrid. OFF by default. The
+    // nvblox backend is hidden behind slamko_tsdf's PIMPL (no CUDA leaks here): if
+    // slamko_tsdf was built without -DSLAMKO_WITH_NVBLOX the driver runs with a
+    // no-op backend (available()=false) and the costmap stays empty — harmless.
+    // Depth is DECOUPLED from the provider (OKVIS stays pure VIO, hard-rule #4):
+    // this only feeds the map layer. Forward-fuse each keyframe; on a cadence,
+    // snapshot the corrected graph poses → window-re-integrate the moved keyframes
+    // (the bend) → bound the per-kf depth store → publish the costmap.
+    volumetric_enable_ = declare_parameter("volumetric", false);
+    if (volumetric_enable_) {
+      depth_fx_ = declare_parameter("depth_fx", 426.1532);
+      depth_fy_ = declare_parameter("depth_fy", 426.1532);
+      depth_cx_ = declare_parameter("depth_cx", 423.6672);
+      depth_cy_ = declare_parameter("depth_cy", 240.5506);
+      const auto ext = declare_parameter("depth_extrinsic_xyz",
+                                         std::vector<double>{-0.03022, 0.0074, 0.01602});
+      depth_extrinsic_ = slamko::SE3(slamko::SO3(),
+                                     Eigen::Vector3d(ext[0], ext[1], ext[2]));
+      volumetric_voxel_ = declare_parameter("volumetric_voxel_m", 0.05);
+      volumetric_slice_h_ = declare_parameter("volumetric_slice_h_m", 0.10);
+      volumetric_correct_every_ = declare_parameter("volumetric_correct_every", 10);
+      volumetric_mesh_path_ = declare_parameter("volumetric_mesh_path", std::string(""));
+      slamko::VolumetricParams vp;
+      vp.voxel_size_m = volumetric_voxel_;
+      vp.max_integration_distance_m = declare_parameter("volumetric_max_range_m", 5.0);
+      vp.min_integration_distance_m = declare_parameter("volumetric_min_range_m", 0.3);
+      slamko::LiveParams lp;
+      lp.move_threshold_m = declare_parameter("volumetric_move_thresh_m", 0.05);
+      lp.store_budget_bytes = static_cast<std::size_t>(
+          declare_parameter("volumetric_store_budget_mb", 0)) * 1000000ull;
+      lp.keep_recent = declare_parameter("volumetric_keep_recent", 60);
+      vmap_ = std::make_unique<slamko::VolumetricLiveDriver>(
+          std::make_unique<slamko::NvbloxBackend>(vp), vp, lp);
+      const auto depth_topic = declare_parameter(
+          "depth_topic", std::string("/camera/camera/depth/image_rect_raw"));
+      auto dqos = rclcpp::QoS(rclcpp::KeepLast(30)).durability_volatile();
+      if (declare_parameter("depth_best_effort", true)) dqos.best_effort();
+      else dqos.reliable();
+      sub_depth_ = create_subscription<sensor_msgs::msg::Image>(
+          depth_topic, dqos,
+          std::bind(&ProviderFusionNode::onDepth, this, std::placeholders::_1));
+      pub_costmap_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
+          "~/volumetric_costmap", rclcpp::QoS(1).transient_local());
+      RCLCPP_INFO(get_logger(),
+                  "LIVE VOLUMETRIC on: depth=%s backend=%s voxel=%.2f m correct_every=%d "
+                  "store_budget=%zu MB keep_recent=%zu",
+                  depth_topic.c_str(),
+                  vmap_->backendAvailable() ? "nvblox-GPU"
+                                            : "NO-OP (build slamko_tsdf -DSLAMKO_WITH_NVBLOX)",
+                  volumetric_voxel_, volumetric_correct_every_,
+                  static_cast<std::size_t>(lp.store_budget_bytes / 1000000ull),
+                  lp.keep_recent);
+    }
+
     RCLCPP_INFO(get_logger(), "provider_fusion_node up: topic=%s frames %s->%s->%s",
                 topic.c_str(), map_frame_.c_str(), odom_frame_.c_str(), base_frame_.c_str());
   }
@@ -537,6 +595,22 @@ class ProviderFusionNode : public rclcpp::Node {
   ~ProviderFusionNode() override {
     // Seal the trailing partial submap so a bag-end map is complete.
     if (!pending_kfs_.empty() && !map_dir_.empty()) sealSubmap();
+
+    // Final volumetric flush: one last bend at the FINAL optimized graph (every kf
+    // re-poseable frame snapped to its corrected pose) + a mesh/costmap artifact.
+    if (volumetric_enable_ && vmap_) {
+      std::unordered_map<std::uint64_t, slamko::SE3> poses;
+      for (const auto& [nid, T] : graph_.poses()) poses[nid] = T_global_map_ * T;
+      vmap_->applyCorrection(poses);
+      publishVolumetricCostmap(now().seconds());
+      if (!volumetric_mesh_path_.empty() && vmap_->backendAvailable())
+        vmap_->exportMesh(volumetric_mesh_path_);
+      RCLCPP_INFO(get_logger(),
+                  "volumetric: final bend (%zu kf, %zu live, %.1f MB store, %zu kf no-depth)%s",
+                  vmap_->numKeyframes(), vmap_->numLiveFrames(), vmap_->storeBytes() / 1e6,
+                  vmap_no_depth_,
+                  volumetric_mesh_path_.empty() ? "" : (" mesh→" + volumetric_mesh_path_).c_str());
+    }
     // AUDIT FIX: export the OPTIMIZED graph trajectory (the honest shape — the
     // per-sample fused.tum is the causal online trail, never retro-corrected)
     // and refresh every sealed submap's anchor from the final graph so the
@@ -1079,6 +1153,98 @@ class ProviderFusionNode : public rclcpp::Node {
       img_buf_r_.pop_front();
   }
 
+  // D455 hardware depth (16UC1, mm) buffered by timestamp — the LIVE volumetric
+  // source. Decoupled from the provider: OKVIS never sees this (hard-rule #4).
+  void onDepth(const sensor_msgs::msg::Image::SharedPtr msg) {
+    if (msg->encoding != "16UC1" && msg->encoding != "mono16") {
+      RCLCPP_WARN_ONCE(get_logger(), "depth encoding '%s' unsupported (need 16UC1 mm)",
+                       msg->encoding.c_str());
+      return;
+    }
+    const double t = rclcpp::Time(msg->header.stamp).seconds();
+    const cv::Mat d(msg->height, msg->width, CV_16UC1,
+                    const_cast<std::uint8_t*>(msg->data.data()), msg->step);
+    depth_buf_.emplace_back(t, d.clone());
+    while (!depth_buf_.empty() &&
+           depth_buf_.back().first - depth_buf_.front().first > image_buffer_s_)
+      depth_buf_.pop_front();
+  }
+
+  // Corrected world (map-frame) BODY pose of a keyframe: the optimized graph pose
+  // composed with the cross-session anchor (T_global_map_ = identity for a no-prior
+  // mapping run). Falls back to the live T_map before the node enters the graph.
+  slamko::SE3 worldPose(std::uint64_t id, const slamko::SE3& T_map) {
+    return graph_.hasNode(id) ? T_global_map_ * graph_.pose(id) : T_global_map_ * T_map;
+  }
+
+  // Per-keyframe live volumetric step: pick the nearest depth, forward-fuse it, and
+  // on a cadence snapshot the corrected graph → window-re-integrate the bend →
+  // bound the store → publish the costmap.
+  void volumetricOnKeyframe(std::uint64_t id, double t, const slamko::SE3& T_map) {
+    if (!vmap_) return;
+    const std::pair<double, cv::Mat>* best = nullptr;
+    double bdt = 1e9;
+    for (const auto& e : depth_buf_)
+      if (std::abs(e.first - t) < bdt) { bdt = std::abs(e.first - t); best = &e; }
+    if (!best || bdt > image_tol_s_) { ++vmap_no_depth_; return; }
+
+    const cv::Mat& dm = best->second;
+    slamko::DepthFrame f;
+    f.kf_id = id;
+    f.width = dm.cols;
+    f.height = dm.rows;
+    f.K = {depth_fx_, depth_fy_, depth_cx_, depth_cy_, dm.cols, dm.rows};
+    f.T_body_cam = depth_extrinsic_;
+    f.depth.resize(static_cast<std::size_t>(dm.cols) * dm.rows);
+    for (int r = 0; r < dm.rows; ++r) {
+      const std::uint16_t* row = dm.ptr<std::uint16_t>(r);
+      float* out = f.depth.data() + static_cast<std::size_t>(r) * dm.cols;
+      for (int c = 0; c < dm.cols; ++c) out[c] = row[c] * 0.001f;  // mm → m
+    }
+    vmap_->addKeyframe(std::move(f), worldPose(id, T_map));
+
+    if (++vmap_kf_since_correct_ >= volumetric_correct_every_) {
+      vmap_kf_since_correct_ = 0;
+      std::unordered_map<std::uint64_t, slamko::SE3> poses;
+      for (const auto& [nid, T] : graph_.poses()) poses[nid] = T_global_map_ * T;
+      const std::size_t refused = vmap_->applyCorrection(poses);
+      const std::size_t sealed = vmap_->enforceBudget();
+      publishVolumetricCostmap(t);
+      if (refused || sealed)
+        RCLCPP_DEBUG(get_logger(),
+                     "volumetric: bend re-fused %zu, sealed %zu (live %zu, store %.1f MB)",
+                     refused, sealed, vmap_->numLiveFrames(),
+                     vmap_->storeBytes() / 1e6);
+    }
+  }
+
+  // CostmapSlice (occupancy: -1 unknown / 0 free / 100 occupied; +row→+y, origin =
+  // min corner) → Nav2 OccupancyGrid (same convention, no flip).
+  void publishVolumetricCostmap(double t) {
+    if (!vmap_ || !pub_costmap_ || !vmap_->backendAvailable()) return;
+    slamko::CostmapParams cp;
+    cp.occupancy = true;
+    cp.resolution_m = volumetric_voxel_;
+    cp.slice_height_m = volumetric_slice_h_;
+    const slamko::CostmapSlice s = vmap_->costmap(cp);
+    if (s.empty()) return;
+    nav_msgs::msg::OccupancyGrid g;
+    g.header.stamp = rclcpp::Time(static_cast<std::int64_t>(t * 1e9));
+    g.header.frame_id = map_frame_;
+    g.info.resolution = s.resolution;
+    g.info.width = s.width;
+    g.info.height = s.height;
+    g.info.origin.position.x = s.origin_x;
+    g.info.origin.position.y = s.origin_y;
+    g.info.origin.orientation.w = 1.0;
+    g.data.resize(static_cast<std::size_t>(s.width) * s.height);
+    for (std::size_t i = 0; i < g.data.size(); ++i) {
+      const float v = s.data[i];
+      g.data[i] = (v < 0.f) ? -1 : (v >= 100.f ? 100 : 0);
+    }
+    pub_costmap_->publish(g);
+  }
+
   void onInfo(const sensor_msgs::msg::CameraInfo::SharedPtr m, bool right) {
     if (have_calib_ || !reloc_enabled_) return;
     if (!right) {
@@ -1273,6 +1439,7 @@ class ProviderFusionNode : public rclcpp::Node {
     }
 
     pending_kfs_.push_back(std::move(rec));
+    if (volumetric_enable_) volumetricOnKeyframe(id, t, T_map);
     // GAP-2 coverage tally: this KF is "covered" if a confident match to an existing
     // submap is still fresh (within dup_cover_window_s of the last one).
     ++seg_total_kfs_;
@@ -2349,6 +2516,19 @@ class ProviderFusionNode : public rclcpp::Node {
   bool viz_enable_ = false;
   std::string viz_endpoint_;
   int viz_kf_since_match_ = 1000;     // keyframes since the last verified match (certainty)
+
+  // ----- live volumetric (slamko_tsdf): D455 HW depth → live TSDF → OccupancyGrid.
+  std::unique_ptr<slamko::VolumetricLiveDriver> vmap_;
+  bool volumetric_enable_ = false;
+  std::deque<std::pair<double, cv::Mat>> depth_buf_;
+  double depth_fx_ = 0, depth_fy_ = 0, depth_cx_ = 0, depth_cy_ = 0;
+  slamko::SE3 depth_extrinsic_;
+  double volumetric_voxel_ = 0.05, volumetric_slice_h_ = 0.10;
+  int volumetric_correct_every_ = 10, vmap_kf_since_correct_ = 0;
+  std::size_t vmap_no_depth_ = 0;
+  std::string volumetric_mesh_path_;
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_depth_;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_costmap_;
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_image_, sub_image_r_;
