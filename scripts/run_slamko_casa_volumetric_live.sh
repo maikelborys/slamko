@@ -15,7 +15,7 @@ source ~/ros2_ws/install/setup.bash 2>/dev/null          # libnvblox_lib.so on t
 source ~/coding/slamko/install/setup.bash 2>/dev/null
 export OMP_NUM_THREADS=2
 BAG=/mnt/data/d455_bags/casa_084815_flashbno_trim
-OUT=/tmp/slamko_casa_vol
+OUT=${OUT:-/tmp/slamko_casa_vol}
 CFG=/home/maikel/coding/OKVIS2-X/src/OKVIS2-X/config/rsD455_odom848
 QOS=/home/maikel/coding/d455_setup/casa2_qos_override.yaml
 rm -rf "$OUT"; mkdir -p "$OUT/map"
@@ -55,6 +55,8 @@ ros2 run slamko_ros provider_fusion_node --ros-args \
   -p volumetric_voxel_m:=0.05 \
   -p volumetric_max_range_m:=5.0 \
   -p volumetric_correct_every:=10 \
+  -p volumetric_store_budget_mb:=${VOLBUDGET:-0} \
+  -p volumetric_keep_recent:=${VOLKEEP:-60} \
   -p volumetric_mesh_path:=$OUT/volumetric_live.ply \
   > "$OUT/fusion.log" 2>&1 &
 sleep 3
