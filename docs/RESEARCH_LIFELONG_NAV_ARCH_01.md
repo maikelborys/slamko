@@ -15,28 +15,33 @@ PROVIDERS (odometry):  OKVIS-VI (pure VIO, NO depth)  [+ future: LiDAR KISS-ICP/
                               | slamko contract: relative SE3 edges + covariance
 slamko GLOBAL GRAPH:   loops = XFeat(visual) ⊕ ScanContext(geometric) ⊕ proximity-E
                        + GPS / compass anchors (outdoor)
-VOLUMETRIC:  nvblox + nvblox_submap  (deformable, re-posed on loop, persist+evict)   ← KEEP
+VOLUMETRIC:  slamko_tsdf  (RE-INTEGRATE / PLVS-style; offline today → live next, nvblox backend)  ← KEEP
              XFeat landmarks  (bounded-by-area, ~+3%/visit plateau)
              [ wavemap = GLOBAL compact tier — DEFERRED to building/campus scale ]
 PLANNER:  route on global map  +  reactive on nvblox local ESDF
 ```
 
-## Decision 1 — KEEP nvblox; it IS deformable (nvblox_submap already built)
+## Decision 1 — Volumetric = slamko_tsdf (RE-INTEGRATE). nvblox_submap DROPPED.
 
-Stock nvblox is **fuse-and-forget** (one GPU TSDF grid, baked at integration, no loop
-deformation, decayed/cleared blocks DELETED). BUT `~/coding/nvblox_ros2/nvblox_submap/`
-(Phases A–E, validated) is a **Voxgraph-style deformable layer on top**:
-- Freezes the live TSDF into per-keyframe submaps anchored to pose-graph nodes.
-- On loop closure: **rigidly re-poses each submap** (`T_map_world = T_map_node·T_node_world`),
-  **zero re-integration, µs** (`anchor_follower.hpp`). Submap MOVES → geometry follows; submap
-  CULLED → its volumetric is removed (global map = union of submaps); decay → **freeze-before-clear**
-  to disk (`SubmapStore` `.nvblx`+`.anchor`), GPU VRAM bounded to ~2 mappers regardless of size.
-- Gated registration (`lifelong.hpp`) declines sub-noise over-correction (keeps the graph prior).
-- It's the **re-pose** model (piecewise-rigid), NOT PLVS dense re-integrate — cheaper, VRAM-friendly,
-  granularity = submap size. **For slamko: re-anchor submaps to slamko's pose-graph nodes** (same
-  `AnchorFollower` contract; currently fed RTAB-Map's `/mapGraph`).
+**User decision (2026-06-23): keep `slamko_tsdf`, drop `nvblox_submap`.** One model, one codebase,
+slamko-owned. The two are the two deformation philosophies:
+- **slamko_tsdf = RE-INTEGRATE** (PLVS OnMapChange): keep per-kf depth, re-fuse at corrected poses →
+  **seamless bend** (no submap seams). Offline today (`export_tool`, no ROS node — gave the casa map).
+  Owns the `slamko_core::VolumetricBackend` contract. The header already flags the live hook:
+  "the same call is the live hook later (re-integrate the touched window on a loop)".
+- **nvblox_submap = RE-POSE** (Voxgraph, `~/coding/nvblox_ros2/nvblox_submap/`, Phases A–E built):
+  freeze submaps, move anchors on loop, zero re-integration, µs, VRAM-bounded, piecewise-rigid.
+  **NOT adopted** — would fork the live path into a second codebase/model (RTAB-anchored).
 
-→ "Does nvblox deform with keyframes like Voxblox+PLVS?" **Yes — via nvblox_submap (re-pose variant).**
+**Tradeoff accepted:** re-integrate keeps the seamless quality + a single slamko codebase, at the
+cost that LIVE re-integration is the harder/expensive path (the original plan's "v2 RISK"). The live
+build must solve: (a) bound the per-kf depth store (the 751 MB problem — compress/disparity/re-derive),
+(b) re-integrate only the TOUCHED window on a loop (not the whole map) on the GPU. nvblox stays the
+backend (TSDF/ESDF engine); slamko_tsdf drives it. nvblox_submap's re-pose stays on the shelf as the
+fallback if live re-integration proves too costly.
+
+→ "Does the volumetric deform with keyframes like Voxblox+PLVS?" **Yes — via slamko_tsdf re-integrate
+(the PLVS model itself), offline now, live next.**
 
 ## Decision 2 — wavemap DEFERRED to scale (not worth it for a house)
 
@@ -71,7 +76,7 @@ without depth vs 0.32 m WITH depth** (worse), + OKVIS native map bloats to 106 M
 (OKVIS GPU-contention nondeterminism → not statistically hard), but clearly no improvement. The
 depth-submap-align (`SubmapIcpError`, field/TSDF-gradient, enabled in map848/se2) helps where VIO
 DRIFTS (long/outdoor) — on a clean 42 m indoor loop the VIO is already 0.28% drift so there's no
-room. → **Keep OKVIS pure VIO odometry; depth lives in the MAP layer (nvblox_submap), not the
+room. → **Keep OKVIS pure VIO odometry; depth lives in the MAP layer (slamko_tsdf), not the
 provider.** Empirically validates slamko hard-rule #4 (provider disposable, global map separate).
 
 ## Decision 5 — Loops & outdoor (the geometry/absolute-reference theme)
@@ -93,6 +98,11 @@ provider.** Empirically validates slamko hard-rule #4 (provider disposable, glob
   cov/flag), most valuable OUTDOORS (where it's reliable AND most needed). slamko has `compass_yaw_prior`.
 
 ## Next (in order)
-1. Re-anchor nvblox_submap to slamko's pose-graph (swap RTAB-Map `/mapGraph` for slamko nodes).
+1. **LIVE nvblox TSDF in slamko_tsdf** (the chosen path): add the ROS node + live nvblox backend;
+   re-integrate the TOUCHED window on each loop (not whole map); bound the per-kf depth store
+   (751 MB → compress/disparity/re-derive). nvblox = backend engine, slamko_tsdf drives.
 2. Geometric loop channel (ScanContext-style / field-align) as a disjunctive gate, proximity-E-triggered.
 3. wavemap global tier — only when a multi-floor/building bag exists.
+
+> nvblox_submap (re-pose) is DROPPED but kept on the shelf as the fallback if live re-integration
+> proves too costly (GPU/depth-store). It is NOT to be developed in parallel.
