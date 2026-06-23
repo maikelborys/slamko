@@ -31,6 +31,35 @@ def read_tum_xyz(path):
         return None
 
 
+def quat_R(x, y, z, w):
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                     [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                     [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def load_landmarks(dirpath):
+    """XFeat landmarks Nx3 in GLOBAL frame from a slamko submap archive (matches
+    rerun_show.load_archive: each submap = anchor(R,t) ∘ local landmark)."""
+    import glob, os, struct
+    lms = []
+    for p in sorted(glob.glob(os.path.join(dirpath, "submap_*.smap"))):
+        d = open(p, "rb").read()
+        if d[:4] not in (b"SMP1", b"SMP2", b"SMP3", b"SMP4", b"SMP5", b"SMP6"):
+            continue
+        off = 4 + 8
+        q = struct.unpack_from("<7d", d, off); off += 56
+        R = quat_R(*q[:4]); t = np.array(q[4:7])
+        (nk,) = struct.unpack_from("<Q", d, off); off += 8
+        off += nk * 72                       # skip keyframe records
+        (nl,) = struct.unpack_from("<Q", d, off); off += 8
+        lm = np.frombuffer(d, offset=off, count=nl, dtype=np.dtype(
+            [("id", "<u8"), ("x", "<f8"), ("y", "<f8"), ("z", "<f8"), ("dr", "<i4")]))
+        xyz = np.stack([lm["x"], lm["y"], lm["z"]], 1)
+        if len(xyz):
+            lms.append((R @ xyz.T).T + t)
+    return np.concatenate(lms) if lms else np.zeros((0, 3))
+
+
 def viridis(t):
     """Height colormap — matches scripts/rerun_show.py (the established nvblox-cube look)."""
     A = np.array([[68, 1, 84], [59, 82, 139], [33, 144, 141],
@@ -58,6 +87,7 @@ def main():
     ap.add_argument("--max-cubes", type=int, default=18000, help="auto-coarsen to fit (small HTML)")
     ap.add_argument("--markers", action="store_true",
                     help="square markers instead of shaded boxes — ~5x smaller HTML, opens fast")
+    ap.add_argument("--archive", default="", help="submap dir → overlay XFeat landmarks")
     a = ap.parse_args()
     import plotly.graph_objects as go
 
@@ -101,6 +131,15 @@ def main():
             showscale=False, flatshading=True, opacity=1.0,
             lighting=dict(ambient=0.55, diffuse=0.8, specular=0.15),
             name="nvblox voxels", hoverinfo="skip"))
+
+    if a.archive:  # sparse XFeat landmarks (the loose-fusion map points) over the TSDF
+        L = load_landmarks(a.archive)
+        if len(L):
+            fig.add_trace(go.Scatter3d(
+                x=L[:, 0], y=L[:, 1], z=L[:, 2], mode="markers",
+                marker=dict(size=1.3, color="orange", opacity=0.55),
+                name=f"XFeat landmarks ({len(L)})", hoverinfo="skip"))
+            print(f"landmarks: {len(L)}")
 
     traj = read_tum_xyz(a.traj) if a.traj else None
     if traj is not None:
