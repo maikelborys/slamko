@@ -3,6 +3,45 @@
 Validated milestones (dated, with numbers). Newest first. See
 [`../README.md`](../README.md) + [`../../docs/PLAN_SLAMKO_TSDF_01.md`](../../docs/PLAN_SLAMKO_TSDF_01.md).
 
+## 2026-06-23 — LIVE path foundation: incremental fuse + touched-window bend + store bound ✅
+
+The engine the slamko_ros volumetric node will drive (increment 1: pure C++, CUDA-free
+gtested + nvblox GPU path compile-verified). The offline `reintegrate()` (reset + re-fuse
+ALL, ~2.6 s/483 frames) was the only bend; LIVE needs forward fusion + a cheap loop bend +
+a bounded store. Added to `VolumetricMapper`:
+
+- **`integrateLive(frame, pose)`** — forward incremental fusion as keyframes arrive (no
+  reset, the map grows); the frame is KEPT re-poseable with its world pose + footprint.
+- **`reintegrateWindow(moved_kfs, poses)`** — the **touched-window bend**. A loop moves a few
+  keyframes → clear ONLY the region they touch (old ∪ new footprint) + re-fuse the stored,
+  unsealed frames overlapping it → **O(frames touching the window), not O(whole map)**. Falls
+  back to a full `reintegrate()` past `kWindowFullFraction`=0.6 moved (clearing a near-global
+  region is wasteful). The frame-selection correctness (only overlap re-fused, non-overlap
+  untouched, moved pose updated) is the load-bearing logic — fully unit-tested.
+- **`clearRegion(Aabb)`** added to the `VolumetricBackend` contract (default no-op so the
+  fake/stub + CUDA-free build are unaffected). nvblox impl =
+  `getBlockIndicesTouchedByBoundingBox(block_size, aabb)` → `TsdfLayer::clearBlocks(idx)`
+  (ESDF/mesh are derived → recomputed at export). **Compile-verified + linked** against the
+  installed nvblox (`~/ros2_ws/install/nvblox_ros`, CUDA 12.6): `libslamko_tsdf.so` carries
+  both `NvbloxBackend::clearRegion` and the base virtual, links `libnvblox_lib.so`+`libcudart`.
+- **Depth-store bounding (the 751 MB lever):** `sealFrame(kf)` drops a stable frame's depth
+  payload — geometry stays baked, frame no longer re-poseable (window bends skip it).
+  `storeBytes()` / `numLiveFrames()` accessors. The MECHANISM lives here; the seal POLICY
+  (which frames are outside the active/loop window) will live in the ROS node.
+- **Footprint** = world AABB of the depth frustum (camera origin + 4 image-corner rays cast to
+  `max_integration_distance_m`) — the unit of "the touched window" and the overlap test.
+- **Store model refactor:** `frames_` is now `StoredFrame{frame, world_pose, footprint, sealed,
+  fused}`; offline `reintegrate()` now also records each frame's integrated pose+footprint, so
+  the LIVE window path can continue seamlessly from a full build.
+- **GATE — +6 gtests** (live fuses-without-reset + skips invalid; window clears-and-refuses-only-
+  overlap; window full-fallback past the fraction; seal drops-payload-and-is-skipped; window
+  noop on empty/unknown-moved). Suite: **13 tests, 0 failures** CUDA-free.
+
+**Next (increment 2):** the ROS node in slamko_ros (composition root) — subscribe the live
+keyframe/depth/pose-graph stream, drive integrateLive on new kf + reintegrateWindow on a
+correction (moved-kf set from the graph delta), seal frames leaving the active window, publish
+the costmap. Needs a live depth source (the splitter/HITNet path, today offline → .skdf).
+
 ## 2026-06-22 — package spine: contract + bend policy + nvblox backend (gated) ✅
 
 New opt-in package. The slamko-native volumetric layer scaffolded and the **bend

@@ -25,6 +25,7 @@ class NvbloxBackend : public VolumetricBackend {
 
   void integrate(const DepthFrame& frame, const SE3& T_map_body) override;
   void reset() override;
+  void clearRegion(const Aabb& region) override;
   CostmapSlice exportCostmap(const CostmapParams& params) override;
   void exportMesh(const std::string& ply_path) override;
   bool available() const override;

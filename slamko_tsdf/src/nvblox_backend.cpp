@@ -23,6 +23,7 @@ namespace slamko {
 }  // namespace slamko
 
 #include "nvblox/core/types.h"
+#include "nvblox/geometry/bounding_boxes.h"
 #include "nvblox/integrators/esdf_slicer.h"
 #include "nvblox/mapper/mapper.h"
 #include "nvblox/mapper/mapper_params.h"
@@ -87,6 +88,20 @@ void NvbloxBackend::integrate(const DepthFrame& frame, const SE3& T_map_body) {
 
 void NvbloxBackend::reset() { impl_->build(); }  // fresh Mapper = drop all geometry
 
+void NvbloxBackend::clearRegion(const Aabb& region) {
+  // The live "touched window" primitive: drop only the TSDF blocks the region
+  // overlaps so VolumetricMapper can re-fuse the affected frames at corrected
+  // poses. The ESDF/mesh are derived → updateEsdf()/updateColorMesh() at export
+  // recompute the cleared blocks from the re-fused TSDF.
+  if (region.empty()) return;
+  nvblox::AxisAlignedBoundingBox box(region.min.cast<float>(),
+                                     region.max.cast<float>());
+  auto& tsdf = impl_->mapper->tsdf_layer();
+  const std::vector<nvblox::Index3D> blocks =
+      nvblox::getBlockIndicesTouchedByBoundingBox(tsdf.block_size(), box);
+  tsdf.clearBlocks(blocks);
+}
+
 CostmapSlice NvbloxBackend::exportCostmap(const CostmapParams& params) {
   CostmapSlice out;
   out.resolution = impl_->params.voxel_size_m;  // slice grid = voxel grid
@@ -143,6 +158,7 @@ NvbloxBackend::NvbloxBackend(VolumetricParams /*params*/) : impl_(nullptr) {}
 NvbloxBackend::~NvbloxBackend() = default;
 void NvbloxBackend::integrate(const DepthFrame&, const SE3&) {}
 void NvbloxBackend::reset() {}
+void NvbloxBackend::clearRegion(const Aabb&) {}
 CostmapSlice NvbloxBackend::exportCostmap(const CostmapParams&) { return {}; }
 void NvbloxBackend::exportMesh(const std::string&) {}
 bool NvbloxBackend::available() const { return false; }

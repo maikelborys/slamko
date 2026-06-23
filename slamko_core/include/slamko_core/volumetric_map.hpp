@@ -68,6 +68,33 @@ struct DepthFrame {
   }
 };
 
+// An axis-aligned box in the MAP frame [m] — a frame's world FOOTPRINT (the
+// region its depth touches) and the unit of "the touched window" on a loop. The
+// live re-integration clears + re-fuses only frames whose footprint overlaps the
+// moved keyframes' region, so this stays backend-agnostic in the contract
+// (nvblox maps it to AxisAlignedBoundingBox + block clearing internally).
+struct Aabb {
+  Eigen::Vector3d min = Eigen::Vector3d::Constant(1e18);
+  Eigen::Vector3d max = Eigen::Vector3d::Constant(-1e18);
+
+  bool empty() const { return (min.array() > max.array()).any(); }
+  void expand(const Eigen::Vector3d& p) {
+    min = min.cwiseMin(p);
+    max = max.cwiseMax(p);
+  }
+  void expand(const Aabb& o) {
+    if (o.empty()) return;
+    expand(o.min);
+    expand(o.max);
+  }
+  // Overlap test (closed boxes). Two empty boxes never intersect.
+  bool intersects(const Aabb& o) const {
+    if (empty() || o.empty()) return false;
+    return (min.array() <= o.max.array()).all() &&
+           (max.array() >= o.min.array()).all();
+  }
+};
+
 // A 2D ground-projected slice in the MAP frame. When `is_occupancy` is false,
 // cells hold signed distance [m] to the nearest obstacle (an ESDF: ≥0 free,
 // <0 inside obstacles, `unknown_value` where never observed). When true, cells
@@ -116,6 +143,15 @@ class VolumetricBackend {
 
   // Drop all fused geometry — for a full re-integration on a graph change.
   virtual void reset() = 0;
+
+  // Drop fused geometry ONLY inside `region` (map-frame AABB) — the live
+  // "touched window" primitive. After clearing, VolumetricMapper re-fuses every
+  // stored frame whose footprint overlaps `region` at its corrected pose, so a
+  // loop closure that moves a few keyframes costs O(frames touching the window),
+  // not O(whole map). Default no-op: a backend that can't clear regions degrades
+  // to needing a full reset() (the offline bend still works). The fake/stub
+  // backends keep this no-op so the CUDA-free build + tests are unaffected.
+  virtual void clearRegion(const Aabb& /*region*/) {}
 
   // Update the distance field and export the 2D ground slice in the map frame.
   virtual CostmapSlice exportCostmap(const CostmapParams& params) = 0;
