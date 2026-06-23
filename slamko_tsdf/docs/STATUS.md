@@ -32,9 +32,20 @@ running slamko fuses a live volumetric map from the D455 hardware depth stream.
   the driver runs a no-op backend (empty costmap) — harmless. Hard-rule #4 intact (OKVIS never
   sees depth; depth feeds only the map layer).
 
-**Next:** the live GPU run on the casa flashbag (`volumetric:=true`) — prove a costmap +
-mesh come out under the 3-way GPU load (OKVIS + XFeat-TRT + nvblox; rate ≤0.5, zombie
-discipline). Then: bound-the-store A/B (budget on/off store MB), and the geometric loop channel.
+**LIVE GPU RUN — VALIDATED on the casa flashbag** (`scripts/run_slamko_casa_volumetric_live.sh`,
+2026-06-23): full 77 s bag @ rate 0.5, `volumetric:=true`, nvblox-GPU backend. **581 keyframes
+fused LIVE** (581 re-poseable, only 2 kf no-depth), 12 submaps, **LOOP CLOSED** (kf 581→submap 0,
+inliers 77, optimizer converged) → the pose-graph bent → the volumetric layer window-re-integrated
+the moved keyframes on the cadence corrections → **1 FUSED component** (coherent house) → final
+bend + **25 MB mesh PLY**. nvblox as a 3rd GPU consumer @rate 0.5 did NOT starve OKVIS (engines
+pre-built + bag gated on node `reloc ready` — the fixed 20 s warmup raced the TRT build the 1st try,
+caught only 35 kf; the readiness gate fixed it). Matches the offline map, but built LIVE + incrementally.
+- **The depth-store bound is now MEASURED:** 581 frames @848×480 unbounded = **946 MB** (the 751 MB
+  problem, confirmed). `enforceBudget` is the lever; the bound A/B (budget on/off vs map coherence)
+  is the next gate.
+
+**Next:** bound-the-store A/B (set `volumetric_store_budget_mb`, confirm sealing bounds RAM while the
+map stays coherent); the geometric loop channel; live RViz/Rerun costmap viz.
 
 ## 2026-06-23 — LIVE path foundation: incremental fuse + touched-window bend + store bound ✅
 

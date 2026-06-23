@@ -19,8 +19,13 @@ live volumetric map that BENDS with the pose-graph. Opt-in (`volumetric:=true`, 
   never sees depth (hard-rule #4). Params: `volumetric_voxel_m`(0.05), `volumetric_max_range_m`(5.0),
   `volumetric_correct_every`(10), `volumetric_store_budget_mb`(0=unbounded), `volumetric_keep_recent`(60),
   `depth_topic`, `depth_fx/fy/cx/cy`, `depth_extrinsic_xyz`, `volumetric_mesh_path`.
-- **NOT yet run live** under the 3-way GPU load (OKVIS + XFeat-TRT + nvblox) — that's the next gate
-  (rate ≤0.5, zombie discipline). The wiring + the engine are validated by build + 19 slamko_tsdf gtests.
+- **LIVE GPU RUN VALIDATED** (`scripts/run_slamko_casa_volumetric_live.sh`): the 77 s casa flashbag
+  @rate 0.5 → **581 keyframes fused live** (2 no-depth), 12 submaps, **LOOP CLOSED** (kf 581→submap 0,
+  77 inliers) → the volumetric layer window-re-integrated the moved kfs on the bend → 1 fused
+  component → **25 MB mesh**. nvblox as a 3rd GPU consumer did NOT starve OKVIS once the bag is gated
+  on node `reloc ready` (a fixed warmup raced the TRT engine build — caught only 35 kf — fixed by the
+  readiness poll). Store @848×480 unbounded = **946 MB** (the depth-store bound is real; `enforceBudget`
+  is the lever, A/B next). The wiring + engine are also covered by 19 slamko_tsdf gtests.
 
 ## 2026-06-22 — Soft-bridge + multi-factor gate + within-session proximity; validated on NEW real bags
 
