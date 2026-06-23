@@ -51,7 +51,8 @@ ros2 run slamko_ros provider_fusion_node --ros-args \
   -p mag_topic:=/bno055/mag \
   -p kf_per_submap:=50 \
   -p volumetric:=true \
-  -p depth_topic:=/camera/camera/depth/image_rect_raw \
+  -p depth_topic:=${DEPTH_TOPIC:-/nvblox/depth/image_rect_raw} \
+  -p depth_best_effort:=true \
   -p volumetric_voxel_m:=0.05 \
   -p volumetric_max_range_m:=5.0 \
   -p volumetric_correct_every:=10 \
