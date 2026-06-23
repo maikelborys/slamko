@@ -68,8 +68,8 @@ for i in $(seq 1 60); do
   sleep 5
 done
 echo "    node ready after ~$((i*5))s; +8s GPU settle"; sleep 8
-echo "[6] playing bag @ rate 0.5..."
-ros2 bag play "$BAG" --rate 0.5 \
+echo "[6] playing bag @ rate ${RATE:-0.5}..."
+ros2 bag play "$BAG" --rate ${RATE:-0.5} \
   --qos-profile-overrides-path "$QOS" \
   --remap /tf_static:=/_unused_tf > "$OUT/play.log" 2>&1
 echo "[7] bag done. settle 8s..."
