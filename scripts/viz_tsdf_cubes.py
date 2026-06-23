@@ -55,7 +55,9 @@ def main():
     ap.add_argument("out_html")
     ap.add_argument("traj", nargs="?", default="")
     ap.add_argument("--voxel", type=float, default=0.08, help="cube size [m]")
-    ap.add_argument("--max-cubes", type=int, default=60000)
+    ap.add_argument("--max-cubes", type=int, default=18000, help="auto-coarsen to fit (small HTML)")
+    ap.add_argument("--markers", action="store_true",
+                    help="square markers instead of shaded boxes — ~5x smaller HTML, opens fast")
     a = ap.parse_args()
     import plotly.graph_objects as go
 
@@ -75,22 +77,30 @@ def main():
         print(f"[auto-coarsen] {a.voxel:.3f}→{vox:.3f} m to fit {n} cubes (full coverage, no holes)")
     print(f"voxels: {n} @ {vox:.3f} m")
 
-    # Build ONE Mesh3d of all cubes (8n verts, 12n tris), coloured by height (viridis).
-    z = centres[:, 2]
-    t = (z - z.min()) / max(z.max() - z.min(), 1e-6)
-    col = viridis(t)
-    V = (centres[:, None, :] + _C[None, :, :] * vox).reshape(-1, 3)
+    # Build ONE Mesh3d of all cubes (8n verts, 12n tris). Colour by height via a
+    # NUMERIC intensity + colorscale (NOT a per-vertex rgb-string list — that bloats
+    # the HTML ~10x). Round coords to mm to keep the file small.
+    V = np.round((centres[:, None, :] + _C[None, :, :] * vox).reshape(-1, 3), 3)
     F = (_TRI[None, :, :] + (np.arange(n) * 8)[:, None, None]).reshape(-1, 3)
-    vcol = np.repeat(col, 8, axis=0)
-    vertexcolor = ["rgb(%d,%d,%d)" % tuple(c) for c in vcol]
+    z = V[:, 2]
+    intensity = (z - z.min()) / max(z.max() - z.min(), 1e-6)
 
     fig = go.Figure()
-    fig.add_trace(go.Mesh3d(
-        x=V[:, 0], y=V[:, 1], z=V[:, 2],
-        i=F[:, 0], j=F[:, 1], k=F[:, 2],
-        vertexcolor=vertexcolor, flatshading=True, opacity=1.0,
-        lighting=dict(ambient=0.55, diffuse=0.8, specular=0.15),
-        name="nvblox voxels", hoverinfo="skip"))
+    if a.markers:  # square markers — one per voxel, tiny HTML, opens instantly
+        zc = centres[:, 2]
+        fig.add_trace(go.Scatter3d(
+            x=centres[:, 0], y=centres[:, 1], z=centres[:, 2], mode="markers",
+            marker=dict(size=3, symbol="square", color=zc, colorscale="Viridis",
+                        showscale=False, opacity=0.9),
+            name="nvblox voxels", hoverinfo="skip"))
+    else:
+        fig.add_trace(go.Mesh3d(
+            x=V[:, 0], y=V[:, 1], z=V[:, 2],
+            i=F[:, 0], j=F[:, 1], k=F[:, 2],
+            intensity=intensity, intensitymode="vertex", colorscale="Viridis",
+            showscale=False, flatshading=True, opacity=1.0,
+            lighting=dict(ambient=0.55, diffuse=0.8, specular=0.15),
+            name="nvblox voxels", hoverinfo="skip"))
 
     traj = read_tum_xyz(a.traj) if a.traj else None
     if traj is not None:
