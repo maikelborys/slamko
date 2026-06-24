@@ -63,11 +63,46 @@ wipe baked voxels that only a sealed frame covered → thinned reconstruction in
 are still plausible loop targets (seal only settled, already-loop-closed regions); (c) guard `clearRegion`
 to NOT clear blocks only sealed frames cover (leave stale-but-present geometry vs holing it).
 
-**Next:** the seal-policy refinement (b/c above); the depth source is now the splitter's emitter-ON
-`/nvblox/depth` (94% coverage, decoupled — agent-verified safe for OKVIS/XFeat); the geometric loop
-channel; live RViz/Rerun costmap viz. **Reliability reframe (2-agent architecture refresh):** the
-volumetric map's fidelity is bounded by POSE quality (OKVIS odom + XFeat reloc), not depth quality — a
-0.1 m pose error dominates the ±2% depth error at indoor range. Invest reliability in odometry/reloc first.
+**Reliability reframe (2-agent architecture refresh):** the volumetric map's fidelity is bounded by
+POSE quality (OKVIS odom + XFeat reloc), not depth quality — a 0.1 m pose error dominates the ±2% depth
+error at indoor range. Invest reliability in odometry/reloc first.
+
+## 2026-06-23 — REAL-TIME (rate 1.0) investigation: OKVIS ceiling is BY DESIGN, not GPU contention ⚠️
+
+Ran the live volumetric stack at rate 1.0 (real-time) and profiled it (3-agent code+docs research on
+OKVIS2-X). Findings (full detail: memory `slamko-okvis-realtime-ceiling`):
+
+- **rate 1.0 vs 0.5:** keyframes 532 vs 581, loops/component 2/1 both, but **mesh −37% (178k vs 284k
+  verts)** + OKVIS dropped 26% of odometry samples (31 vs 42 Hz) + **1031 "Frame not added" + 249
+  "TRACKING FAILURE: quality=0"** (vs 173 / ~0 at rate 0.5).
+- **NOT GPU contention** (the old narrative): profiling shows GPU util **mean 5%, idle**; OKVIS 45% SM /
+  392% CPU (~4 cores), slamko 1.6% SM; 16 cores 30% busy. The ceiling is OKVIS's **serial per-frame
+  compute** + its **30 ms real-time Ceres budget** (`realtime_time_limit:0.03`, okvis2.yaml) → **~31 fps
+  hard cap BY DESIGN**. "Frame not added" is a designed real-time frame-skip (depth-2 dropping queue).
+- **Tracking failures are self-inflicted**: feeding 45 fps to a 31 fps estimator → bursty drops →
+  irregular large inter-frame gaps → <8 co-observed landmarks → quality 0.
+
+**Depth-throughput fix (kept):** at rate 1.0 the single-thread node starved onDepth under load (18 kf
+no-depth). Fixed with `volumetric_depth_tol_s=0.12` (wider pick window) + depth queue KeepLast 30→90 →
+no-depth kf 18→2. (provider_fusion_node.cpp.)
+
+**Decimation — an OPTION, NOT the preferred solution (user dislikes it).** Added `OKVIS_DECIM=N` to
+d455_splitter_auto.py (publish every Nth clean pair → even-rate OKVIS input). `OKVIS_DECIM=2` (~22 fps,
+rate 1.0): **frame drops 1031→8** ✅ but **mesh density NOT recovered (187k)** and tracking-failures only
+249→195 — because decimation HALVES temporal resolution → 2× inter-frame baselines → worse tracking on
+fast camera motion. **rate0.5 ≠ decimation**: rate0.5 keeps the full 45 fps (small baselines) + 2× wall-
+time. So you can't reach rate0.5 quality at real-time on this HW by decimating.
+
+**Honest conclusion:** can't go real-time without quality loss on this hardware. Real fixes: (1) **record
+at ~30 fps native, not 90** (D455_BRINGUP §5 — 90 fps overkill forces the dilemma); (2) faster GPU /
+lighter OKVIS config; (3) accept rate0.5 for max quality. Decimation (uniform) beats thrash but isn't a
+quality substitute.
+
+**NEXT (user-chosen, PENDING — not started): wire cuVSLAM as a provider** (GPU-native, beats the OKVIS
+fps ceiling). GATE FIRST = quality management: map cuVSLAM covariance/quality into the provider contract +
+design a map-COHERENCE / no-distortion verification BEFORE trusting it (ATE/RPE + un-aligned divergence,
+hard-rule #5) + write/adapt the slamko_vio adapter. Memory `slamko-cuvslam-next-pending`; notes in
+~/coding/cuvslam/docs/. Plus (deferred): seal-policy refinement; geometric loop channel; live RViz costmap.
 
 ## 2026-06-23 — LIVE path foundation: incremental fuse + touched-window bend + store bound ✅
 
