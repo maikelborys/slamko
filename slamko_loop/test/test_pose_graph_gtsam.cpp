@@ -85,6 +85,27 @@ TEST(PoseGraphGtsam, MatchesCeresOnADriftedLoop) {
   EXPECT_LT(r_gtsam.final_cost, r_gtsam.initial_cost);
 }
 
+TEST(PoseGraphGtsam, Isam2MatchesCeresOnADriftedLoop) {
+  PoseGraphConfig c_ceres;
+  c_ceres.backend = PoseGraphBackend::Ceres;
+  PoseGraph g_ceres(c_ceres);
+  buildDriftedLoop(g_ceres);
+  g_ceres.optimize();
+
+  PoseGraphConfig c_isam;
+  c_isam.backend = PoseGraphBackend::GtsamISAM2;
+  PoseGraph g_isam(c_isam);
+  buildDriftedLoop(g_isam);
+  g_isam.optimize();
+
+  for (std::uint64_t id = 0; id < 6; ++id) {
+    const SE3 a = g_ceres.pose(id);
+    const SE3 b = g_isam.pose(id);
+    EXPECT_LT((a.translation() - b.translation()).norm(), 5e-3) << "iSAM2 trans @node " << id;
+    EXPECT_LT((a.so3().inverse() * b.so3()).log().norm(), 5e-3) << "iSAM2 rot @node " << id;
+  }
+}
+
 TEST(PoseGraphGtsam, FallbackOrSolveDoesNotThrow) {
   // GtsamLM on a trivial graph must not throw (either solves, or — if built without GTSAM — falls
   // back to Ceres transparently).

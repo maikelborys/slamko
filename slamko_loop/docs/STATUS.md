@@ -31,8 +31,32 @@ redistribute it). **GTSAM converged in HALF the iterations** — the first hint 
 iSAM2 amplifies. So the backend is ATE-validated against real ground truth, not just numerically
 matched on a synthetic loop.
 
-**NEXT:** iSAM2 incremental (the real robotics win — relinearise only the affected sub-tree as the
-graph grows) + a `pose_graph_backend` ROS param in provider_fusion_node + a full-stack GTSAM build.
+## 2026-06-26 — iSAM2 INCREMENTAL backend — the real robotics win, demonstrated ✅
+
+`PoseGraphBackend::GtsamISAM2` (`optimizeGtsamIsam2_()` in pose_graph_gtsam.cpp). Keeps a persistent
+`gtsam::ISAM2` Bayes tree in an OPAQUE `isam2_state_` handle (header stays GTSAM-free, HR#2) +
+counters of which edges/priors/nodes it has already absorbed. Each `optimize()` feeds ONLY the
+factors added SINCE the last call → `isam.update()` relinearises just the affected sub-tree
+(O(touched), not O(graph)). Gauge handled incrementally: a tight prior on each component ROOT (a
+node that is never an edge's `to` — chain head OR Atlas-break island root) + fixed/anchor nodes.
+`catch` → GLIM disposable principle: a corrupted update discards the tree and rebuilds batch (LM),
+re-inits next call. `relinearizeThreshold=0.01, relinearizeSkip=1` (pose-graph-accurate).
+
+**DEMONSTRATED** (`pose_graph_tum_ab --incremental`, MH_03, 540 keyframes fed one-by-one, each step
+re-optimised):
+| backend | total | per-step mean | first-10 | last-10 (graph 540× bigger) |
+|---|---|---|---|---|
+| **Ceres** (batch re-solve) | 2929 ms | 5.42 ms | 0.05 ms | **9.35 ms** ⬆ O(graph) |
+| **iSAM2** (incremental) | **170 ms** | 0.31 ms | 0.14 ms | **0.24 ms** ≈ O(touched) |
+
+**17× faster total; the per-step cost stays ~CONSTANT as the map grows** (Ceres' grows 187×) — the
+lifelong-SLAM payoff (a million-pose map stays cheap to update). Batch ATE on MH_03 = **19.19 mm**,
+identical to Ceres 19.10 / GtsamLM 19.14. Unit test `Isam2MatchesCeresOnADriftedLoop` green
+(<5 mm/<5 mrad). v1 limitation: cosmetic — the iSAM2 path doesn't fill Result.initial/final_cost.
+
+**NEXT:** a `pose_graph_backend` ROS param in provider_fusion_node + a full-stack GTSAM build (live
+A/B), and wiring the incremental path so provider_fusion calls optimize() per-keyframe (today it
+batch-rebuilds) to actually reap the O(touched) win live. iSAM2 yaw-prior + multi-prior edge cases.
 
 ## 2026-06-26 — DENSE geometric channel: nvblox ESDF query + end-to-end (step 2) + HONEST finding
 

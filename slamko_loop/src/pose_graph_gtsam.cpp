@@ -27,11 +27,14 @@
 #include <gtsam/geometry/Pose3.h>
 #include <gtsam/inference/Symbol.h>
 #include <gtsam/linear/NoiseModel.h>
+#include <gtsam/nonlinear/ISAM2.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/Values.h>
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/PriorFactor.h>
+
+#include <set>
 
 namespace slamko {
 namespace {
@@ -151,6 +154,97 @@ PoseGraph::Result PoseGraph::optimizeGtsam_() {
   return res;
 }
 
+// ---- iSAM2 incremental backend --------------------------------------------------------------
+// The actual "GTSAM is better for robotics" win: keep a persistent Bayes tree and feed it only the
+// factors added SINCE the last optimize() — isam.update() relinearises just the affected sub-tree
+// (O(touched), not O(graph)), so a loop closure in a million-pose lifelong map is still cheap.
+namespace {
+struct Isam2State {
+  gtsam::ISAM2 isam;
+  std::size_t edges_applied = 0;   // how many of edges_ are already in the tree
+  std::size_t priors_applied = 0;  // how many of priors_ are already in the tree
+  std::set<std::uint64_t> nodes_applied;
+  std::set<std::uint64_t> gauged;  // nodes that already carry a gauge/fixed prior
+};
+}  // namespace
+
+PoseGraph::Result PoseGraph::optimizeGtsamIsam2_() {
+  Result res;
+  res.num_nodes = static_cast<int>(nodes_.size());
+  for (const auto& e : edges_) (e.is_loop ? res.num_loops : res.num_odom)++;
+  if (nodes_.empty()) return res;
+
+  if (!isam2_state_) {
+    gtsam::ISAM2Params p;
+    p.relinearizeThreshold = 0.01;  // tighter than the 0.1 default = pose-graph-accurate
+    p.relinearizeSkip = 1;
+    isam2_state_ = std::make_shared<Isam2State>(Isam2State{gtsam::ISAM2(p), 0, 0, {}, {}});
+  }
+  auto& st = *std::static_pointer_cast<Isam2State>(isam2_state_);
+
+  // roots = nodes that are never an edge's `to` (chain heads + Atlas-break island roots) → they
+  // need a gauge prior or their component floats (singular). fixed_ nodes are also pinned.
+  std::set<std::uint64_t> has_incoming;
+  for (const auto& e : edges_) has_incoming.insert(e.to);
+
+  gtsam::NonlinearFactorGraph newFactors;
+  gtsam::Values newValues;
+  auto tight = gtsam::noiseModel::Isotropic::Sigma(6, 1e-4);
+
+  for (const auto& [id, blk] : nodes_) {
+    if (st.nodes_applied.count(id)) continue;
+    const Eigen::Vector3d t(blk[0], blk[1], blk[2]);
+    const Eigen::Quaterniond q(blk[6], blk[3], blk[4], blk[5]);
+    const gtsam::Pose3 P(gtsam::Rot3(q.normalized()), t);
+    newValues.insert(static_cast<gtsam::Key>(id), P);
+    st.nodes_applied.insert(id);
+    const bool is_root = !has_incoming.count(id) || fixed_.count(id) ||
+                         (has_anchor_ && id == anchor_id_);
+    if (is_root && !st.gauged.count(id)) {
+      newFactors.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(static_cast<gtsam::Key>(id), P,
+                                                                  tight);
+      st.gauged.insert(id);
+    }
+  }
+  for (std::size_t i = st.priors_applied; i < priors_.size(); ++i) {
+    const auto& pr = priors_[i];
+    if (!st.nodes_applied.count(pr.id)) continue;
+    newFactors.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(
+        static_cast<gtsam::Key>(pr.id), toGtsam(pr.target),
+        noiseFromSqrtInfo(pr.sqrt_info, pr.robust, cfg_.loop_huber_delta));
+  }
+  st.priors_applied = priors_.size();
+  for (std::size_t i = st.edges_applied; i < edges_.size(); ++i) {
+    const auto& e = edges_[i];
+    if (!st.nodes_applied.count(e.from) || !st.nodes_applied.count(e.to)) continue;
+    newFactors.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(
+        static_cast<gtsam::Key>(e.from), static_cast<gtsam::Key>(e.to), toGtsam(e.meas),
+        noiseFromSqrtInfo(e.sqrt_info, e.is_loop, cfg_.loop_huber_delta));
+  }
+  st.edges_applied = edges_.size();
+
+  try {
+    st.isam.update(newFactors, newValues);
+    const gtsam::Values est = st.isam.calculateEstimate();
+    for (auto& [id, blk] : nodes_) {
+      if (!est.exists(static_cast<gtsam::Key>(id))) continue;
+      const gtsam::Pose3 P = est.at<gtsam::Pose3>(static_cast<gtsam::Key>(id));
+      const Eigen::Vector3d t = P.translation();
+      const Eigen::Quaterniond q = P.rotation().toQuaternion();
+      blk[0] = t.x(); blk[1] = t.y(); blk[2] = t.z();
+      blk[3] = q.x(); blk[4] = q.y(); blk[5] = q.z(); blk[6] = q.w();
+    }
+    res.converged = true;
+  } catch (const std::exception& ex) {
+    // GLIM disposable-graph principle: a corrupted incremental update → discard the tree and rebuild
+    // batch (LM) for this call; next call re-inits the iSAM2 from scratch.
+    std::fprintf(stderr, "[pose_graph_isam2] update threw (%s) — rebuilding batch (LM).\n", ex.what());
+    isam2_state_.reset();
+    return optimizeGtsam_();
+  }
+  return res;
+}
+
 }  // namespace slamko
 
 #else  // SLAMKO_HAVE_GTSAM not defined — stub that falls back to Ceres.
@@ -162,12 +256,13 @@ PoseGraph::Result PoseGraph::optimizeGtsam_() {
   static bool warned = false;
   if (!warned) {
     std::fprintf(stderr,
-                 "[pose_graph] GtsamLM backend requested but slamko_loop was built WITHOUT GTSAM "
+                 "[pose_graph] GTSAM backend requested but slamko_loop was built WITHOUT GTSAM "
                  "(-DSLAMKO_LOOP_WITH_GTSAM=ON) — falling back to Ceres.\n");
     warned = true;
   }
   return optimizeCeres_();
 }
+PoseGraph::Result PoseGraph::optimizeGtsamIsam2_() { return optimizeGtsam_(); }
 }  // namespace slamko
 
 #endif  // SLAMKO_HAVE_GTSAM

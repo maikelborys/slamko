@@ -25,6 +25,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <set>
 #include <unordered_map>
 #include <utility>
@@ -42,7 +43,7 @@ namespace slamko {
 // graphs). The same factor graph + permuted [trans;rot]↔[rot;trans] information makes the cost
 // IDENTICAL to Ceres, so the two are A/B-validated to agree (test_pose_graph_gtsam). If GTSAM_LM is
 // requested but the GTSAM build is OFF, optimize() transparently falls back to CERES + warns.
-enum class PoseGraphBackend { Ceres, GtsamLM };
+enum class PoseGraphBackend { Ceres, GtsamLM, GtsamISAM2 };
 
 struct PoseGraphConfig {
   // Robust kernel half-width for LOOP edges, in units of the whitened residual
@@ -137,10 +138,14 @@ class PoseGraph {
 
  private:
   // optimize() dispatches to one of these by cfg_.backend. optimizeCeres_ is the always-built
-  // default; optimizeGtsam_ lives in pose_graph_gtsam.cpp (real GTSAM under -DSLAMKO_LOOP_WITH_GTSAM,
-  // otherwise a stub that falls back to Ceres). Both share this class's private structs/members.
+  // default; optimizeGtsam_ / optimizeGtsamIsam2_ live in pose_graph_gtsam.cpp (real GTSAM under
+  // -DSLAMKO_LOOP_WITH_GTSAM, otherwise stubs that fall back to Ceres). Both share this class's
+  // private structs/members. iSAM2 keeps its incremental state (the Bayes tree + which factors it
+  // has already absorbed) in an OPAQUE handle so the header stays GTSAM-free (Hard Rule #2).
   Result optimizeCeres_();
   Result optimizeGtsam_();
+  Result optimizeGtsamIsam2_();
+  std::shared_ptr<void> isam2_state_;  // gtsam::ISAM2 + counters, lazily created in the .cpp
 
   struct Edge {
     std::uint64_t from = 0, to = 0;

@@ -12,6 +12,8 @@
 //       [--kf_stride 5] [--loop_dist 0.4] [--min_gap 50] [--loop_sigma_t 0.05] [--loop_sigma_r 0.02]
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -87,27 +89,60 @@ int main(int argc, char** argv) {
 
   PoseGraphConfig cfg;
   if (backend == "gtsam") cfg.backend = PoseGraphBackend::GtsamLM;
-  PoseGraph pg(cfg);
-  for (int i = 0; i < N; ++i) pg.addKeyframe(i, kf[i].T);          // init = drifted odom
-  pg.setAnchor(0);
-  for (int i = 0; i + 1 < N; ++i)                                   // odometry edges (real relatives)
-    pg.addOdometryEdge(i, i + 1, kf[i].T.inverse() * kf[i + 1].T, 0.02, 0.01);
+  else if (backend == "isam2") cfg.backend = PoseGraphBackend::GtsamISAM2;
+  const bool incremental = std::string(arg(argc, argv, "--incremental", "0")) == "1";
 
-  // loop edges from GT revisits: a temporally-distant, spatially-close pair gets an ideal closure.
-  int loops = 0;
+  // pre-compute loop edges (temporally distant, spatially close per GT) so both modes use the same.
+  std::vector<std::array<int, 2>> loop_pairs;
   for (int i = 0; i < N; ++i)
     for (int j = i + min_gap; j < N; ++j)
       if ((kf_gt[i].translation() - kf_gt[j].translation()).norm() < loop_dist) {
-        pg.addLoopEdge(i, j, kf_gt[i].inverse() * kf_gt[j], lst, lsr);  // GT-relative = ideal reloc
-        ++loops;
-        j += min_gap;  // thin out dense overlaps
+        loop_pairs.push_back({i, j});
+        j += min_gap;
       }
-  std::printf("backend=%s  keyframes=%d  loop_edges=%d\n", backend.c_str(), N, loops);
+  std::printf("backend=%s  keyframes=%d  loop_edges=%zu  mode=%s\n", backend.c_str(), N,
+              loop_pairs.size(), incremental ? "incremental" : "batch");
 
-  const auto res = pg.optimize();
-  std::printf("optimize: %d nodes, %d odom, %d loops, cost %.3g -> %.3g, %d iters\n",
-              res.num_nodes, res.num_odom, res.num_loops, res.initial_cost, res.final_cost,
-              res.iterations);
+  PoseGraph pg(cfg);
+  PoseGraph::Result res;
+  if (!incremental) {
+    for (int i = 0; i < N; ++i) pg.addKeyframe(i, kf[i].T);
+    pg.setAnchor(0);
+    for (int i = 0; i + 1 < N; ++i)
+      pg.addOdometryEdge(i, i + 1, kf[i].T.inverse() * kf[i + 1].T, 0.02, 0.01);
+    for (const auto& lp : loop_pairs)
+      pg.addLoopEdge(lp[0], lp[1], kf_gt[lp[0]].inverse() * kf_gt[lp[1]], lst, lsr);
+    res = pg.optimize();
+  } else {
+    // INCREMENTAL: add one keyframe (+ its odom edge + any loop that closes now) per step, optimise
+    // each step, TIME each optimise() — this is where iSAM2 (O(touched)) beats Ceres (O(graph)).
+    std::vector<std::vector<int>> loops_at(N);  // loop indices that close AT keyframe j
+    for (std::size_t k = 0; k < loop_pairs.size(); ++k) loops_at[loop_pairs[k][1]].push_back((int)k);
+    double t_total = 0.0, t_last10 = 0.0, t_first10 = 0.0;
+    pg.addKeyframe(0, kf[0].T);
+    pg.setAnchor(0);
+    for (int i = 0; i < N; ++i) {
+      if (i > 0) {
+        pg.addKeyframe(i, kf[i].T);
+        pg.addOdometryEdge(i - 1, i, kf[i - 1].T.inverse() * kf[i].T, 0.02, 0.01);
+      }
+      for (int k : loops_at[i])
+        pg.addLoopEdge(loop_pairs[k][0], loop_pairs[k][1],
+                       kf_gt[loop_pairs[k][0]].inverse() * kf_gt[loop_pairs[k][1]], lst, lsr);
+      const auto c0 = std::chrono::steady_clock::now();
+      res = pg.optimize();
+      const double ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - c0).count();
+      t_total += ms;
+      if (i < 10) t_first10 += ms;
+      if (i >= N - 10) t_last10 += ms;
+    }
+    std::printf("incremental timing: total %.1f ms, mean %.2f ms/step; first-10 mean %.2f ms, "
+                "last-10 mean %.2f ms (graph %dx bigger at the end)\n",
+                t_total, t_total / N, t_first10 / 10.0, t_last10 / 10.0, N);
+  }
+  std::printf("optimize: %d nodes, %d odom, %d loops, cost %.3g -> %.3g\n", res.num_nodes,
+              res.num_odom, res.num_loops, res.initial_cost, res.final_cost);
 
   std::ofstream of(out_p);
   for (int i = 0; i < N; ++i) {
