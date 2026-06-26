@@ -277,3 +277,92 @@ TEST(XFeatRelocalizer, VprPerSubmapFallback) {
   ASSERT_TRUE(r.found);
   EXPECT_EQ(r.submap_id, match.submap.id) << "VPR per-submap fallback ranked wrong";
 }
+
+// ---- Geometric (ScanContext) disjunctive retrieval --------------------------------
+// The viewpoint-invariant channel: a different-HEADING revisit (where appearance VPR
+// fails) is found by 3D geometry. Build a "room" submap (1 KF observing z-up wall
+// landmarks); query the SAME room rotated 90° in yaw -> geometricCandidates must return
+// it (low ScanContext distance), while a geometrically different scene must not.
+namespace {
+SubMap buildRoomSubMap(std::uint64_t id, double yaw_deg) {
+  using slamko::KeyframeObservations;
+  using slamko::KeyframePose;
+  const double a = yaw_deg * M_PI / 180.0, c = std::cos(a), s = std::sin(a);
+  SubMap m;
+  m.id = id;
+  m.anchor = SE3();
+  KeyframePose kf;
+  kf.id = 0;
+  kf.T_WB = SE3();  // KF at submap-local origin → kf frame == submap-local
+  m.keyframes.push_back(kf);
+  KeyframeObservations ko;
+  std::vector<Eigen::Vector3d> pts;
+  for (double t = -3; t <= 3; t += 0.1) {
+    pts.emplace_back(t, 2.0, 1.0 + 0.4 * std::sin(t));
+    pts.emplace_back(t, -2.0, 1.0 + 0.4 * std::cos(t));
+  }
+  for (double t = -2; t <= 2; t += 0.1) {
+    pts.emplace_back(3.0, t, 1.2);
+    pts.emplace_back(-3.0, t, 0.8);
+  }
+  const int n = static_cast<int>(pts.size());
+  m.descriptors.resize(n, 64);
+  m.descriptors.setZero();
+  for (int i = 0; i < n; ++i) {
+    const Eigen::Vector3d& p = pts[i];
+    MapLandmark lm;
+    lm.id = 1000 + i;
+    lm.position = Eigen::Vector3d(c * p.x() - s * p.y(), s * p.x() + c * p.y(), p.z());  // yaw
+    lm.descriptor_row = i;
+    m.descriptors(i, 0) = 1.0f;  // valid row so lid_to_desc_pos is populated
+    m.landmarks.push_back(lm);
+    ko.landmark_ids.push_back(lm.id);
+  }
+  m.kf_obs.push_back(ko);
+  return m;
+}
+
+std::vector<Eigen::Vector3d> roomPoints(double yaw_deg) {
+  SubMap m = buildRoomSubMap(0, yaw_deg);
+  std::vector<Eigen::Vector3d> out;
+  for (const auto& lm : m.landmarks) out.push_back(lm.position);
+  return out;
+}
+}  // namespace
+
+TEST(XFeatRelocalizer, GeometricCandidatesYawInvariant) {
+  XFeatRelocConfig c;
+  c.use_scan_context = true;
+  c.sc_max_dist = 0.4f;
+  c.sc_top_m = 3;
+  XFeatRelocalizer reloc(c);
+  reloc.addSubMap(buildRoomSubMap(42, /*yaw=*/0.0));  // store the room facing 0°
+
+  // query = the SAME room rotated 90° in yaw (appearance would be totally different)
+  auto cand = reloc.geometricCandidates(roomPoints(90.0));
+  ASSERT_FALSE(cand.empty()) << "geometric channel must find a yaw-rotated revisit";
+  EXPECT_EQ(cand.front().first, 42u);
+  EXPECT_LT(cand.front().second, 0.4f);
+}
+
+TEST(XFeatRelocalizer, GeometricCandidatesRejectsDifferentScene) {
+  XFeatRelocConfig c;
+  c.use_scan_context = true;
+  c.sc_max_dist = 0.3f;
+  XFeatRelocalizer reloc(c);
+  reloc.addSubMap(buildRoomSubMap(42, 0.0));
+  // a long narrow corridor — geometrically unlike the room
+  std::vector<Eigen::Vector3d> corridor;
+  for (double t = -7; t <= 7; t += 0.05) {
+    corridor.emplace_back(t, 0.7, 1.0);
+    corridor.emplace_back(t, -0.7, 1.0);
+  }
+  EXPECT_TRUE(reloc.geometricCandidates(corridor).empty()) << "different scene must not match";
+}
+
+TEST(XFeatRelocalizer, GeometricCandidatesOffByDefault) {
+  XFeatRelocConfig c;  // use_scan_context defaults false
+  XFeatRelocalizer reloc(c);
+  reloc.addSubMap(buildRoomSubMap(42, 0.0));
+  EXPECT_TRUE(reloc.geometricCandidates(roomPoints(0.0)).empty());
+}

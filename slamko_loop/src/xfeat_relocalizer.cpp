@@ -210,6 +210,51 @@ void XFeatRelocalizer::addSubMap(const SubMap& submap) {
     }
     if (!vocab_.empty()) bow_db_.addSubMap(submap.id, vocab_.transform(submap.descriptors));
   }
+
+  // GEOMETRIC channel: per-keyframe ScanContext from each KF's observed landmarks.
+  // A ScanContext is a single-pose (single-scan) descriptor, so it MUST be per-KF, not
+  // per-submap (a submap spans 30–80 m). For each KF, gather the landmarks it observed
+  // (kf_obs.landmark_ids → submap-local 3D via the lid index), transform into the KF body
+  // frame (T_WB⁻¹), and build the descriptor. The query (one live KF) later matches against
+  // all of these yaw-invariantly. Mirrors the per-KF VPR granularity (kf_global_desc).
+  if (cfg_.use_scan_context && db_.back().keyframes.size() == db_.back().kf_obs.size()) {
+    Entry& back = db_.back();
+    back.kf_sc.resize(back.keyframes.size());
+    for (std::size_t k = 0; k < back.keyframes.size(); ++k) {
+      const SE3 T_kf_local = back.keyframes[k].T_WB.inverse();
+      std::vector<Eigen::Vector3d> pts;
+      pts.reserve(back.kf_obs[k].landmark_ids.size());
+      for (std::uint64_t lid : back.kf_obs[k].landmark_ids) {
+        auto it = back.lid_to_desc_pos.find(lid);
+        if (it != back.lid_to_desc_pos.end()) pts.push_back(T_kf_local * it->second.second);
+      }
+      if (!pts.empty()) back.kf_sc[k] = ScanContext::compute(pts, cfg_.sc_cfg);
+    }
+  }
+}
+
+std::vector<std::pair<std::uint64_t, float>> XFeatRelocalizer::geometricCandidates(
+    const std::vector<Eigen::Vector3d>& query_pts) const {
+  std::vector<std::pair<std::uint64_t, float>> out;
+  if (!cfg_.use_scan_context || query_pts.empty()) return out;
+  const ScanContextDesc q = ScanContext::compute(query_pts, cfg_.sc_cfg);
+  if (q.empty()) return out;
+  // Best (smallest) ScanContext distance over each submap's per-KF descriptors, after a
+  // cheap yaw-invariant ring-key prefilter.
+  for (const auto& e : db_) {
+    float best = 2.0f;
+    for (const auto& kfsc : e.kf_sc) {
+      if (kfsc.empty()) continue;
+      if (ScanContext::ringKeyDistance(q.ring_key, kfsc.ring_key) > cfg_.sc_ring_gate) continue;
+      const float d = ScanContext::distance(q.sc, kfsc.sc).first;
+      if (d < best) best = d;
+    }
+    if (best <= cfg_.sc_max_dist) out.emplace_back(e.id, best);
+  }
+  std::sort(out.begin(), out.end(),
+            [](const auto& a, const auto& b) { return a.second < b.second; });
+  if (static_cast<int>(out.size()) > cfg_.sc_top_m) out.resize(cfg_.sc_top_m);
+  return out;
 }
 
 RelocResult XFeatRelocalizer::verifyAgainst(

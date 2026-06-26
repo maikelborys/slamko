@@ -33,6 +33,7 @@
 #include <vector>
 
 #include <Eigen/Core>
+#include <Eigen/Geometry>
 
 namespace slamko {
 
@@ -41,6 +42,10 @@ struct ScanContextConfig {
   int n_sector = 60;        // azimuthal bins → yaw resolution = 360/n_sector = 6°
   double max_range = 8.0;   // m — D455 depth is reliable to ~6–8 m
   double min_range = 0.3;   // m — ignore too-close clutter
+  // The "up" axis of the input points, in their own frame. Gravity must be the
+  // invariance axis (we factor out yaw = rotation about up). Default z-up; pass the
+  // body-frame gravity direction for a non-z-up frame (e.g. optical y-down → {0,-1,0}).
+  Eigen::Vector3d up = Eigen::Vector3d(0, 0, 1);
 };
 
 // A ScanContext descriptor + its rotation-invariant ring key, for one place.
@@ -61,7 +66,11 @@ class ScanContext {
     d.sc = Eigen::MatrixXf::Zero(cfg.n_ring, cfg.n_sector);
     bool any = false;
     const double gap = (cfg.max_range - cfg.min_range);
-    for (const auto& p : pts) {
+    // Rotation that maps the input "up" axis onto +z, so the polar binning below
+    // (ground = xy, height = z, yaw = azimuth) is correct for any gravity convention.
+    const Eigen::Matrix3d R = upToZ(cfg.up);
+    for (const auto& p0 : pts) {
+      const Eigen::Vector3d p = R * p0;
       const double rng = std::sqrt(p.x() * p.x() + p.y() * p.y());
       if (rng < cfg.min_range || rng >= cfg.max_range) continue;
       // azimuth in [0,2π) → sector; range → ring
@@ -119,6 +128,22 @@ class ScanContext {
     }
     if (best > 1.5f) return {1.0f, 0};  // no column ever overlapped
     return {best, best_shift};
+  }
+
+ private:
+  // Rotation mapping the unit "up" vector onto +z (shortest arc). Identity when up≈z.
+  static Eigen::Matrix3d upToZ(const Eigen::Vector3d& up_in) {
+    const Eigen::Vector3d z(0, 0, 1);
+    Eigen::Vector3d u = up_in;
+    if (u.norm() < 1e-9) return Eigen::Matrix3d::Identity();
+    u.normalize();
+    const double c = u.dot(z);
+    if (c > 1 - 1e-9) return Eigen::Matrix3d::Identity();
+    if (c < -1 + 1e-9) return Eigen::DiagonalMatrix<double, 3>(1, -1, -1);  // 180° flip
+    const Eigen::Vector3d v = u.cross(z);
+    Eigen::Matrix3d K;
+    K << 0, -v.z(), v.y(), v.z(), 0, -v.x(), -v.y(), v.x(), 0;
+    return Eigen::Matrix3d::Identity() + K + K * K * (1.0 / (1.0 + c));
   }
 };
 

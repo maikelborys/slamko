@@ -33,6 +33,7 @@
 
 #include "slamko_loop/bow.hpp"
 #include "slamko_loop/lightglue_matcher.hpp"
+#include "slamko_loop/scan_context.hpp"
 
 namespace slamko {
 
@@ -94,6 +95,20 @@ struct XFeatRelocConfig {
   float  lg_score_thresh      = 0.10f;  // mscores0 cut
   int    lg_max_views         = 4;      // keyframe poses projected per candidate submap
   int    lg_min_view_landmarks = 12;    // skip a view with fewer in-FOV landmarks
+
+  // GEOMETRIC (ScanContext) disjunctive retrieval — the viewpoint-invariant channel that
+  // recovers different-heading revisits the appearance VPR misses (the recall limiter,
+  // PIPELINE_STATUS §0). Per-keyframe ScanContext descriptors are built from each KF's
+  // observed landmarks at addSubMap(); geometricCandidates() matches a query's local 3D
+  // yaw-invariantly and returns submaps to PnP-verify — UNION with the VPR top-N (accept
+  // if visual OR geometric retrieves it). Off by default until validated live on a
+  // different-heading revisit bag. sc_up = the body-frame gravity-up axis (optical y-down
+  // → {0,-1,0}); the live wiring sets it from the provider's gravity.
+  bool   use_scan_context = false;
+  int    sc_top_m         = 5;     // geometric candidate submaps added per query
+  float  sc_max_dist      = 0.4f;  // ScanContext distance gate (lower = stricter)
+  float  sc_ring_gate     = 1.5f;  // ring-key L2 prefilter (skip clearly-different KFs)
+  ScanContextConfig sc_cfg;        // n_ring/n_sector/range/up (set sc_cfg.up to gravity)
 };
 
 class XFeatRelocalizer : public Relocalizer {
@@ -131,6 +146,16 @@ class XFeatRelocalizer : public Relocalizer {
 
   std::size_t numSubMaps() const { return db_.size(); }
 
+  // GEOMETRIC retrieval (ScanContext): match the query's local 3D geometry (in the query
+  // body frame, gravity per cfg_.sc_cfg.up) yaw-invariantly against every stored per-KF
+  // ScanContext, and return up to cfg_.sc_top_m submap ids (with their best ScanContext
+  // distance) under cfg_.sc_max_dist, ranked best-first. VIEWPOINT-INVARIANT — finds the
+  // place even on a different-heading revisit the appearance VPR misses. The caller PnP-
+  // verifies these (union with the VPR top-N) and accepts on geometry. Empty if disabled,
+  // no query points, or nothing within the gate.
+  std::vector<std::pair<std::uint64_t, float>> geometricCandidates(
+      const std::vector<Eigen::Vector3d>& query_pts) const;
+
  private:
   struct Entry {
     std::uint64_t id = 0;
@@ -157,6 +182,11 @@ class XFeatRelocalizer : public Relocalizer {
     // brute-force NN path keeps the existing subsampled `desc`/`pos` for speed.
     Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> full_desc;
     std::unordered_map<std::uint64_t, std::pair<int, Eigen::Vector3d>> lid_to_desc_pos;
+    // Per-keyframe ScanContext (geometric channel), aligned 1:1 with `keyframes`. Built
+    // from each KF's observed landmarks transformed into the KF body frame. Empty rows
+    // (no observed landmarks) are skipped by geometricCandidates(). Only filled when
+    // cfg_.use_scan_context.
+    std::vector<ScanContextDesc> kf_sc;
   };
 
   // LighterGlue verify of one candidate submap: project its landmarks into up to

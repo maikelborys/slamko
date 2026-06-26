@@ -16,9 +16,24 @@ change (e.g. 90° turn); a TRUE 180°-opposite revisit has zero overlap = unmatc
 Convention: points in a gravity-aligned frame (z up) — slamko's odom/world frame qualifies.
 **5 gtests green** (test_scan_context): non-empty build, empty-on-no-range, YAW-INVARIANT same-place (90°
 rotation → dist <0.15 + column shift recovers the yaw ±2 sectors + ring-key dist <0.05), different-scene
-far (>0.25), identical=0. NEXT (step 2): compute per-keyframe/submap from depth/landmarks at seal, store in
-the submap, add as a DISJUNCTIVE retrieval candidate alongside VPR top-N in XFeatRelocalizer; then validate
-the recall gain on a different-heading revisit. Unlocked by cuVSLAM 120fps + live 45fps depth this session.
+far (>0.25), identical=0.
+
+**Step 2 DONE (relocalizer integration, unit-validated):** `XFeatRelocalizer` now stores a PER-KEYFRAME
+ScanContext (`Entry.kf_sc`, aligned with `keyframes`) built at `addSubMap()` from each KF's observed
+landmarks (kf_obs.landmark_ids → submap-local 3D → transformed into the KF body frame T_WB⁻¹). New public
+`geometricCandidates(query_pts)` matches a query's local 3D yaw-invariantly (ring-key prefilter →
+column-shift distance) against every stored per-KF descriptor and returns up to `sc_top_m` submap ids under
+`sc_max_dist`, ranked. Config: `use_scan_context` (default OFF), `sc_top_m`, `sc_max_dist`, `sc_ring_gate`,
+`sc_cfg` (incl. `sc_cfg.up` = body-frame gravity axis — ScanContext::compute rotates up→z so any frame
+convention works; optical y-down → {0,-1,0}). Per-KF (not per-submap) because a ScanContext is a single-pose
+descriptor and a submap spans 30–80 m — mirrors the per-KF VPR granularity. **3 new gtests green** (in
+test_relocalizer): GeometricCandidatesYawInvariant (store room@0°, query room@90° → returns it, dist <0.4),
+RejectsDifferentScene (corridor ≠ room → empty), OffByDefault. Gotcha fixed: ScanContext needs
+`<Eigen/Geometry>` (cross product). NEXT (step 3): plumb the query's stereo-triangulated 3D + the provider
+gravity-up into provider_fusion_node's reloc call; UNION geometricCandidates with the VPR top-N before
+PnP-verify (accept if visual OR geometric); persist kf_sc in the .smap; validate the recall gain on a
+different-heading revisit bag (the multi-DIRECTION revisit in the queue). Unlocked by cuVSLAM 120fps + live
+45fps depth this session.
 
 ## 2026-06-21 — MapPointStore: persistent point identity (Phase A/B/C/D)
 
