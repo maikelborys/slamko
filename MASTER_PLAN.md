@@ -160,7 +160,7 @@ the day/night and multi-floor pains.**
 | **P-A** | OKVIS2-X adapter → relative KF edges + cov into the loose fuser; map→odom slew | Live pose tracks OKVIS on CASA1_Suave + Escaleras bags |
 | **P-B** | Reloc recall: EigenPlaces per-KF diagnostic on magistrale return (per-KF cosines + attempt counts); SALAD/CosPlace fallback if needed | Cross-session reloc on casa bags; magistrale start↔end bridge closes (today: 14%) |
 | **P-C** | Never-lost end-to-end: stale-gap → seal → branch → reloc → **reversible gated anchor** | `CASA1_Suave_blackout` + `blackout4`: clean recovery, zero crashes, un-aligned divergence bounded |
-| **P-C′** | Swap slamko_loop's batch Ceres pose-graph → iSAM2 poses-only incremental | Escaleras multi-floor with real-time incremental global correction |
+| **P-C′ ✅** | Ceres ↔ GTSAM/iSAM2 pose-graph backends (`PoseGraphBackend`), **iSAM2 the live default** (auto-detected); native GTSAM yaw factor | ✅ 2026-06-26: EuRoC MH_03 ATE Ceres 19.10 ≈ iSAM2 19.19 mm; **6× faster live** (O(touched) vs O(graph)); brutal-bag default validated (9 Atlas breaks, 0 fallbacks). `slamko_loop/docs/STATUS.md` |
 | **P-D** | Georeferencing: GNSS anchors submaps to a global datum (init-then-re-anchor) | — |
 | **P-E** | Extra providers (klt_vo!, Basalt/cuVSLAM) + optional depth-submap factor | — |
 | **P-F** | Semantic layers: sidewalks/roads/lanes atop the metric map | — |

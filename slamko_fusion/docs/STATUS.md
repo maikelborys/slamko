@@ -2,6 +2,12 @@
 
 Living, dated progress + numbers log. Plan: [`PLAN_P1_fusion.md`](PLAN_P1_fusion.md).
 
+> **DORMANT (noted 2026-06-26).** Tier-2 GTSAM local/global smoothers (own-VIO era). The live
+> loose-fusion chain runs in `slamko_ros/provider_fusion_node` over `slamko_loop::PoseGraph` (which
+> now offers Ceres↔GTSAM/iSAM2 — that is the production global solver, NOT this package's
+> `GtsamGlobalSmoother`). Last src commit (2026-05-29, dead anchor-machinery deletion) closed the
+> active work here; revisit only if a Tier-2 joint VI-BA is ever needed.
+
 ## 2026-05-29 — GtsamLocalSmoother HARDENED (catch-damp-rebuild) + KF-count window + bias carry-forward; gravity-init gate. gtsam confirmed SECONDARY (Ceres is the estimator)
 
 **Context:** validating the "single estimator" refactor end-to-end on TUM-VI magistrale1

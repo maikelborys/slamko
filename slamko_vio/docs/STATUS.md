@@ -4,6 +4,11 @@ Living, dated progress + numbers log. Append on every validated change
 ([`../../docs/DOC_PROCESS.md`](../../docs/DOC_PROCESS.md)). Plan:
 [`PLAN_P0_vio.md`](PLAN_P0_vio.md).
 
+> **DEPRECATED (2026-06-12 pivot, noted 2026-06-26).** Legacy own-VIO (XFeat/KLT/IMU); the
+> loose-fusion pipeline uses an EXTERNAL provider (OKVIS2-X / cuVSLAM). The package is **slated for
+> deletion** (klt_vo HEAD is strictly better) — frozen pending removal, not under active development.
+> The last src commit (2026-06-12, D455 live-image support) is intentionally not logged in detail.
+
 ## 2026-06-04 — VIO health-trace instrumentation + VI-BA-dropout root cause (branch klt-fork-loopclosure)
 
 **Built a per-frame health trace** (no regression: MH_01 still 5.84–6.36 cm). `timing.csv` now

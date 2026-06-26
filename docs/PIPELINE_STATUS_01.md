@@ -44,6 +44,16 @@ cuVSLAM (OKVIS can't hold 45 fps); MEASURE the slamko LAYER instead.**
   point of the untrusted-provider design, now MEASURED.
 - **`scripts/tsdf_slice.py`** — horizontal mid-height cut of a TSDF mesh (floor-plan view) + trajectory
   overlay; auto-cuts at the navigable (trajectory) height.
+- **GTSAM / iSAM2 pose-graph backend = the MASTER_PLAN P-C′, SHIPPED + now the LIVE DEFAULT**
+  (commits eb13a06→e9da7c4). `PoseGraphBackend::{Ceres, GtsamLM, GtsamISAM2}` behind the same
+  `slamko_loop::PoseGraph` contract; `provider_fusion_node` defaults `pose_graph_backend=isam2`;
+  GTSAM auto-detected in CMake (ON when installed, Ceres-only when absent). The compass yaw-prior is
+  a **native GTSAM factor** (no Ceres fall-back). VALIDATED: EuRoC MH_03 ATE Ceres 19.10 ≈ GtsamLM
+  19.14 ≈ iSAM2 19.19 mm (all = baseline OKVIS 22.48 improved); **iSAM2 6× faster LIVE** (O(touched)
+  Bayes-tree vs Ceres O(graph) re-solve — the lifelong payoff); brutal-bag default validated (9 Atlas
+  breaks → 0 batch-rebuild fallbacks, coherent map). Scope: GTSAM is ONLY the pose-graph solver —
+  the nvblox volumetric TSDF, the provider, XFeat reloc are unchanged. Detail:
+  `slamko_loop/docs/STATUS.md` + `slamko_ros/docs/STATUS.md` + memory `slamko-gtsam-smoother-inaccurate`.
 
 **The "travesuras" (small things that bit — check here first):**
 - **cuVSLAM rejects a dim-mismatched `camera_info`** (640 img vs 848 info) — inject the correct dims

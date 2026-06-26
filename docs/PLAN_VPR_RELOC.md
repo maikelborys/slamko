@@ -1,6 +1,10 @@
 # PLAN — Global VPR front-end for loop-closure relocalization (EigenPlaces)
 
-> **STATUS (2026-06-19): ACTIVE (blocked). EigenPlaces + LighterGlue + per-KF VPR shipped; magistrale RETURN still 0 welds — recall is the blocker. V.2 diagnostic queued; model-swap (SALAD/MixVPR/AnyLoc) on standby. Feeds R2.1 in [`PLAN_ROBUSTNESS_01.md`](PLAN_ROBUSTNESS_01.md).**
+> **STATUS (updated 2026-06-26): EigenPlaces + LighterGlue + per-KF VPR shipped. The model-swap
+> (SALAD/MixVPR/AnyLoc) is CANCELLED — the recall "cliff" is a VIEWPOINT-coverage artifact, NOT
+> descriptor quality (same-heading revisits already match; opposite-facing is no-overlap, unmatchable
+> by ANY model — proven offline, memory `slamko-immortality-push`). The real fix is viewpoint coverage
+> (shipped: viewpoint-aware cull) + proximity detection (E). Feeds R2.1 in [`PLAN_ROBUSTNESS_01.md`](PLAN_ROBUSTNESS_01.md).**
 
 <!-- status: VPR + LighterGlue rescue verifier INTEGRATED (49 gtests); hard-revisit recall blocked by magistrale-GT + VIO nondeterminism, needs per-keyframe features · 2026-05-28 -->
 

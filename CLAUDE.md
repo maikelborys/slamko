@@ -29,10 +29,16 @@ Also: [`docs/DECOUPLING.md`](docs/DECOUPLING.md), [`docs/DOC_PROCESS.md`](docs/D
 > rode `odom→base` raw) → **`gate_live_pose`** absorbs it into `T_gate_` (A/B: 0 jumps/2.19 m/s PASS,
 > opt-in default OFF). Also `scripts/tsdf_slice.py` (TSDF floor-plan cut). The 45 fps "flash" bag
 > volumetric map (D455 HW depth → nvblox TSDF) is coherent (605 kf, loop closed, path in free space).
-> **NEXT = Nav2 + nvblox local costmap** (already published `~/volumetric_costmap`); the gate is the
-> planner prerequisite. GOTCHAS: cuVSLAM inject-variant `body_tf→provider_fusion` 0-odometry blocker
-> (open); gate threshold = robot-max-speed+margin; tsdf_slice MUST cut at navigable height (else
-> projection artefact looks like a wall-crossing); rosbags in `/tmp/rerunvenv` not system python.
+> **GTSAM/iSAM2 pose-graph backend SHIPPED (MASTER_PLAN P-C′) and is now the LIVE DEFAULT**
+> (`pose_graph_backend=isam2`, GTSAM auto-detected; `PoseGraphBackend::{Ceres,GtsamLM,GtsamISAM2}`):
+> native GTSAM yaw factor, EuRoC ATE Ceres≈iSAM2 (19.1 mm), **6× faster live** (O(touched)), brutal-bag
+> validated. GTSAM is ONLY the pose-graph solver — volumetric nvblox / provider / reloc unchanged.
+> **NEXT = Nav2 navigation: a GLOBAL costmap + a LOCAL costmap** (nvblox already publishes
+> `~/volumetric_costmap`); the never-jump gate is the planner prerequisite. GOTCHAS: cuVSLAM 0-odometry
+> "body_tf" blocker was a missing LD_LIBRARY_PATH (libnvblox) — FIXED; gate threshold =
+> robot-max-speed+margin; tsdf_slice MUST cut at navigable height (else projection artefact looks like
+> a wall-crossing); rosbags in `/tmp/rerunvenv` not system python; build with `-DSLAMKO_LOOP_WITH_GTSAM`
+> auto-on when GTSAM present.
 >
 > **Prior focus (2026-06-20): COHERENT CROSS-SESSION FUSION shipped (A+B+E).** Cold-start →
 > [`docs/RESEARCH_LIFELONG_FUSION_01.md`](docs/RESEARCH_LIFELONG_FUSION_01.md) +
