@@ -24,11 +24,11 @@ add_compile_options(-Wall -Wextra)
 # relocalizer transparently falls back to brute-force NN.
 option(SLAMKO_LOOP_WITH_TORCH "Build the LighterGlue libtorch matcher" OFF)
 
-# GTSAM pose-graph backend (PoseGraphBackend::GtsamLM) — the step toward the MASTER_PLAN P-C′ iSAM2
-# smoother. OFF keeps the default build Ceres-only + GTSAM-free; pose_graph_gtsam.cpp still compiles
-# (as a stub that falls back to Ceres). Turn ON to A/B GTSAM vs Ceres:
-#   colcon build --packages-select slamko_loop --cmake-args -DSLAMKO_LOOP_WITH_GTSAM=ON
-option(SLAMKO_LOOP_WITH_GTSAM "Build the GTSAM Levenberg-Marquardt pose-graph backend" OFF)
+# GTSAM pose-graph backends (PoseGraphBackend::GtsamLM batch + GtsamISAM2 incremental) — the
+# MASTER_PLAN P-C′ solver. AUTO-DETECTED: ON when GTSAM is installed (it IS the planned backend, and
+# iSAM2 is the live default), gracefully Ceres-only when absent (pose_graph_gtsam.cpp compiles as a
+# stub that falls back to Ceres). Force Ceres-only with -DSLAMKO_LOOP_WITH_GTSAM=OFF.
+option(SLAMKO_LOOP_WITH_GTSAM "Build the GTSAM backends (auto: ON if GTSAM found; OFF forces Ceres)" ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(slamko_core REQUIRED)
@@ -56,11 +56,17 @@ target_link_libraries(slamko_loop Eigen3::Eigen Ceres::ceres)
 ament_target_dependencies(slamko_loop slamko_core)
 target_compile_features(slamko_loop PUBLIC cxx_std_17)
 
+set(SLAMKO_GTSAM_ENABLED FALSE)
 if(SLAMKO_LOOP_WITH_GTSAM)
-  find_package(GTSAM REQUIRED)
-  target_compile_definitions(slamko_loop PRIVATE SLAMKO_HAVE_GTSAM)
-  target_link_libraries(slamko_loop gtsam)
-  message(STATUS "slamko_loop: GTSAM pose-graph backend ENABLED (${GTSAM_VERSION})")
+  find_package(GTSAM QUIET)        # auto-detect: enable when present, Ceres-only when not
+  if(GTSAM_FOUND)
+    set(SLAMKO_GTSAM_ENABLED TRUE)
+    target_compile_definitions(slamko_loop PRIVATE SLAMKO_HAVE_GTSAM)
+    target_link_libraries(slamko_loop gtsam)
+    message(STATUS "slamko_loop: GTSAM backends ENABLED (${GTSAM_VERSION}) — iSAM2 available")
+  else()
+    message(STATUS "slamko_loop: GTSAM not found — Ceres-only (set -DSLAMKO_LOOP_WITH_GTSAM=OFF to silence)")
+  endif()
 endif()
 
 if(SLAMKO_LOOP_WITH_TORCH)
@@ -120,7 +126,7 @@ if(BUILD_TESTING)
     target_link_libraries(test_lightglue slamko_loop Eigen3::Eigen)
     ament_target_dependencies(test_lightglue slamko_core)
   endif()
-  if(SLAMKO_LOOP_WITH_GTSAM)
+  if(SLAMKO_GTSAM_ENABLED)
     ament_add_gtest(test_pose_graph_gtsam test/test_pose_graph_gtsam.cpp)
     target_link_libraries(test_pose_graph_gtsam slamko_loop Eigen3::Eigen)
     ament_target_dependencies(test_pose_graph_gtsam slamko_core)

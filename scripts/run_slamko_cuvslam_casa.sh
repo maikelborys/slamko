@@ -37,7 +37,7 @@ ros2 run slamko_ros provider_fusion_node --ros-args \
   -p traj_graph_path:="$OUT/graph.tum" \
   -p traj_slewed_path:="$OUT/traj_slewed.tum" \
   -p gate_live_pose:="${GATE:-false}" \
-  -p pose_graph_backend:="${PGBACKEND:-ceres}" \
+  -p pose_graph_backend:="${PGBACKEND:-isam2}" \
   -p live_gate_speed:="${GATESPD:-5.0}" \
   -p live_gate_rot:="${GATEROT:-10.0}" \
   -p use_imu_shock:=true \

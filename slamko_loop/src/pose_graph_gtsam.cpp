@@ -43,6 +43,47 @@ gtsam::Pose3 toGtsam(const SE3& T) {
   return gtsam::Pose3(gtsam::Rot3(T.so3().unit_quaternion()), T.translation());
 }
 
+// Native GTSAM YAW-only prior (the compass/BNO factor) — penalises ONLY the heading about world-Z
+// (yaw = atan2(R10,R00)), the single DOF a gravity-aligned VIO can't observe. Position + roll +
+// pitch stay free. Mirrors the Ceres YawPriorFactor exactly (wrap to (−π,π]); the 1×6 Jacobian
+// w.r.t. the Pose3 tangent is finite-differenced (one factor per keyframe at most, gated — cheap).
+class GtsamYawFactor : public gtsam::NoiseModelFactorN<gtsam::Pose3> {
+  double yaw_target_;
+  static double yawOf(const gtsam::Pose3& p) {
+    const gtsam::Matrix3 R = p.rotation().matrix();
+    return std::atan2(R(1, 0), R(0, 0));
+  }
+  static double wrap(double a) { return std::atan2(std::sin(a), std::cos(a)); }
+
+ public:
+  GtsamYawFactor(gtsam::Key k, double yaw_target, const gtsam::SharedNoiseModel& model)
+      : gtsam::NoiseModelFactorN<gtsam::Pose3>(model, k), yaw_target_(yaw_target) {}
+
+  gtsam::Vector evaluateError(const gtsam::Pose3& p,
+                              boost::optional<gtsam::Matrix&> H = boost::none) const override {
+    const double e = wrap(yawOf(p) - yaw_target_);
+    if (H) {
+      gtsam::Matrix J = gtsam::Matrix::Zero(1, 6);
+      const double eps = 1e-6;
+      for (int i = 0; i < 6; ++i) {
+        gtsam::Vector6 d = gtsam::Vector6::Zero();
+        d(i) = eps;
+        J(0, i) = wrap(wrap(yawOf(p.retract(d)) - yaw_target_) - e) / eps;
+      }
+      *H = J;
+    }
+    return (gtsam::Vector(1) << e).finished();
+  }
+};
+
+gtsam::SharedNoiseModel yawNoise(double sqrt_info, bool robust, double huber_delta) {
+  gtsam::SharedNoiseModel base = gtsam::noiseModel::Isotropic::Sigma(1, 1.0 / std::max(sqrt_info, 1e-9));
+  if (robust && huber_delta > 0.0)
+    return gtsam::noiseModel::Robust::Create(
+        gtsam::noiseModel::mEstimator::Huber::Create(huber_delta), base);
+  return base;
+}
+
 // slamko sqrt_info [trans;rot] -> a GTSAM noise model in [rot;trans] order. info = sqrt_infoᵀ·sqrt_info,
 // then block-swap so it matches GTSAM's tangent convention; the resulting cost is identical to Ceres.
 gtsam::SharedNoiseModel noiseFromSqrtInfo(const Eigen::Matrix<double, 6, 6>& sqrt_info,
@@ -62,14 +103,10 @@ gtsam::SharedNoiseModel noiseFromSqrtInfo(const Eigen::Matrix<double, 6, 6>& sqr
 }  // namespace
 
 PoseGraph::Result PoseGraph::optimizeGtsam_() {
-  // SAFETY: the GTSAM backend doesn't yet have a yaw-only factor → rather than silently DROP an
-  // active compass constraint, fall back to Ceres whenever yaw priors are present. So GTSAM is safe
-  // as the default: a compass-active run transparently uses Ceres, everything else uses GTSAM.
-  if (!yaw_priors_.empty()) return optimizeCeres_();
   Result res;
   res.num_nodes = static_cast<int>(nodes_.size());
   for (const auto& e : edges_) (e.is_loop ? res.num_loops : res.num_odom)++;
-  if (nodes_.empty() || (edges_.empty() && priors_.empty())) return res;
+  if (nodes_.empty() || (edges_.empty() && priors_.empty() && yaw_priors_.empty())) return res;
 
   gtsam::NonlinearFactorGraph graph;
   gtsam::Values initial;
@@ -94,7 +131,12 @@ PoseGraph::Result PoseGraph::optimizeGtsam_() {
         static_cast<gtsam::Key>(pr.id), toGtsam(pr.target),
         noiseFromSqrtInfo(pr.sqrt_info, pr.robust, cfg_.loop_huber_delta));
   }
-  // (yaw priors are handled by the early Ceres fall-back above — never reach here.)
+  // Unary yaw-only (compass/BNO) priors — native GTSAM factor (constrain only the heading).
+  for (const auto& yp : yaw_priors_) {
+    if (!nodes_.count(yp.id)) continue;
+    graph.emplace_shared<GtsamYawFactor>(static_cast<gtsam::Key>(yp.id), yp.yaw,
+                                         yawNoise(yp.sqrt_info, yp.robust, cfg_.loop_huber_delta));
+  }
 
   // Per-CONNECTED-COMPONENT gauge — identical policy to optimizeCeres_(): union-find the edges,
   // pin every FIXED node, and auto-pin the lowest-id node of each component WITHOUT a fixed node
@@ -163,13 +205,13 @@ struct Isam2State {
   gtsam::ISAM2 isam;
   std::size_t edges_applied = 0;   // how many of edges_ are already in the tree
   std::size_t priors_applied = 0;  // how many of priors_ are already in the tree
+  std::size_t yaw_applied = 0;     // how many of yaw_priors_ are already in the tree
   std::set<std::uint64_t> nodes_applied;
   std::set<std::uint64_t> gauged;  // nodes that already carry a gauge/fixed prior
 };
 }  // namespace
 
 PoseGraph::Result PoseGraph::optimizeGtsamIsam2_() {
-  if (!yaw_priors_.empty()) return optimizeCeres_();  // SAFETY: keep an active compass yaw (see LM).
   Result res;
   res.num_nodes = static_cast<int>(nodes_.size());
   for (const auto& e : edges_) (e.is_loop ? res.num_loops : res.num_odom)++;
@@ -215,6 +257,13 @@ PoseGraph::Result PoseGraph::optimizeGtsamIsam2_() {
         noiseFromSqrtInfo(pr.sqrt_info, pr.robust, cfg_.loop_huber_delta));
   }
   st.priors_applied = priors_.size();
+  for (std::size_t i = st.yaw_applied; i < yaw_priors_.size(); ++i) {
+    const auto& yp = yaw_priors_[i];
+    if (!st.nodes_applied.count(yp.id)) continue;
+    newFactors.emplace_shared<GtsamYawFactor>(static_cast<gtsam::Key>(yp.id), yp.yaw,
+                                              yawNoise(yp.sqrt_info, yp.robust, cfg_.loop_huber_delta));
+  }
+  st.yaw_applied = yaw_priors_.size();
   for (std::size_t i = st.edges_applied; i < edges_.size(); ++i) {
     const auto& e = edges_[i];
     if (!st.nodes_applied.count(e.from) || !st.nodes_applied.count(e.to)) continue;

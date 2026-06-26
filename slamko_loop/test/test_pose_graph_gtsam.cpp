@@ -106,6 +106,33 @@ TEST(PoseGraphGtsam, Isam2MatchesCeresOnADriftedLoop) {
   }
 }
 
+// The native GTSAM yaw-only factor must correct the heading the SAME way Ceres does (no Ceres
+// fall-back). Build a chain whose init yaw is wrong, pin the true heading on the last node with a
+// yaw prior, optimise with each backend, and check they agree + hit the target heading.
+TEST(PoseGraphGtsam, YawPriorMatchesCeres) {
+  auto build = [](PoseGraph& g) {
+    g.addKeyframe(0, yawTrans(0.0, 0, 0));
+    g.addKeyframe(1, yawTrans(0.30, 1, 0));   // init heading 0.30 rad (wrong)
+    g.addKeyframe(2, yawTrans(0.30, 2, 0));
+    g.addOdometryEdge(0, 1, yawTrans(0.30, 1, 0), 0.02, 0.05);  // loose on rotation
+    g.addOdometryEdge(1, 2, yawTrans(0.0, 1, 0), 0.02, 0.05);
+    g.addYawPrior(2, 0.0, 0.01, /*robust=*/false);  // true heading at node 2 = 0, tight
+  };
+  PoseGraphConfig cc; cc.backend = PoseGraphBackend::Ceres;
+  PoseGraph gc(cc); build(gc); gc.optimize();
+  PoseGraphConfig cg; cg.backend = PoseGraphBackend::GtsamLM;
+  PoseGraph gg(cg); build(gg); gg.optimize();
+
+  auto yawOf = [](const SE3& T) {
+    const Eigen::Matrix3d R = T.so3().unit_quaternion().toRotationMatrix();
+    return std::atan2(R(1, 0), R(0, 0));
+  };
+  // both must pull node-2 heading toward 0 (from 0.30) and agree with each other
+  EXPECT_LT(std::abs(yawOf(gc.pose(2))), 0.15) << "Ceres didn't apply the yaw prior";
+  EXPECT_LT(std::abs(yawOf(gg.pose(2))), 0.15) << "GTSAM yaw factor didn't apply";
+  EXPECT_LT(std::abs(yawOf(gc.pose(2)) - yawOf(gg.pose(2))), 0.05) << "Ceres vs GTSAM yaw disagree";
+}
+
 TEST(PoseGraphGtsam, FallbackOrSolveDoesNotThrow) {
   // GtsamLM on a trivial graph must not throw (either solves, or — if built without GTSAM — falls
   // back to Ceres transparently).

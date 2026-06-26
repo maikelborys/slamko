@@ -121,7 +121,7 @@ class ProviderFusionNode : public rclcpp::Node {
     // The node adds keyframes/edges incrementally + optimize()s periodically, so isam2 reaps its
     // O(touched) win live (vs Ceres' O(graph) batch re-solve). Needs slamko_loop built with
     // -DSLAMKO_LOOP_WITH_GTSAM=ON; otherwise gtsam/isam2 transparently fall back to Ceres + warn.
-    const auto pgb = declare_parameter("pose_graph_backend", std::string("ceres"));
+    const auto pgb = declare_parameter("pose_graph_backend", std::string("isam2"));
     if (pgb == "gtsam") graph_.setBackend(slamko::PoseGraphBackend::GtsamLM);
     else if (pgb == "isam2") graph_.setBackend(slamko::PoseGraphBackend::GtsamISAM2);
     RCLCPP_INFO(get_logger(), "pose-graph backend: %s", pgb.c_str());
