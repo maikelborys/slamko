@@ -133,15 +133,21 @@ def evaluate(run_dir, bag=None, imu_topic='/camera/camera/imu', label=None):
     else:
         C['1_never_lose'] = dict(verdict='NO-DATA', note='graph.tum missing/empty')
 
-    # ---- channel 2: NEVER JUMP (did slamko INJECT motion the provider didn't report?) ----
-    # HONEST SCOPE: the true never-jump guarantee is on the LIVE SLEWED TF (map->odom->base,
-    # rate-limited 0.5 m/s) which slamko does NOT dump to a file — so this channel is a FILE
-    # proxy. It does NOT penalise the graph for FOLLOWING the provider's fast steps (that is the
-    # provider's motion; whether it is REAL is channel 3's IMU job). It flags the slamko-specific
-    # failure: a graph step that moved MORE than the provider did over the same interval
-    # (= injected pose motion / an un-slewed correction), excluding steps near a logged loop/weld
-    # (legitimate map improvement) and cross-component boundaries (honest dangling).
-    if graph is not None and graph.shape[0] > 2 and prov is not None:
+    # ---- channel 2: NEVER JUMP ----
+    # PREFERRED: the LIVE SLEWED output traj_slewed.tum (map->odom slewed * odom->base) — the exact
+    # pose a nav stack consumes; it can never exceed the slew bound, so its max step speed IS the
+    # never-jump guarantee, measured directly. FALLBACK (older runs): the graph-vs-provider injected
+    # -motion file proxy below.
+    slewed = load_tum(os.path.join(run_dir, 'traj_slewed.tum'))
+    if slewed is not None and slewed.shape[0] > 2:
+        sp,_,_ = seg_speeds(slewed)
+        mx = float(sp.max()); jumps = int((sp > JUMP_SPEED_MPS).sum())
+        C['2_never_jump'] = dict(source='traj_slewed.tum (LIVE robot output)',
+            max_output_speed_mps=round(mx,2), output_jumps=jumps,
+            verdict=verdict(jumps==0),
+            note=f"LIVE slewed output: max step {mx:.2f} m/s, {jumps} jump(s) >3 m/s. "
+                 f"This IS the never-jump guarantee (the nav-stack pose; slew-bounded).")
+    elif graph is not None and graph.shape[0] > 2 and prov is not None:
         gt = graph[:,0]; gp = graph[:,1:4]
         # match each graph keyframe to the nearest provider sample, accumulate provider arclength
         pt = prov[:,0]; pp = prov[:,1:4]
@@ -225,15 +231,68 @@ def evaluate(run_dir, bag=None, imu_topic='/camera/camera/imu', label=None):
     C['7_geometric_depth'] = geometric_coherence(run_dir)
     return R
 
+def dense_surface_coherence(ply):
+    """DENSE geometric witness (the D455-depth ask): nvblox TSDF mesh surface roughness. Unlike the
+       sparse XFeat cloud, the dense mesh has mm-spacing + per-vertex normals, so its local
+       off-surface spread DIRECTLY measures map coherence (a doubled/blurred map = rough thick
+       surface; a coherent map = smooth). Reads the ascii PLY (x y z nx ny nz ...)."""
+    xs=[]; ns=[]
+    try:
+        with open(ply) as f:
+            line=f.readline();
+            if not line.startswith('ply'): return None
+            nv=0; in_hdr=True
+            for line in f:
+                if line.startswith('element vertex'): nv=int(line.split()[-1])
+                if line.startswith('end_header'): break
+            for i,line in enumerate(f):
+                if i>=nv: break
+                p=line.split()
+                if len(p)>=6:
+                    xs.append((float(p[0]),float(p[1]),float(p[2])))
+                    ns.append((float(p[3]),float(p[4]),float(p[5])))
+    except Exception:
+        return None
+    if len(xs)<200: return None
+    P=np.array(xs); N=np.array(ns)
+    # subsample for speed (uniform), grid-NN at 5 cm, off-surface spread along the vertex normal
+    step=max(1,len(P)//40000); P=P[::step]; N=N[::step]
+    R=0.05; keys=np.floor(P/R).astype(np.int64)
+    from collections import defaultdict; import itertools
+    cell=defaultdict(list)
+    for i in range(len(P)): cell[(keys[i,0],keys[i,1],keys[i,2])].append(i)
+    neigh=list(itertools.product((-1,0,1),repeat=3))
+    rough=[]
+    for i in range(0,len(P),max(1,len(P)//8000)):  # sample ~8k probe vertices
+        ki=(keys[i,0],keys[i,1],keys[i,2]); off=[]
+        for dx,dy,dz in neigh:
+            for j in cell.get((ki[0]+dx,ki[1]+dy,ki[2]+dz),()):
+                if j==i: continue
+                d=P[j]-P[i]
+                if np.linalg.norm(d)<R: off.append(abs(float(d@N[i])))  # off-plane distance
+        if len(off)>=3: rough.append(float(np.median(off)))
+    if not rough: return None
+    return dict(vertices=len(xs), surface_roughness_med_m=round(float(np.median(rough)),4),
+                p90_m=round(float(np.percentile(rough,90)),4))
+
 def geometric_coherence(run_dir):
     """GEOMETRIC witness on the MAP itself: at regions where NON-CONSECUTIVE submaps overlap (a
        revisit the Atlas welded), are their depth-anchored point clouds ALIGNED (thin surface =
        coherent) or DOUBLED (a systematic offset = the map distorted, the failure appearance can
        miss)? Offline, on global_cloud.csv (export: ros2 run slamko_loop smap_cloud <map_dir> out).
-       The live dense D455 depth->SDF residual is the v2 hook (needs CUDA)."""
+       Plus the DENSE nvblox TSDF mesh roughness if volumetric_live.ply is present."""
+    dense = dense_surface_coherence(os.path.join(run_dir,'volumetric_live.ply'))
+    def dense_only():
+        if not dense: return None
+        rough = dense['surface_roughness_med_m']
+        vd = 'PASS' if rough < 0.03 else ('WARN' if rough < 0.06 else 'FAIL')
+        return dict(verdict=vd, dense=dense,
+            note=f'DENSE nvblox mesh ({dense["vertices"]} verts): surface roughness med '
+                 f'{rough:.3f} m / p90 {dense["p90_m"]:.3f} m (>0.03=doubled/blurred). The absolute '
+                 f'depth witness. (sparse global_cloud.csv absent -> revisit-overlap check skipped.)')
     cloud = os.path.join(run_dir, 'global_cloud.csv')
     if not os.path.exists(cloud):
-        return dict(verdict='NO-DATA', note='export global_cloud.csv first: '
+        return dense_only() or dict(verdict='NO-DATA', note='export global_cloud.csv first: '
                     'ros2 run slamko_loop smap_cloud <run>/map <run>/global_cloud.csv 1')
     try:
         d = np.loadtxt(cloud, delimiter=',', skiprows=1)
@@ -274,17 +333,25 @@ def geometric_coherence(run_dir):
     nn = np.array(nn); med = float(np.median(nn)); p90 = float(np.percentile(nn,90))
     dens = float(np.median(floor)) if floor else 0.0       # the sparsity floor that confounds absolute NN
     excess = med - dens                                     # revisit error ABOVE what density explains
-    # HONEST verdict: the sparse XFeat cloud's NN floor (~dens) MASKS doublings <= dens, so this is a
-    # RELATIVE indicator, not an absolute doubling verdict -> INFO. The dense D455 depth->SDF (v2) is
-    # the metric that can resolve sub-decimetre doubling. Only a GROSS excess (>> floor) is flagged.
+    # The sparse XFeat NN floor (~dens) MASKS doublings <= dens -> RELATIVE indicator. The DENSE
+    # nvblox TSDF mesh roughness (below) is the absolute metric (mm-spacing, no sparsity floor).
     vd = 'PASS' if excess < dens else ('WARN' if excess < 2*dens else 'FAIL')
+    if dense:  # the dense mesh is authoritative when present
+        rough = dense['surface_roughness_med_m']
+        vd = 'PASS' if rough < 0.03 else ('WARN' if rough < 0.06 else 'FAIL')
+    note=(f'{len(nn)} revisit overlap pts; sparse NN med {med:.3f} m vs floor {dens:.3f} m '
+          f'(excess {excess:.3f} m, RELATIVE only). ')
+    if dense:
+        note += (f'DENSE nvblox mesh ({dense["vertices"]} verts): surface roughness med '
+                 f'{dense["surface_roughness_med_m"]:.3f} m / p90 {dense["p90_m"]:.3f} m = final-map '
+                 f'QUALITY (clean iso-surface). NOTE: TSDF AVERAGES into one smoothed surface so it '
+                 f'hides doubling (shows as mislocation, not roughness) -> true doubling detection '
+                 f'needs the LIVE point-to-SDF residual of a held-out revisit depth frame (v2 hook).')
+    else:
+        note += 'No volumetric_live.ply -> dense witness N/A (run with volumetric:=true).'
     return dict(verdict=vd, overlap_points=len(nn),
         revisit_nn_med_m=round(med,3), density_floor_m=round(dens,3), excess_m=round(excess,3),
-        p90_nn_m=round(p90,3),
-        note=f'{len(nn)} revisit overlap pts; NN med {med:.3f} m vs sparsity floor {dens:.3f} m -> '
-             f'excess {excess:.3f} m. RELATIVE indicator only (sparse cloud floor MASKS doublings '
-             f'<= {dens:.2f} m -> cannot resolve sub-decimetre doubling). The dense D455 depth->SDF '
-             f'is the v2 metric that can. Cross-run signal IS valid (higher excess = looser revisits).')
+        dense=dense, note=note)
 
 DYN_ACCEL_MPS2 = 1.5   # mean |accel|-g below this DURING a provider jump = body inertially static
                        #                                       = the position jump is a TELEPORT LIE

@@ -120,9 +120,16 @@ class ProviderFusionNode : public rclcpp::Node {
     const auto provider_path = declare_parameter("traj_provider_path", std::string(""));
     const auto global_path = declare_parameter("traj_global_path", std::string(""));
     graph_path_ = declare_parameter("traj_graph_path", std::string(""));
+    const auto slewed_path = declare_parameter("traj_slewed_path", std::string(""));
     if (!fused_path.empty()) fused_file_ = std::fopen(fused_path.c_str(), "w");
     if (!provider_path.empty()) provider_file_ = std::fopen(provider_path.c_str(), "w");
     if (!global_path.empty()) global_file_ = std::fopen(global_path.c_str(), "w");
+    // traj_slewed.tum = the LIVE rate-limited output to the robot (map->odom slewed * odom->base).
+    // This is the pose a navigation stack actually consumes: it can NEVER jump (the slew bounds it
+    // to slew_trans_/slew_rot_), so the never-jump guarantee is directly measurable from it (vs the
+    // file-proxy in slamko_eval.py channel 2). fused.tum/global.tum apply the correction EXACTLY
+    // (they jump at a loop closure by design); only THIS one is the smoothed robot output.
+    if (!slewed_path.empty()) slewed_file_ = std::fopen(slewed_path.c_str(), "w");
 
     pub_fused_ = create_publisher<nav_msgs::msg::Odometry>("~/fused_odometry", 50);
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
@@ -1139,6 +1146,9 @@ class ProviderFusionNode : public rclcpp::Node {
     if (dt_t.norm() > max_t) dt_t *= max_t / dt_t.norm();
     if (dt_r.norm() > max_r) dt_r *= max_r / dt_r.norm();
     T_map_odom_pub_ = T_map_odom_pub_ * slamko::SE3(slamko::SO3::exp(dt_r), dt_t);
+
+    // the LIVE robot pose = slewed map->odom * odom->base; dump it (the never-jump ground truth).
+    if (slewed_file_) dumpTum(slewed_file_, last_sample_.t, T_map_odom_pub_ * last_sample_.T_OB);
 
     const auto stamp = now();
     geometry_msgs::msg::TransformStamped tf_mo;
@@ -2393,6 +2403,7 @@ class ProviderFusionNode : public rclcpp::Node {
   std::FILE* fused_file_ = nullptr;
   std::FILE* provider_file_ = nullptr;
   std::FILE* global_file_ = nullptr;
+  std::FILE* slewed_file_ = nullptr;
   std::string graph_path_;
   std::unordered_map<std::uint64_t, double> node_time_;
 

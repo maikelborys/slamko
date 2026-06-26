@@ -35,6 +35,8 @@ ros2 run slamko_ros provider_fusion_node --ros-args \
   -p traj_fused_path:="$OUT/fused.tum" \
   -p traj_provider_path:="$OUT/provider.tum" \
   -p traj_graph_path:="$OUT/graph.tum" \
+  -p traj_slewed_path:="$OUT/traj_slewed.tum" \
+  -p use_imu_shock:=true \
   -p reloc:=true \
   -p use_scan_context:="${SC:-false}" \
   -p sc_max_dist:="${SC_MAXD:-0.4}" \
