@@ -54,9 +54,15 @@ lifelong-SLAM payoff (a million-pose map stays cheap to update). Batch ATE on MH
 identical to Ceres 19.10 / GtsamLM 19.14. Unit test `Isam2MatchesCeresOnADriftedLoop` green
 (<5 mm/<5 mrad). v1 limitation: cosmetic — the iSAM2 path doesn't fill Result.initial/final_cost.
 
-**NEXT:** a `pose_graph_backend` ROS param in provider_fusion_node + a full-stack GTSAM build (live
-A/B), and wiring the incremental path so provider_fusion calls optimize() per-keyframe (today it
-batch-rebuilds) to actually reap the O(touched) win live. iSAM2 yaw-prior + multi-prior edge cases.
+**Compass yaw-prior = native GTSAM factor (2026-06-26, commit d13507a).** `GtsamYawFactor` (unary on
+Pose3, error = wrap(atan2(R10,R00) − target), 1×6 finite-diff Jacobian, robust-wrappable) in BOTH
+the LM and incremental iSAM2 paths (iSAM2 tracks `yaw_applied`). NO more Ceres fall-back for compass.
+Test `YawPriorMatchesCeres`: Ceres and GTSAM pull a node's heading 0.30→0 identically (<0.05 rad).
+GTSAM is now auto-detected (CMake option default ON) and **iSAM2 is the live default**
+(provider_fusion `pose_graph_backend=isam2`); the library `PoseGraphConfig` default stays Ceres.
+
+**NEXT:** call `optimize()` per-keyframe live (today event-driven) to reap MORE of the O(touched)
+win; a live GT-bag ATE A/B; iSAM2 multi-prior cross-session soak.
 
 ## 2026-06-26 — DENSE geometric channel: nvblox ESDF query + end-to-end (step 2) + HONEST finding
 

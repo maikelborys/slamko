@@ -1,5 +1,20 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
+## 2026-06-26 — iSAM2 is now the DEFAULT live backend (auto-detected, compass native) ✅
+
+`pose_graph_backend` defaults to **isam2** + GTSAM is **auto-detected** in CMake (option default ON +
+`find_package(GTSAM QUIET)` → enabled when installed, Ceres-only when absent). So a stock build on a
+GTSAM machine runs the incremental Bayes-tree solver live; without GTSAM it transparently falls back
+to Ceres. The compass yaw-prior is now a **native GTSAM factor** (no Ceres fall-back) — see
+slamko_loop STATUS.
+
+**Validated as default on the HARDEST path** (CASA1_wall brutal, default backend = isam2): **9 Atlas
+breaks (9 disjoint components), 0 batch-rebuild fallbacks, 0 crashes**, coherent map (718 poses, 27
+submaps) — the per-component gauge-root logic handles the breaks cleanly. The library
+`PoseGraphConfig` default stays Ceres (conservative for other consumers/tests); only the live node
+defaults to iSAM2. Scope: GTSAM is ONLY the pose-graph solver — nvblox volumetric TSDF, provider,
+XFeat reloc unchanged.
+
 ## 2026-06-26 — `pose_graph_backend` ROS param: iSAM2 LIVE, 6× faster ✅
 
 `provider_fusion_node` exposes `pose_graph_backend` (`ceres` default | `gtsam` | `isam2`) →
