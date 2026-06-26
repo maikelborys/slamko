@@ -67,6 +67,7 @@
 #include "slamko_loop/mappoint_store.hpp"
 #include "slamko_loop/pose_graph.hpp"
 #include "slamko_loop/xfeat_relocalizer.hpp"
+#include "slamko_loop/imu_shock.hpp"
 #include "slamko_ros/viz_sink.hpp"
 #include "slamko_tsdf/live_driver.hpp"
 #include "slamko_tsdf/nvblox_backend.hpp"
@@ -388,6 +389,18 @@ class ProviderFusionNode : public rclcpp::Node {
       atlas_break_on_quality_ = declare_parameter("atlas_break_on_quality", false);
       quality_break_speed_ = declare_parameter("quality_break_speed", 6.0);     // m/s implausible
       quality_break_jump_ = declare_parameter("quality_break_jump", 1.5);       // m/s speed step
+      // CATASTROPHIC tier (P0.1): above this a divergence HARD-BREAKS (dangles), never soft-
+      // bridges — measured clean casa max 17 m/s, cuVSLAM 90 m teleport 4223 m/s, so 20 separates.
+      quality_break_hard_speed_ = declare_parameter("quality_break_hard_speed", 20.0);
+      quality_break_hard_jump_ = declare_parameter("quality_break_hard_jump", 15.0);
+      // P0.3 IMU-shock/kidnap detector (raw accel-jerk + gyro spike) — the knock/lift/flip
+      // trigger the pose-based gate misses. On a shock the interval seals + breaks (dangle).
+      use_imu_shock_ = declare_parameter("use_imu_shock", true);
+      { slamko::ImuShockConfig sc;
+        sc.jerk_thresh = declare_parameter("imu_shock_jerk", 200.0);
+        sc.gyro_thresh = declare_parameter("imu_shock_gyro", 9.0);
+        sc.freefall_thresh = declare_parameter("imu_shock_freefall", 2.5);
+        imu_shock_ = slamko::ImuShockDetector(sc); }
       quality_break_cov_ = declare_parameter("quality_break_cov", 0.0);         // cov trace, 0=off
       quality_break_cooldown_ = declare_parameter("quality_break_cooldown", 1.0);  // s
       quality_recover_samples_ =
@@ -864,6 +877,21 @@ class ProviderFusionNode : public rclcpp::Node {
     const Eigen::Vector3d w(m->angular_velocity.x, m->angular_velocity.y,
                             m->angular_velocity.z);
     dr_R_ = dr_R_ * slamko::SO3::exp(w * dt);
+    // P0.3 IMU-shock/kidnap trigger: a clean lift/bump/flip is INVISIBLE to the pose-based
+    // quality-break (the provider coasts on IMU → smooth pose) but spikes the RAW IMU. Flag it
+    // so onOdometry seals + BREAKS the interval (unobservable → dangle honestly, re-anchor on
+    // the next recognized revisit) — never trust a pose dead-reckoned through a knock.
+    if (use_imu_shock_) {
+      const Eigen::Vector3d a(m->linear_acceleration.x, m->linear_acceleration.y,
+                              m->linear_acceleration.z);
+      const slamko::ShockEvent ev = imu_shock_.feed(a, w, dt, t);
+      if (ev.detected()) {
+        imu_shock_pending_ = true;
+        RCLCPP_WARN(get_logger(),
+                    "IMU SHOCK: %s (jerk=%.0f |a|=%.1f |w|=%.1f) -> seal+break the interval",
+                    ev.name(), ev.jerk, ev.accel_mag, ev.gyro_mag);
+      }
+    }
   }
 
   void onOdometry(const nav_msgs::msg::Odometry::SharedPtr msg) {
@@ -941,7 +969,17 @@ class ProviderFusionNode : public rclcpp::Node {
       if (atlas_break_on_quality_) {
         const double cov_tr = s.cov(0, 0) + s.cov(1, 1) + s.cov(2, 2);
         const bool incoherent = cur_speed > quality_break_speed_ || jump > quality_break_jump_ ||
-                                (quality_break_cov_ > 0.0 && cov_tr > quality_break_cov_);
+                                (quality_break_cov_ > 0.0 && cov_tr > quality_break_cov_) ||
+                                imu_shock_pending_;  // P0.3: a knock/kidnap the pose hides
+        // CATASTROPHIC tier (P0.1, the never-LIE gate): a PHYSICALLY-IMPOSSIBLE jump (the cuVSLAM
+        // 90 m teleport — measured >20 m/s vs <17 m/s on clean runs) must HARD-BREAK into a
+        // dangling island, NEVER soft-bridge. Soft-bridging a catastrophic gap connects two
+        // halves 90 m apart with a "weak" edge = a confident-looking lie about their relative
+        // placement. A glitch (6-20 m/s) stays soft (recoverable); a teleport dangles honestly.
+        const bool catastrophic = cur_speed > quality_break_hard_speed_ ||
+                                  jump > quality_break_hard_jump_ ||
+                                  imu_shock_pending_;  // a knock = unobservable interval → dangle
+        imu_shock_pending_ = false;                    // consume the one-shot shock flag
         if (!tracking_lost_) {
           if (incoherent && kfs_in_component_ >= atlas_min_component_kfs_) {
             // ENTER LOST: seal the GOOD map up to here. In BREAK mode the bad bridge becomes a
@@ -958,8 +996,12 @@ class ProviderFusionNode : public rclcpp::Node {
             coherent_streak_ = 0;
             loss_in_segment_ = true;
             seg_hard_loss_ = true;
-            if (!quality_soft_bridge_)
-              pending_break_ = true;   // the bad bridge is its own (dangling) component
+            if (!quality_soft_bridge_ || catastrophic)
+              pending_break_ = true;   // hard-break: dangling component (ALWAYS on catastrophic)
+            if (catastrophic)
+              RCLCPP_WARN(get_logger(),
+                          "  -> CATASTROPHIC divergence (speed=%.0f jump=%.0f) -> HARD BREAK "
+                          "(dangle honestly, never soft-bridge a teleport)", cur_speed, jump);
             ++quality_breaks_;
           }
         } else {
@@ -2492,6 +2534,10 @@ class ProviderFusionNode : public rclcpp::Node {
   int coherent_streak_ = 0;           // consecutive coherent samples since the last incoherence
   int quality_recover_samples_ = 30;  // sustained coherent samples needed to declare recovery
   double quality_break_speed_ = 6.0, quality_break_jump_ = 1.5, quality_break_cov_ = 0.0;
+  double quality_break_hard_speed_ = 20.0, quality_break_hard_jump_ = 15.0;  // catastrophic tier (P0.1)
+  bool use_imu_shock_ = true;                 // P0.3 IMU-shock kidnap/knock trigger
+  slamko::ImuShockDetector imu_shock_;        // raw-IMU shock detector
+  bool imu_shock_pending_ = false;            // one-shot flag set in onImu, consumed in onOdometry
   double quality_break_cooldown_ = 1.0, last_quality_break_t_ = -1e9, last_speed_ = -1.0;
   int quality_breaks_ = 0, quality_recoveries_ = 0;
   bool quality_soft_bridge_ = false;  // soft-connect the bad maneuver instead of breaking it off
