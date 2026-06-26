@@ -9,6 +9,10 @@ OUT=${3:-/tmp/slamko_caminfo}
 source /opt/ros/jazzy/setup.bash
 source ~/coding/isaac_ros_ws/install/setup.bash
 source ~/coding/slamko/install/setup.bash 2>/dev/null
+# provider_fusion links slamko_tsdf → nvblox; the rebuilt binary needs the nvblox lib dir on the
+# loader path (RPATH not baked). WITHOUT this it exits 127 'libnvblox_lib.so: cannot open' BEFORE
+# processing any odometry — which the prior session MISDIAGNOSED as a 'body_tf 0-odometry' bug.
+export LD_LIBRARY_PATH=/home/maikel/ros2_ws/install/nvblox_ros/lib:${LD_LIBRARY_PATH}
 rm -rf "$OUT"; mkdir -p "$OUT/map"
 
 echo "[pre] reap"
