@@ -2,6 +2,28 @@
 
 Living, dated progress + numbers log. Plan: [`PLAN_P2_loop.md`](PLAN_P2_loop.md).
 
+## 2026-06-26 — DENSE geometric channel: point-to-SDF ICP primitive (step 1, unit-validated)
+
+`include/slamko_loop/sdf_registration.hpp` (header-only, Eigen + slamko_core SE3). The STRONG
+geometric verify/align channel the sparse ScanContext is not (user's call: "our submaps have
+nvblox geometry — match and align with THAT"). At a revisit / after a brusque-motion or blackout
+divergence, the robot is physically at a place whose surfaces are ALREADY in the nvblox TSDF/ESDF;
+a depth cloud placed at the drifted pose sits offset from them, and minimizing the SDF value at
+each point (residual = signed distance, 0 when aligned) snaps the cloud onto the existing geometry
+— that snap IS the drift/loop correction. Viewpoint-robust where appearance + sparse fail (a room's
+dense shape is the same regardless of facing, given shared structure). = OKVIS SubmapIcpError /
+Voxgraph field-align (RESEARCH_LIFELONG_NAV_ARCH §5). Gauss-Newton on SE3 (twist [rho;omega], right
+perturbation dx/dξ = R·[I|-[p]_×]), Huber kernel, correspondence gate, min-inlier guard. DECOUPLED
+(Hard Rule #2): templated on a DistanceField functor `p->{dist,grad}`, so it unit-tests against an
+analytic field AND the nvblox ESDF query (slamko_tsdf) plugs in behind the same functor.
+**3 gtests green** (test_sdf_registration): RecoversKnownTransform (drifted corner cloud → recovers
+the SE3 to <1e-2, rms <1e-3, >200 inliers), RejectsTooFewInliers (far cloud → not converged),
+EmptyCloudSafe. NEXT (step 2): expose `queryDistanceField(points)->{dist,grad}` on the nvblox ESDF
+in slamko_tsdf (VolumetricBackend); (step 3) provider_fusion runs registerToSdf of the live depth
+cloud against the map BEFORE integrating the frame (avoid double-surface), gate by rms+inliers, add
+the correction as a loop/prior constraint → this is the recovery-from-brusque-motion that needs a
+recognized revisit. This is the strong answer to the recall limiter + the never-distorted goal.
+
 ## 2026-06-26 — Geometric loop channel: LIVE wired (step 3) + honest A/B finding
 
 Steps 1-3 SHIPPED (descriptor → per-KF retrieval → live union with VPR; commits a50129e,
