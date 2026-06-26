@@ -48,9 +48,14 @@ cuVSLAM (OKVIS can't hold 45 fps); MEASURE the slamko LAYER instead.**
 **The "travesuras" (small things that bit — check here first):**
 - **cuVSLAM rejects a dim-mismatched `camera_info`** (640 img vs 848 info) — inject the correct dims
   (`cam_info_inject_{640,848}.py`). Use a dimension-consistent bag.
-- **BLOCKER (open):** the cuVSLAM **inject-variant** pipeline gives `body_tf → provider_fusion` =
-  **0 odometry** (wall/brutal bags) — a plumbing connection bug, NOT slamko logic (direct-infra casa
-  runs work). The evaluator turns this into a precise diagnostic (stream present, slamko consumed 0).
+- **RESOLVED (was misdiagnosed as a 'body_tf' bug):** the cuVSLAM inject-variant (wall/brutal)
+  gave provider_fusion 0 odometry NOT because of body_tf (verified: cuVSLAM→body_tf both publish at
+  29.93 Hz, TF resolves) but because **provider_fusion crashed at startup, exit 127
+  `libnvblox_lib.so: cannot open`** — since the S3 fix it links nvblox and needs the lib on the
+  loader path even with volumetric OFF. The inject run scripts lacked the `LD_LIBRARY_PATH` export
+  the direct script had. One-line fix (commit 3f8bb65). **CASA1_wall now runs the cuVSLAM rumbo
+  end-to-end** (776 poses, 27 submaps, never-lost fired: quality-break 11/11, IMU-shock 16; provider
+  diverged 38 km on the jolts yet slamko stayed coherent — the immortal thesis on the brutal bag).
 - **never-jump:** the `map→odom` slew is NOT sufficient on its own — the provider teleport rides
   `odom→base`; you need `gate_live_pose`. Threshold = **per-platform robot-max-speed + margin**
   (5.0 m/s too lax for casa, 2.5 worked; the IMU referee tells you what's real fast-motion vs teleport).
@@ -293,8 +298,8 @@ real-robot first. **Write this up as `PLAN_NAV2_NVBLOX_01.md` when starting.**
 - **Unify the gate threshold with the quality-break** so channel 2 (live output) and channel 3
   (map-seal recall) move together (today the gate at 2.5 m/s caught more than the quality-break at
   4.0). Feed a gate-detected teleport into the seal path.
-- **Fix the cuVSLAM inject-variant `body_tf → provider_fusion` 0-odometry bug** → unblocks
-  wall/brutal on the cuVSLAM rumbo (direct-infra works; the inject path drops the odom).
+- ~~Fix the cuVSLAM inject-variant body_tf 0-odometry bug~~ **DONE (commit 3f8bb65)** — it was a
+  missing `LD_LIBRARY_PATH` (provider_fusion exit-127 on libnvblox), not body_tf; wall/brutal now run.
 - **Channel 7 v2 — live point-to-SDF revisit residual** (the only metric that resolves
   sub-decimetre doubling; sparse + dense-mesh both proven blind offline).
 
