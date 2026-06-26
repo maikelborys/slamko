@@ -10,6 +10,9 @@ OUT=${3:-/tmp/slamko_cuvslam_casa}
 source /opt/ros/jazzy/setup.bash
 source ~/coding/isaac_ros_ws/install/setup.bash
 source ~/coding/slamko/install/setup.bash 2>/dev/null
+# nvblox runtime lib (provider_fusion links slamko_tsdf → nvblox; the rebuilt binary needs
+# the nvblox lib dir on the loader path since its RPATH isn't baked in).
+export LD_LIBRARY_PATH=/home/maikel/ros2_ws/install/nvblox_ros/lib:${LD_LIBRARY_PATH}
 rm -rf "$OUT"; mkdir -p "$OUT/map"
 
 echo "[pre] reap"
@@ -33,6 +36,8 @@ ros2 run slamko_ros provider_fusion_node --ros-args \
   -p traj_provider_path:="$OUT/provider.tum" \
   -p traj_graph_path:="$OUT/graph.tum" \
   -p reloc:=true \
+  -p use_scan_context:="${SC:-false}" \
+  -p sc_max_dist:="${SC_MAXD:-0.4}" \
   -p atlas_break_on_quality:=true \
   -p quality_break_speed:="${QBREAK_SPEED:-4.0}" \
   -p quality_break_jump:="${QBREAK_JUMP:-1.5}" \

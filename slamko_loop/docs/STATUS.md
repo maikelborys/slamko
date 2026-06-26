@@ -2,6 +2,26 @@
 
 Living, dated progress + numbers log. Plan: [`PLAN_P2_loop.md`](PLAN_P2_loop.md).
 
+## 2026-06-26 — Geometric loop channel: LIVE wired (step 3) + honest A/B finding
+
+Steps 1-3 SHIPPED (descriptor → per-KF retrieval → live union with VPR; commits a50129e,
+9610ab2, df1310b). `use_scan_context` param, query fed `R_world_body·(body_T_cam·p_cam)`,
+`relocalize(query,query_pts)` UNIONs `geometricCandidates()` with the VPR top-N. Built in the
+gravity-aligned WORLD frame (z-up, recentered at the KF — tilt-robust). 14 loop tests green.
+**LIVE diagnostic CONFIRMS the channel is correct**: on casa (cuVSLAM provider) it is fed
+(qpts≈200), per-KF kf_sc fully built (50/50 per submap), and it matches with ScanContext
+distance **0.000–0.062** where geometric overlap exists (well under the 0.40 gate).
+**HONEST A/B (CASA1_100cmH different-heading return, SC ON vs OFF): NO recall gain DEMONSTRATED
+(5 = 5 verified loops, +0geom).** Two reasons, both expected: (1) the casa returns are either
+same-heading (the appearance VPR already retrieves them → geometry correctly adds nothing new)
+or a LARGE viewpoint change where the ~90° depth-cam FOV has too little overlap for EITHER
+channel (the documented physics — geometry can't match what doesn't overlap); (2) the A/B was
+contaminated by cuVSLAM's run-to-run divergence (provider |disp|max 8.3 m OFF vs 83.5 m ON — the
+provider instability, independent of this channel). A clean gain needs a STABLE provider run +
+a MODERATE-viewpoint-change return (partial overlap) — the regime these bags don't cleanly hit.
+The feature is correct and committed; the recall-gain demo is pending the right bag + a stable
+provider. (LiDAR/360° or a 2nd rear camera would widen the overlap envelope — the real lever.)
+
 ## 2026-06-26 — Geometric loop channel: ScanContext descriptor (step 1/N, unit-validated)
 
 `include/slamko_loop/scan_context.hpp` (header-only, Eigen only — Hard Rule #2, no OpenCV). The
