@@ -89,6 +89,12 @@ target_link_libraries(loop_offline slamko_loop Eigen3::Eigen Ceres::ceres)
 ament_target_dependencies(loop_offline slamko_core)
 install(TARGETS loop_offline RUNTIME DESTINATION lib/${PROJECT_NAME})
 
+# pose_graph_tum_ab — solver A/B on a real EuRoC trajectory (odom.tum + gt.tum -> ATE).
+add_executable(pose_graph_tum_ab tools/pose_graph_tum_ab.cpp)
+target_link_libraries(pose_graph_tum_ab slamko_loop Eigen3::Eigen Ceres::ceres)
+ament_target_dependencies(pose_graph_tum_ab slamko_core)
+install(TARGETS pose_graph_tum_ab RUNTIME DESTINATION lib/${PROJECT_NAME})
+
 # vpr_recall_diag — P-B per-KF VPR recall diagnostic (start-room DB vs return
 # queries vs full-map distractors; R@k + margins + per-query CSV).
 add_executable(vpr_recall_diag tools/vpr_recall_diag.cpp)

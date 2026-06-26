@@ -131,7 +131,13 @@ int main(int argc, char** argv) {
       if (lm.descriptor_row >= 0) lid2row[s][lm.id] = lm.descriptor_row;
 
   // ---- build the global pose-graph (odometry chain) ----
-  PoseGraph pg;
+  // --backend ceres|gtsam selects the solver (gtsam needs -DSLAMKO_LOOP_WITH_GTSAM=ON; else it
+  // falls back to Ceres + warns). Same submaps + same edges -> isolates the SOLVER for an ATE A/B.
+  slamko::PoseGraphConfig pgcfg;
+  const std::string backend = argval(argc, argv, "--backend", "ceres");
+  if (backend == "gtsam") pgcfg.backend = slamko::PoseGraphBackend::GtsamLM;
+  std::printf("pose-graph backend: %s\n", backend.c_str());
+  PoseGraph pg(pgcfg);
   for (std::size_t s = 0; s < maps.size(); ++s)
     for (std::size_t k = 0; k < maps[s].keyframes.size(); ++k)
       pg.addKeyframe(gid(s, k), maps[s].anchor * maps[s].keyframes[k].T_WB);
