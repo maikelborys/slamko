@@ -28,6 +28,7 @@
 // them, optimization moves to a worker (disposable-graph rule: the provider
 // passthrough must never block on the solver).
 
+#include <chrono>
 #include <cstdio>
 #include <deque>
 #include <filesystem>
@@ -115,6 +116,15 @@ class ProviderFusionNode : public rclcpp::Node {
     gate_live_pose_  = declare_parameter("gate_live_pose", false);
     live_gate_speed_ = declare_parameter("live_gate_speed", 5.0);    // m/s, impossible for the robot
     live_gate_rot_   = declare_parameter("live_gate_rot", 10.0);     // rad/s
+
+    // Global pose-graph solver: ceres (default) | gtsam (batch LM) | isam2 (incremental Bayes tree).
+    // The node adds keyframes/edges incrementally + optimize()s periodically, so isam2 reaps its
+    // O(touched) win live (vs Ceres' O(graph) batch re-solve). Needs slamko_loop built with
+    // -DSLAMKO_LOOP_WITH_GTSAM=ON; otherwise gtsam/isam2 transparently fall back to Ceres + warn.
+    const auto pgb = declare_parameter("pose_graph_backend", std::string("ceres"));
+    if (pgb == "gtsam") graph_.setBackend(slamko::PoseGraphBackend::GtsamLM);
+    else if (pgb == "isam2") graph_.setBackend(slamko::PoseGraphBackend::GtsamISAM2);
+    RCLCPP_INFO(get_logger(), "pose-graph backend: %s", pgb.c_str());
 
     slamko::ProviderChainConfig ccfg;
     ccfg.kf_min_translation = declare_parameter("kf_min_translation", ccfg.kf_min_translation);
@@ -654,6 +664,12 @@ class ProviderFusionNode : public rclcpp::Node {
     // Seal the trailing partial submap so a bag-end map is complete.
     if (!pending_kfs_.empty() && !map_dir_.empty()) sealSubmap();
 
+    // Pose-graph solve cost over the run (the live Ceres O(graph) vs iSAM2 O(touched) measure).
+    if (opt_calls_ > 0)
+      RCLCPP_INFO(get_logger(),
+                  "pose-graph solve: %d optimize() call(s), %.1f ms total, %.3f ms/call (backend=%d)",
+                  opt_calls_, opt_ms_, opt_ms_ / opt_calls_, static_cast<int>(graph_.backend()));
+
     // Final volumetric flush: one last bend at the FINAL optimized graph (every kf
     // re-poseable frame snapped to its corrected pose) + a mesh/costmap artifact.
     if (volumetric_enable_ && vmap_) {
@@ -881,7 +897,7 @@ class ProviderFusionNode : public rclcpp::Node {
     graph_.addYawPrior(id, yaw_target, sigma, /*robust=*/true);
     ++yaw_priors_added_;
     if (yaw_priors_added_ % yaw_opt_every_ == 0 && graph_.numNodes() >= 5) {
-      const auto res = graph_.optimize();
+      const auto res = optimizeTimed_();
       T_map_odom_target_ = graph_.pose(id) * chain_.lastKeyframe().T_OB.inverse();
       RCLCPP_INFO(get_logger(),
                   "compass yaw-prior #%d @kf %llu: yaw_bno=%.0f yaw_vio=%.0f innov=%.1fdeg "
@@ -1842,7 +1858,7 @@ class ProviderFusionNode : public rclcpp::Node {
             std::max(1.0, std::sqrt(inl_ref / std::max(r.num_inliers, 1)));
         graph_.addLoopEdge(pid, q_id, r.T_query_match, xsession_prior_sigma_t_,
                            xsession_prior_sigma_r_ * rot_infl);
-        const auto res = graph_.optimize();
+        const auto res = optimizeTimed_();
         T_map_odom_target_ = graph_.pose(q_id) * chain_.lastKeyframe().T_OB.inverse();
         refreshOcc();
         ++xsession_priors_added_;
@@ -1885,7 +1901,7 @@ class ProviderFusionNode : public rclcpp::Node {
         if (jump < xsession_prior_jump_max_) {
           graph_.addPriorFactor(q_id, target_session, xsession_prior_sigma_t_,
                                 xsession_prior_sigma_r_, /*robust=*/true);
-          const auto res = graph_.optimize();
+          const auto res = optimizeTimed_();
           T_map_odom_target_ = graph_.pose(q_id) * chain_.lastKeyframe().T_OB.inverse();
           refreshOcc();  // P2: prior factor corrected the session -> realign occupancy
           ++xsession_priors_added_;
@@ -1953,7 +1969,7 @@ class ProviderFusionNode : public rclcpp::Node {
     // Submap-local frame == its first KF's body frame (sealing convention), so
     // T_query_match IS the a->query relative measurement.
     graph_.addLoopEdge(a, q_id, r.T_query_match, loop_sigma_t_, loop_sigma_r_);
-    const auto res = graph_.optimize();
+    const auto res = optimizeTimed_();
     T_map_odom_target_ = graph_.pose(q_id) * chain_.lastKeyframe().T_OB.inverse();
     refreshOcc();  // P2: the loop removed drift -> realign occupancy -> revisits now fuse
     RCLCPP_INFO(get_logger(),
@@ -2425,6 +2441,17 @@ class ProviderFusionNode : public rclcpp::Node {
     seg_total_kfs_ = seg_covered_kfs_ = 0;  // GAP-2: new segment starts fresh
   }
 
+  // Wraps graph_.optimize() with timing so a run reports the cumulative pose-graph solve cost — the
+  // live measure of the Ceres(O(graph)) vs iSAM2(O(touched)) difference (logged at shutdown).
+  slamko::PoseGraph::Result optimizeTimed_() {
+    const auto t0 = std::chrono::steady_clock::now();
+    auto r = graph_.optimize();
+    opt_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                   .count();
+    ++opt_calls_;
+    return r;
+  }
+
   static void dumpTum(std::FILE* f, double t, const slamko::SE3& T) {
     if (!f) return;
     const Eigen::Quaterniond q = T.so3().unit_quaternion();
@@ -2446,6 +2473,8 @@ class ProviderFusionNode : public rclcpp::Node {
 
   slamko::ProviderChain chain_;
   slamko::PoseGraph graph_;
+  double opt_ms_ = 0.0;   // cumulative graph_.optimize() wall time (pose-graph solve cost)
+  int opt_calls_ = 0;
   slamko::SE3 T_map_odom_target_, T_map_odom_pub_;
   bool have_correction_ = false;
   slamko::ProviderSample last_sample_;

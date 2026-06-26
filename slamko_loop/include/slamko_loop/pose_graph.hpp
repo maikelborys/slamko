@@ -70,6 +70,13 @@ class PoseGraph {
 
   explicit PoseGraph(PoseGraphConfig cfg = {}) : cfg_(cfg) {}
 
+  // Select the solver at runtime (before/between optimize() calls). Lets a node pick the backend
+  // from a ROS param without re-constructing the graph. Switching TO GtsamISAM2 mid-stream is safe
+  // (it lazily builds its Bayes tree from the next optimize()'s new factors); switching AWAY just
+  // drops the incremental state on the next non-iSAM2 call.
+  void setBackend(PoseGraphBackend b) { cfg_.backend = b; }
+  PoseGraphBackend backend() const { return cfg_.backend; }
+
   // Insert / overwrite a keyframe's absolute pose estimate (T_W_body).
   void addKeyframe(std::uint64_t id, const SE3& T_W_body);
 

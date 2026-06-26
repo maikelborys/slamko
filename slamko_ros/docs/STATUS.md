@@ -1,5 +1,23 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
+## 2026-06-26 — `pose_graph_backend` ROS param: iSAM2 LIVE, 6× faster ✅
+
+`provider_fusion_node` exposes `pose_graph_backend` (`ceres` default | `gtsam` | `isam2`) →
+`graph_.setBackend(...)`. The node already adds keyframes/edges incrementally to ONE persistent
+`graph_` and `optimize()`s on events, so iSAM2 reaps its O(touched) win with no flow change. A timing
+wrapper `optimizeTimed_()` logs the cumulative pose-graph solve cost at shutdown. Needs slamko_loop
+built `-DSLAMKO_LOOP_WITH_GTSAM=ON` (else gtsam/isam2 fall back to Ceres + warn).
+
+**LIVE A/B** (cuVSLAM casa, `PGBACKEND=… run_slamko_cuvslam_casa.sh`, ~505-pose graph, 4 event-driven
+optimize() calls): **CERES 73.6 ms total / 18.4 ms per call → iSAM2 12.3 ms / 3.07 ms = 6× faster
+live**, coherent map (503 poses, 13 submaps = same as Ceres), **0 crashes, 0 batch-rebuild
+fallbacks**. Even with only 4 event-driven calls iSAM2 wins because each call processes only the new
+factors (Ceres re-solves the whole accumulated graph). Calling `optimize()` per-keyframe would
+amplify it further (the offline `pose_graph_tum_ab --incremental` showed the constant-vs-187×
+scaling). The GTSAM stack (libslamko_loop.so → libgtsam.so.4) links + runs in the live node. Default
+`ceres` = zero change. Commit pending. Build the stack with GTSAM to use it:
+`colcon build --packages-select slamko_loop --cmake-args -DSLAMKO_LOOP_WITH_GTSAM=ON && colcon build --packages-select slamko_ros`.
+
 ## 2026-06-26 — never-jump LIVE gate + slewed-TF dump ✅ (A/B validated on cuVSLAM casa)
 
 The universal evaluator (`scripts/slamko_eval.py`) found that the live robot pose JUMPED with the
