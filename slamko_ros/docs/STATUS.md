@@ -29,6 +29,18 @@ OUTPUT) — the gate caught ALL teleports for the output even where the quality-
 unifying the two thresholds is a future tidy. Commits d73e393, a868d62. Tool: `scripts/tsdf_slice.py`
 (mid-height TSDF floor-plan cut, auto navigable height).
 
+**Hardened + validated on the BRUTAL bags (2026-06-26, commits 4cc6ef4, 3f8bb65, c595c55):**
+- `seal ⟹ hold` coherence guarantee between the live-gate (output) and the quality-break (map);
+  the two are INTENTIONALLY different sensitivities, clamp keeps gate_thresh ≤ break_thresh.
+- The cuVSLAM inject-variant "body_tf 0-odometry" blocker was a MISDIAGNOSIS = provider_fusion
+  exit-127 on `libnvblox_lib.so` (missing `LD_LIBRARY_PATH`; it links nvblox since the S3 fix even
+  with volumetric OFF). One-line fix → **CASA1_wall + CASA1_brutal1 now run the cuVSLAM rumbo
+  end-to-end** (wall 776 poses/27 submaps/quality-break 11-11/IMU-shock 16; brutal1 972/55/28-28/10).
+- **NEVER-JUMP validated on the worst case:** cuVSLAM on CASA1_wall teleported to **493,417 m/s**
+  (326 jumps>3 m/s) on the jolts → the LIVE slewed output with `gate_live_pose` ON stayed **0 jumps,
+  max 2.48 m/s** (421 holds absorbed it). The gate holds the robot pose smooth through a provider
+  that goes catastrophically insane; slamko stays coherent (caught the teleports, dangled honestly).
+
 ## 2026-06-23 — LIVE VOLUMETRIC wiring: D455 HW depth → live TSDF → OccupancyGrid ✅ (build-validated)
 
 provider_fusion_node now drives `slamko_tsdf`'s `VolumetricLiveDriver` so a running slamko builds a
