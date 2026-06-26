@@ -23,6 +23,14 @@ loop closure optimised by BOTH backends → optimised absolute poses agree node-
 **< 2 mm / < 2 mrad**; both reduce the cost. Default build (GTSAM OFF) green, existing
 `test_pose_graph` 7/7 unaffected. GTSAM 4.2.0 (system). v1 limitation: yaw priors not yet ported to
 the GTSAM factor (skipped + warned — use Ceres if compass yaw is active; gated OFF indoors anyway).
+**EuRoC ATE A/B vs ground truth** (`tools/pose_graph_tum_ab`, MH_03 — real OKVIS odometry + 268 GT
+revisit loops, 540 keyframes, Sim3-aligned ATE): baseline OKVIS **22.48 mm** → CERES **19.10 mm**
+(6 iters) / GTSAM **19.14 mm** (3 iters). Ceres↔GTSAM = **0.04 mm ATE diff**, pose agreement max
+1.32 mm / mean 0.53 mm → statistically identical trajectory; both reduce the OKVIS drift (the loops
+redistribute it). **GTSAM converged in HALF the iterations** — the first hint of the efficiency
+iSAM2 amplifies. So the backend is ATE-validated against real ground truth, not just numerically
+matched on a synthetic loop.
+
 **NEXT:** iSAM2 incremental (the real robotics win — relinearise only the affected sub-tree as the
 graph grows) + a `pose_graph_backend` ROS param in provider_fusion_node + a full-stack GTSAM build.
 
