@@ -62,10 +62,14 @@ gtsam::SharedNoiseModel noiseFromSqrtInfo(const Eigen::Matrix<double, 6, 6>& sqr
 }  // namespace
 
 PoseGraph::Result PoseGraph::optimizeGtsam_() {
+  // SAFETY: the GTSAM backend doesn't yet have a yaw-only factor → rather than silently DROP an
+  // active compass constraint, fall back to Ceres whenever yaw priors are present. So GTSAM is safe
+  // as the default: a compass-active run transparently uses Ceres, everything else uses GTSAM.
+  if (!yaw_priors_.empty()) return optimizeCeres_();
   Result res;
   res.num_nodes = static_cast<int>(nodes_.size());
   for (const auto& e : edges_) (e.is_loop ? res.num_loops : res.num_odom)++;
-  if (nodes_.empty() || (edges_.empty() && priors_.empty() && yaw_priors_.empty())) return res;
+  if (nodes_.empty() || (edges_.empty() && priors_.empty())) return res;
 
   gtsam::NonlinearFactorGraph graph;
   gtsam::Values initial;
@@ -90,11 +94,7 @@ PoseGraph::Result PoseGraph::optimizeGtsam_() {
         static_cast<gtsam::Key>(pr.id), toGtsam(pr.target),
         noiseFromSqrtInfo(pr.sqrt_info, pr.robust, cfg_.loop_huber_delta));
   }
-  if (!yaw_priors_.empty())
-    std::fprintf(stderr,
-                 "[pose_graph_gtsam] %zu yaw prior(s) ignored (not yet ported to the GTSAM backend; "
-                 "use the Ceres backend if compass yaw is active)\n",
-                 yaw_priors_.size());
+  // (yaw priors are handled by the early Ceres fall-back above — never reach here.)
 
   // Per-CONNECTED-COMPONENT gauge — identical policy to optimizeCeres_(): union-find the edges,
   // pin every FIXED node, and auto-pin the lowest-id node of each component WITHOUT a fixed node
@@ -169,6 +169,7 @@ struct Isam2State {
 }  // namespace
 
 PoseGraph::Result PoseGraph::optimizeGtsamIsam2_() {
+  if (!yaw_priors_.empty()) return optimizeCeres_();  // SAFETY: keep an active compass yaw (see LM).
   Result res;
   res.num_nodes = static_cast<int>(nodes_.size());
   for (const auto& e : edges_) (e.is_loop ? res.num_loops : res.num_odom)++;
