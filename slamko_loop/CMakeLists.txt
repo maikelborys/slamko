@@ -90,7 +90,7 @@ install(TARGETS smap_cloud RUNTIME DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-  foreach(t test_relocalizer test_bow test_pose_graph test_mappoint_store)
+  foreach(t test_relocalizer test_bow test_pose_graph test_mappoint_store test_scan_context)
     ament_add_gtest(${t} test/${t}.cpp)
     target_link_libraries(${t} slamko_loop Eigen3::Eigen)
     ament_target_dependencies(${t} slamko_core)

@@ -2,6 +2,24 @@
 
 Living, dated progress + numbers log. Plan: [`PLAN_P2_loop.md`](PLAN_P2_loop.md).
 
+## 2026-06-26 — Geometric loop channel: ScanContext descriptor (step 1/N, unit-validated)
+
+`include/slamko_loop/scan_context.hpp` (header-only, Eigen only — Hard Rule #2, no OpenCV). The
+VIEWPOINT-INVARIANT geometric place descriptor that complements the appearance channel
+(EigenPlaces/XFeat). WHY: every doc converges on recall = VIEWPOINT-coverage limiter (PIPELINE_STATUS §0,
+RESEARCH_LIFELONG_NAV_ARCH §5); appearance retrieval dies on different-heading revisits (images don't
+overlap), geometry doesn't. ScanContext (Kim 2018): polar bird's-eye matrix (n_ring×n_sector, max-height
+per cell) matched yaw-invariantly by column shift; ring-key (row mean) = rotation-invariant fast prefilter.
+Disjunctive loop gate target: accept if visual OR geometric passes. HONEST scope: built for 360° LiDAR; a
+~90° depth-cam fills only its FOV → invariance over the OVERLAP → extends recall to MODERATE viewpoint
+change (e.g. 90° turn); a TRUE 180°-opposite revisit has zero overlap = unmatchable by any method (physics).
+Convention: points in a gravity-aligned frame (z up) — slamko's odom/world frame qualifies.
+**5 gtests green** (test_scan_context): non-empty build, empty-on-no-range, YAW-INVARIANT same-place (90°
+rotation → dist <0.15 + column shift recovers the yaw ±2 sectors + ring-key dist <0.05), different-scene
+far (>0.25), identical=0. NEXT (step 2): compute per-keyframe/submap from depth/landmarks at seal, store in
+the submap, add as a DISJUNCTIVE retrieval candidate alongside VPR top-N in XFeatRelocalizer; then validate
+the recall gain on a different-heading revisit. Unlocked by cuVSLAM 120fps + live 45fps depth this session.
+
 ## 2026-06-21 — MapPointStore: persistent point identity (Phase A/B/C/D)
 
 `include/slamko_loop/mappoint_store.hpp` — the ORB-SLAM3/PLVS abstraction slamko lacked: a global
