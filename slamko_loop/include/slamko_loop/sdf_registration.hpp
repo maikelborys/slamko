@@ -49,37 +49,48 @@ struct SdfRegistrationResult {
   bool converged = false; // step fell below convergence_dx AND inliers >= min_inliers
 };
 
-// Register `query_pts_local` (in the query/sensor frame) to the surface implied by `field`,
-// starting from `T_init` (map <- query). DistanceField: p_map -> {signed_dist, gradient}.
-template <class DistanceField>
-SdfRegistrationResult registerToSdf(const std::vector<Eigen::Vector3d>& query_pts_local,
-                                    const SE3& T_init, const DistanceField& field,
-                                    const SdfRegistrationConfig& cfg = {}) {
+// Per-iteration result of a BATCH distance-field query (NaN dist = invalid / unmapped).
+struct SdfBatch {
+  std::vector<double> dist;            // signed distance per query point
+  std::vector<Eigen::Vector3d> grad;   // ∇dist per point (≈ unit surface normal)
+  std::vector<char> valid;             // 0 = no usable map at this point (drop it)
+};
+
+// Register `query_pts_local` (query/sensor frame) to the surface implied by `batch_field`,
+// from `T_init` (map <- query). BatchField: f(const std::vector<Vector3d>& pts_map) ->
+// SdfBatch (queried ALL AT ONCE so a GPU/nvblox-ESDF backend does one copy per iteration).
+template <class BatchField>
+SdfRegistrationResult registerToSdfBatch(const std::vector<Eigen::Vector3d>& query_pts_local,
+                                         const SE3& T_init, BatchField&& batch_field,
+                                         const SdfRegistrationConfig& cfg = {}) {
   SdfRegistrationResult res;
   res.T_refined = T_init;
   if (query_pts_local.empty()) return res;
+  const std::size_t n = query_pts_local.size();
 
   SE3 T = T_init;
+  std::vector<Eigen::Vector3d> xs(n);
   for (int it = 0; it < cfg.max_iters; ++it) {
+    const Eigen::Matrix3d R = T.so3().matrix();
+    for (std::size_t i = 0; i < n; ++i) xs[i] = T * query_pts_local[i];
+    const SdfBatch f = batch_field(xs);
+
     Eigen::Matrix<double, 6, 6> H = Eigen::Matrix<double, 6, 6>::Zero();
     Eigen::Matrix<double, 6, 1> b = Eigen::Matrix<double, 6, 1>::Zero();
-    const Eigen::Matrix3d R = T.so3().matrix();
     double sse = 0.0;
     int inl = 0;
-    for (const auto& p : query_pts_local) {
-      const Eigen::Vector3d x = T * p;            // point in map frame
-      auto df = field(x);
-      const double r = df.first;                  // signed distance (residual, target 0)
+    for (std::size_t i = 0; i < n; ++i) {
+      if (!f.valid[i]) continue;
+      const double r = f.dist[i];
       if (std::abs(r) > cfg.max_correspondence_dist) continue;  // outlier / unmapped
-      const Eigen::Vector3d& g = df.second;       // ∇dist (≈ unit surface normal)
+      const Eigen::Vector3d& p = query_pts_local[i];
       // d x / d ξ = R · [ I | -[p]_× ]  (twist [rho; omega], right perturbation T·exp(ξ)).
       Eigen::Matrix<double, 3, 6> dxdxi;
       dxdxi.leftCols<3>() = R;
       dxdxi.rightCols<3>() = -R * SO3::hat(p);
-      const Eigen::Matrix<double, 1, 6> J = g.transpose() * dxdxi;  // dr/dξ
-      // Huber weight on the residual.
+      const Eigen::Matrix<double, 1, 6> J = f.grad[i].transpose() * dxdxi;
       const double a = std::abs(r);
-      const double w = a <= cfg.huber_delta ? 1.0 : cfg.huber_delta / a;
+      const double w = a <= cfg.huber_delta ? 1.0 : cfg.huber_delta / a;  // Huber
       H.noalias() += w * J.transpose() * J;
       b.noalias() += w * J.transpose() * r;
       sse += w * r * r;
@@ -89,8 +100,7 @@ SdfRegistrationResult registerToSdf(const std::vector<Eigen::Vector3d>& query_pt
     res.iters = it + 1;
     if (inl < cfg.min_inliers) break;  // not enough overlap — bail (caller rejects)
     res.rms = std::sqrt(sse / inl);
-    // Damp slightly (Levenberg) for conditioning, then solve δξ = -H⁻¹ b.
-    H.diagonal().array() += 1e-9;
+    H.diagonal().array() += 1e-9;  // Levenberg damping for conditioning
     const Eigen::Matrix<double, 6, 1> dxi = H.ldlt().solve(-b);
     T = T * SE3::exp(dxi);
     res.T_refined = T;
@@ -100,6 +110,28 @@ SdfRegistrationResult registerToSdf(const std::vector<Eigen::Vector3d>& query_pt
     }
   }
   return res;
+}
+
+// Convenience wrapper for a PER-POINT analytic field f(p)->{dist,grad} (tests / CPU fields).
+template <class DistanceField>
+SdfRegistrationResult registerToSdf(const std::vector<Eigen::Vector3d>& query_pts_local,
+                                    const SE3& T_init, const DistanceField& field,
+                                    const SdfRegistrationConfig& cfg = {}) {
+  return registerToSdfBatch(
+      query_pts_local, T_init,
+      [&field](const std::vector<Eigen::Vector3d>& xs) {
+        SdfBatch out;
+        out.dist.resize(xs.size());
+        out.grad.resize(xs.size());
+        out.valid.assign(xs.size(), 1);
+        for (std::size_t i = 0; i < xs.size(); ++i) {
+          auto df = field(xs[i]);
+          out.dist[i] = df.first;
+          out.grad[i] = df.second;
+        }
+        return out;
+      },
+      cfg);
 }
 
 }  // namespace slamko

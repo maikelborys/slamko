@@ -86,6 +86,40 @@ void NvbloxBackend::integrate(const DepthFrame& frame, const SE3& T_map_body) {
   impl_->mapper->integrateDepth(depth, T_L_C, cam);
 }
 
+bool NvbloxBackend::queryDistanceField(const std::vector<Eigen::Vector3d>& pts_map,
+                                       std::vector<float>& dist,
+                                       std::vector<float>& weight) const {
+  // The DENSE geometric channel's read side: batch-sample the SIGNED TSDF at map-frame
+  // points (one GPU→host copy). distance = signed distance to the nearest surface (within
+  // the truncation band); weight = confidence (0 ⇒ never mapped ⇒ the ICP drops it). Used
+  // by slamko_loop::registerToSdf to snap a live depth cloud onto the existing surfaces.
+  const std::size_t n = pts_map.size();
+  dist.assign(n, 0.0f);
+  weight.assign(n, 0.0f);
+  if (n == 0) return true;
+  // Query the ESDF, not the truncated TSDF: the full Euclidean signed distance has a much
+  // larger, smoother convergence basin than the ±truncation band, so the ICP pulls a cloud
+  // in from farther (needed to recover real drift / a hard knock, not just sub-band). nvblox
+  // updateEsdf() is incremental (recomputes only dirty blocks) → cheap when nothing changed
+  // between query calls within one registration.
+  impl_->mapper->updateEsdf();
+  const auto& esdf = impl_->mapper->esdf_layer();
+  const float vsize = esdf.voxel_size();
+  std::vector<Eigen::Vector3f> pos(n);
+  for (std::size_t i = 0; i < n; ++i) pos[i] = pts_map[i].cast<float>();
+  std::vector<nvblox::EsdfVoxel> vox;
+  std::vector<bool> ok;
+  esdf.getVoxels(pos, &vox, &ok);
+  for (std::size_t i = 0; i < n && i < vox.size(); ++i)
+    if (ok[i] && vox[i].observed) {
+      float dm = std::sqrt(vox[i].squared_distance_vox) * vsize;  // Euclidean dist [m]
+      if (vox[i].is_inside) dm = -dm;                              // signed (− behind surface)
+      dist[i] = dm;
+      weight[i] = 1.0f;
+    }
+  return true;
+}
+
 void NvbloxBackend::reset() { impl_->build(); }  // fresh Mapper = drop all geometry
 
 void NvbloxBackend::clearRegion(const Aabb& region) {

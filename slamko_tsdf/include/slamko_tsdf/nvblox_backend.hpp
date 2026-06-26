@@ -29,6 +29,9 @@ class NvbloxBackend : public VolumetricBackend {
   CostmapSlice exportCostmap(const CostmapParams& params) override;
   void exportMesh(const std::string& ply_path) override;
   bool available() const override;
+  bool queryDistanceField(const std::vector<Eigen::Vector3d>& pts_map,
+                          std::vector<float>& dist,
+                          std::vector<float>& weight) const override;
 
  private:
   struct Impl;

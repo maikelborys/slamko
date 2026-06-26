@@ -2,6 +2,31 @@
 
 Living, dated progress + numbers log. Plan: [`PLAN_P2_loop.md`](PLAN_P2_loop.md).
 
+## 2026-06-26 — DENSE geometric channel: nvblox ESDF query + end-to-end (step 2) + HONEST finding
+
+Step 2 done (commit pending): `VolumetricBackend::queryDistanceField(pts)->{dist,weight}`
+(slamko_core contract) + `NvbloxBackend` impl (slamko_tsdf) — batch-samples the **ESDF**
+(signed Euclidean distance, large smooth basin) via `mapper->updateEsdf()` + `esdf_layer().
+getVoxels()` (the truncated TSDF's ±band was too small a basin; ESDF is the right field).
+`registerToSdf` refactored to a BATCH functor (one GPU→host query per ICP iteration; per-point
+wrapper kept for the analytic tests). End-to-end GPU self-test `slamko_tsdf/tools/
+nvblox_sdf_selftest` (synthetic corner → integrate → query → ICP a drifted cloud).
+**VALIDATED:** the ESDF query is CORRECT on real nvblox (probe z=1.8 → +0.220 m in front,
+z=2.0 → 0.000 on the wall, behind → unobserved); the ICP CONVERGES and snaps the cloud onto
+the mapped surfaces (rms → 0). **HONEST FINDING (the load-bearing one):** point-to-SDF ICP on
+FLAT/symmetric geometry is **tangentially DEGENERATE** — it converges to rms 0 (cloud on the
+surfaces) but at an AMBIGUOUS pose (full-SE3 err ~0.11 m on bare walls), because the SDF
+constrains each point's surface NORMAL but not the in-plane slide; bare walls admit many
+surface-fitting poses. So the dense channel is a **normal-direction drift REFINER that
+COMPLEMENTS the appearance/feature channel (which constrains the tangential), NOT a standalone
+6-DOF solver** — it shines on TEXTURED/cluttered real rooms, degenerates on bare planar scenes.
+Gotcha: ESDF central-diff gradient needs a ≥2-voxel finite-diff step (1-voxel = discretization
+noise → divergence). NEXT (step 3): live — register the depth cloud against the map BEFORE
+integrating (avoid double-surface), FUSE the dense normal constraint WITH the appearance loop
+(disjunctive/joint) so the tangential is covered, gate by rms+inliers. Answers the user's "match
+the nvblox geometry" + the recovery-from-knock goal — honestly: dense refines normal, appearance
+does tangential, together they recover.
+
 ## 2026-06-26 — DENSE geometric channel: point-to-SDF ICP primitive (step 1, unit-validated)
 
 `include/slamko_loop/sdf_registration.hpp` (header-only, Eigen + slamko_core SE3). The STRONG

@@ -159,6 +159,19 @@ class VolumetricBackend {
   // Optional: dump the dense mesh / cloud for visualization (PLY path).
   virtual void exportMesh(const std::string& /*ply_path*/) {}
 
+  // Batch query of the signed distance field (TSDF) at map-frame points — the DENSE
+  // geometric loop/recovery channel's read side. Fills `dist` (signed distance to the
+  // nearest surface, m) and `weight` (observation confidence; 0 = never mapped) per point,
+  // and returns true if the backend supports it. The point-to-SDF ICP (slamko_loop
+  // registerToSdf) drives it (one call per iteration over all points + finite-diff offsets)
+  // to snap a live depth cloud onto the already-mapped surfaces = the drift/loop correction.
+  // Default: unsupported (stub / CUDA-free build).
+  virtual bool queryDistanceField(const std::vector<Eigen::Vector3d>& /*pts_map*/,
+                                  std::vector<float>& /*dist*/,
+                                  std::vector<float>& /*weight*/) const {
+    return false;
+  }
+
   // False for the no-op stub compiled when the real backend isn't built, so
   // callers can degrade gracefully (mirrors the VizSink available() pattern).
   virtual bool available() const { return true; }

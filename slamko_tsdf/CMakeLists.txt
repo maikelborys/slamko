@@ -51,6 +51,13 @@ if(SLAMKO_WITH_NVBLOX)
   target_compile_definitions(slamko_tsdf PRIVATE SLAMKO_WITH_NVBLOX)
   target_link_libraries(slamko_tsdf nvblox::nvblox_lib CUDA::cudart)
   message(STATUS "slamko_tsdf: nvblox GPU backend ENABLED")
+  # End-to-end dense-channel self-test (synthetic TSDF → query → ICP recovers a drift).
+  # Needs slamko_loop's header-only point-to-SDF ICP (registerToSdf).
+  find_package(slamko_loop QUIET)
+  add_executable(nvblox_sdf_selftest tools/nvblox_sdf_selftest.cpp)
+  target_link_libraries(nvblox_sdf_selftest slamko_tsdf Eigen3::Eigen)
+  ament_target_dependencies(nvblox_sdf_selftest slamko_core slamko_loop)
+  install(TARGETS nvblox_sdf_selftest RUNTIME DESTINATION lib/${PROJECT_NAME})
 else()
   message(STATUS "slamko_tsdf: nvblox backend OFF (no-op stub) — CUDA-free build")
 endif()
