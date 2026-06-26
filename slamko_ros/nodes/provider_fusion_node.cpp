@@ -404,6 +404,20 @@ class ProviderFusionNode : public rclcpp::Node {
       atlas_break_on_quality_ = declare_parameter("atlas_break_on_quality", false);
       quality_break_speed_ = declare_parameter("quality_break_speed", 6.0);     // m/s implausible
       quality_break_jump_ = declare_parameter("quality_break_jump", 1.5);       // m/s speed step
+      // COHERENCE of the two never-jump defences (INTENTIONALLY different sensitivities, NOT one
+      // threshold): the live GATE holds the OUTPUT (never-jump) and is MORE sensitive (low thresh)
+      // so it catches every implausible step; the quality-break seals the MAP and is LESS sensitive
+      // (high thresh) so a brisk-but-real move doesn't over-fragment. The only invariant we MUST
+      // keep is `seal ⟹ hold` (every map-sealing teleport also holds the output), i.e. the gate
+      // threshold must be ≤ the seal threshold. Clamp + warn if a config violates it; otherwise a
+      // sealed LOST interval could still leak a jump to the robot.
+      if (gate_live_pose_ && live_gate_speed_ > quality_break_speed_) {
+        RCLCPP_WARN(get_logger(),
+                    "live_gate_speed (%.1f) > quality_break_speed (%.1f): clamping the gate so "
+                    "seal⟹hold (a sealed teleport must also smooth the output)",
+                    live_gate_speed_, quality_break_speed_);
+        live_gate_speed_ = quality_break_speed_;
+      }
       // CATASTROPHIC tier (P0.1): above this a divergence HARD-BREAKS (dangles), never soft-
       // bridges — measured clean casa max 17 m/s, cuVSLAM 90 m teleport 4223 m/s, so 20 separates.
       quality_break_hard_speed_ = declare_parameter("quality_break_hard_speed", 20.0);
