@@ -136,6 +136,16 @@ class XFeatRelocalizer : public Relocalizer {
   // Match query → each submap, PnP-RANSAC verify, return the best (most inliers).
   RelocResult relocalize(const Features& query) const override;
 
+  // Same, but ALSO retrieves geometric candidates from the query's local 3D
+  // (`query_pts_world`: the query's stereo landmarks rotated into the gravity-aligned
+  // WORLD orientation and recentered at the query, i.e. R_world_body·p_body — matches the
+  // addSubMap convention) and UNIONS them with the VPR top-N before PnP-verify. This is the
+  // disjunctive gate: a different-heading revisit the appearance VPR ranks nowhere is still
+  // verified because geometry retrieved it. No-op vs relocalize(query) when
+  // use_scan_context is off or query_pts_world is empty.
+  RelocResult relocalize(const Features& query,
+                         const std::vector<Eigen::Vector3d>& query_pts_world) const;
+
   // PROXIMITY detection (item E): verify against prior submaps whose anchor is within
   // `radius` of `T_query_global` — VPR-INDEPENDENT, so it recovers revisits the cosine
   // retrieval misses (opposite-heading / motion-blur recall-dead zones). Requires the

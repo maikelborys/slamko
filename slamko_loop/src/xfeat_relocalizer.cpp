@@ -221,12 +221,20 @@ void XFeatRelocalizer::addSubMap(const SubMap& submap) {
     Entry& back = db_.back();
     back.kf_sc.resize(back.keyframes.size());
     for (std::size_t k = 0; k < back.keyframes.size(); ++k) {
-      const SE3 T_kf_local = back.keyframes[k].T_WB.inverse();
+      // ScanContext in the GRAVITY-ALIGNED WORLD frame (z-up; world-Z is gravity here),
+      // recentered at the keyframe — NOT rotated into the (tilting) body frame, so the up
+      // axis stays gravity regardless of camera pitch/roll. Heading is left free (the
+      // column-shift in distance() absorbs it). global = anchor·submap-local; recenter by
+      // subtracting the kf's world position → world-oriented offsets. The live query is
+      // fed the same way (R_world_body·p_body) by provider_fusion. cfg_.sc_cfg.up = {0,0,1}.
+      const SE3 kf_world = back.anchor * back.keyframes[k].T_WB;
+      const Eigen::Vector3d kf_pos = kf_world.translation();
       std::vector<Eigen::Vector3d> pts;
       pts.reserve(back.kf_obs[k].landmark_ids.size());
       for (std::uint64_t lid : back.kf_obs[k].landmark_ids) {
         auto it = back.lid_to_desc_pos.find(lid);
-        if (it != back.lid_to_desc_pos.end()) pts.push_back(T_kf_local * it->second.second);
+        if (it != back.lid_to_desc_pos.end())
+          pts.push_back(back.anchor * it->second.second - kf_pos);
       }
       if (!pts.empty()) back.kf_sc[k] = ScanContext::compute(pts, cfg_.sc_cfg);
     }
@@ -339,6 +347,11 @@ RelocResult XFeatRelocalizer::relocalizeNear(const Features& query,
 }
 
 RelocResult XFeatRelocalizer::relocalize(const Features& query) const {
+  return relocalize(query, {});  // appearance-only path
+}
+
+RelocResult XFeatRelocalizer::relocalize(
+    const Features& query, const std::vector<Eigen::Vector3d>& query_pts_world) const {
   // Candidate pre-selection: PnP-verify only the most promising submaps. Empty =
   // fall back to ALL submaps, so recall is never reduced, only hopeless submaps skipped.
   std::vector<std::uint64_t> cand;
@@ -380,6 +393,19 @@ RelocResult XFeatRelocalizer::relocalize(const Features& query) const {
   if (cand.empty() && cfg_.use_bow && !vocab_.empty() && query.hasDescriptors())
     cand = bow_db_.query(vocab_.transform(query.descriptors), cfg_.bow_top_k);
 
+  // GEOMETRIC channel (disjunctive): UNION the ScanContext candidates with the VPR top-N.
+  // These are the viewpoint-invariant retrievals a different-heading revisit needs when the
+  // appearance VPR ranks the true submap nowhere. verifyAgainst then PnP-confirms geometry.
+  int n_geom = 0;
+  if (cfg_.use_scan_context && !query_pts_world.empty()) {
+    for (const auto& gc : geometricCandidates(query_pts_world)) {
+      if (std::find(cand.begin(), cand.end(), gc.first) == cand.end()) {
+        cand.push_back(gc.first);
+        ++n_geom;
+      }
+    }
+  }
+
   const RelocResult best = verifyAgainst(query, cand);
   // V.2 diagnostic: one greppable line per VPR-eligible reloc call. Tells us, on a long
   // traversal (magistrale return), (a) whether the right submap surfaces in top-N, (b)
@@ -394,10 +420,10 @@ RelocResult XFeatRelocalizer::relocalize(const Features& query) const {
                            static_cast<unsigned long long>(scored[i].second),
                            scored[i].first);
     if (best.found)
-      std::fprintf(stderr, "%s -> verified %llu (%d inl)\n", buf,
+      std::fprintf(stderr, "%s +%dgeom -> verified %llu (%d inl)\n", buf, n_geom,
                    static_cast<unsigned long long>(best.submap_id), best.num_inliers);
     else
-      std::fprintf(stderr, "%s -> none\n", buf);
+      std::fprintf(stderr, "%s +%dgeom -> none\n", buf, n_geom);
   }
   return best;
 }

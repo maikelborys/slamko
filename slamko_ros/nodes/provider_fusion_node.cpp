@@ -460,6 +460,14 @@ class ProviderFusionNode : public rclcpp::Node {
       // place won't repeat to the same submap N times within this bound).
       proximity_vote_agree_m_ = declare_parameter("proximity_vote_agree_m", 2.0);
       min_reloc_period_s_ = declare_parameter("min_reloc_period_s", 0.5);
+      // GEOMETRIC loop channel (ScanContext): viewpoint-invariant retrieval that recovers
+      // different-heading revisits the appearance VPR misses (the root recall limiter). The
+      // query's stereo 3D is matched yaw-invariantly against per-KF descriptors and UNIONed
+      // with the VPR top-N before PnP-verify. Off by default (opt-in, like all robustness
+      // features) until validated on a return-revisit bag.
+      use_scan_context_ = declare_parameter("use_scan_context", false);
+      sc_max_dist_ = declare_parameter("sc_max_dist", 0.4);
+      sc_top_m_ = declare_parameter("sc_top_m", 5);
       lg_model_path_ = declare_parameter(
           "lightglue_model_path",
           onnx_default.empty() ? std::string()
@@ -1272,6 +1280,13 @@ class ProviderFusionNode : public rclcpp::Node {
       rcfg.body_T_cam = body_T_cam_;
       rcfg.min_inliers = reloc_min_inliers_;
       rcfg.use_bow = false;  // VPR per-KF ranking is the candidate stage (P-B verdict)
+      // Geometric channel: world is z-up here (yaw is about world-Z), so feed ScanContext
+      // points in the gravity-aligned WORLD orientation (up = {0,0,1}). addSubMap + the
+      // query (in tryRelocalize) both build points the same way (R_world_body·p_body).
+      rcfg.use_scan_context = use_scan_context_;
+      rcfg.sc_cfg.up = Eigen::Vector3d(0, 0, 1);
+      rcfg.sc_max_dist = static_cast<float>(sc_max_dist_);
+      rcfg.sc_top_m = sc_top_m_;
       // TWO relocalizers: same-session imagery always out-scores a prior map's
       // (different day/light/walk) in PnP inliers, so a single best-of-all
       // relocalizer NEVER surfaces the prior once own submaps exist (learned on
@@ -1405,7 +1420,7 @@ class ProviderFusionNode : public rclcpp::Node {
         // Detection stays per-KF (cheap, and the map needs the landmarks).
         if (t - last_reloc_attempt_t_ >= min_reloc_period_s_) {
           last_reloc_attempt_t_ = t;
-          tryRelocalize(id, t, ql);
+          tryRelocalize(id, t, ql, rec.lm_pcam);
         }
         // ---- LIVE VIZ window A (landmarks over video) + window B pose/camera/HUD.
         if (viz_enable_ && viz_.enabled()) {
@@ -1534,9 +1549,21 @@ class ProviderFusionNode : public rclcpp::Node {
   // a robust loop edge + re-optimize. Gates (P-B; reversibility lands in P-C):
   // PnP inliers >= reloc_min_inliers_ AND the matched submap is older than
   // min_loop_gap_s_ (adjacent-corridor matches are not loops).
-  void tryRelocalize(std::uint64_t q_id, double t, const slamko::Features& query) {
+  void tryRelocalize(std::uint64_t q_id, double t, const slamko::Features& query,
+                     const std::vector<Eigen::Vector3d>& lm_pcam = {}) {
+    // GEOMETRIC channel query points: the stereo landmarks (camera frame) → body frame
+    // (body_T_cam) → WORLD orientation (R_world_body), recentered at the kf (R only — the
+    // translation is the recenter). Matches the addSubMap convention (gravity-aligned z-up,
+    // heading free). Empty when the channel is off / no node / no landmarks → relocalize()
+    // overload is then a no-op vs the appearance path.
+    std::vector<Eigen::Vector3d> qpts;
+    if (use_scan_context_ && graph_.hasNode(q_id) && !lm_pcam.empty()) {
+      const slamko::SO3 R = graph_.pose(q_id).so3();  // R_world_body
+      qpts.reserve(lm_pcam.size());
+      for (const auto& pc : lm_pcam) qpts.push_back(R * (body_T_cam_ * pc));
+    }
     if (reloc_ && reloc_->numSubMaps() > 0) {
-      processRelocResult(reloc_->relocalize(query), q_id, t);
+      processRelocResult(reloc_->relocalize(query, qpts), q_id, t);
       // WITHIN-SESSION PROXIMITY (the 100cm-revisit fix): VPR retrieval can MISS a return the
       // odometry knows about (came back facing a different heading -> low appearance cosine). If
       // our estimated SESSION pose is near an OLD session submap, verify it geometrically too
@@ -1548,7 +1575,7 @@ class ProviderFusionNode : public rclcpp::Node {
             /*from_proximity=*/true);
     }
     if (reloc_prior_) {
-      processRelocResult(reloc_prior_->relocalize(query), q_id, t);
+      processRelocResult(reloc_prior_->relocalize(query, qpts), q_id, t);
       // E — PROXIMITY DETECTION: once roughly localized, ALSO verify against prior submaps
       // NEAR our current estimated global pose (VPR-independent). This recovers the
       // recall-dead zone (jolts/motion-blur/opposite-heading) the cosine retrieval misses,
@@ -2502,6 +2529,9 @@ class ProviderFusionNode : public rclcpp::Node {
   double xsession_prior_jump_max_ = 2.0;
   int xsession_priors_added_ = 0;
   double proximity_radius_ = 3.0;   // E: proximity-detection radius [m] (0 = off)
+  bool use_scan_context_ = false;   // geometric (ScanContext) disjunctive loop channel
+  double sc_max_dist_ = 0.4;        // ScanContext distance gate
+  int sc_top_m_ = 5;                // geometric candidate submaps per query
   bool proximity_within_session_ = false;  // close VPR-missed within-session returns geometrically
   // 3-tier candidate->soft->weld for the proximity path (never-false-merge defense).
   bool proximity_three_tier_ = true;
