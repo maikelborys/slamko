@@ -27,6 +27,24 @@ integrating (avoid double-surface), FUSE the dense normal constraint WITH the ap
 the nvblox geometry" + the recovery-from-knock goal — honestly: dense refines normal, appearance
 does tangential, together they recover.
 
+## 2026-06-26 — P0 stability primitives: ImuShockDetector + ScanContext (Eigen-only, gtest)
+
+Two more header-only primitives over `slamko_core` (Hard Rule #2), unit-tested:
+- **`imu_shock.hpp` — `ImuShockDetector`** (P0.3, commit 5796e96): the kidnap/knock/drop trigger the
+  quality-break MISSES (a clean lift/bump = NO pose speed-jump because the provider coasts on IMU,
+  but the RAW IMU shows a jerk/accel/gyro spike). `feed(accel,gyro,dt,t)` → IMPACT / FREEFALL / YANK
+  + refractory. Wired into `provider_fusion_node` (`use_imu_shock`) → `imu_shock_pending_` so the
+  never-lost path seals+breaks on a knock; also feeds the P0.1 catastrophic hard-break. 5 gtests
+  (calm stream = 0 false positives = no spurious seals).
+- **`scan_context.hpp` — ScanContext** viewpoint-invariant polar ring/sector descriptor for
+  VPR-independent place recognition. 5 gtests. (Honest scope: the recall limiter is viewpoint
+  COVERAGE, not the descriptor — see the immortality reframe; ScanContext is a geometric second
+  opinion, not a recall silver bullet.)
+
+Both feed the universal evaluator (`docs/EVAL_SYSTEM_01.md`): IMU-shock = the inertial witness's
+kidnap channel; the dense ICP = channel-7's live v2 hook. Suite `test_imu_shock` + `test_scan_context`
++ `test_sdf_registration` green.
+
 ## 2026-06-26 — DENSE geometric channel: point-to-SDF ICP primitive (step 1, unit-validated)
 
 `include/slamko_loop/sdf_registration.hpp` (header-only, Eigen + slamko_core SE3). The STRONG

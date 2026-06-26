@@ -3,6 +3,24 @@
 Validated milestones (dated, with numbers). Newest first. See
 [`../README.md`](../README.md) + [`../../docs/PLAN_SLAMKO_TSDF_01.md`](../../docs/PLAN_SLAMKO_TSDF_01.md).
 
+## 2026-06-26 — `NvbloxBackend::queryDistanceField` (ESDF) + GPU self-test ✅ (commit 7005ac7)
+
+Implemented the `VolumetricBackend::queryDistanceField(pts_map)->{dist,weight}` contract (added in
+slamko_core) on real nvblox: `mapper->updateEsdf()` + `esdf_layer().getVoxels(pos)` → signed
+Euclidean distance (`squared_distance_vox * voxel_size`, signed by `is_inside`). Switched from the
+TSDF (its truncated ±band is too small a basin for ICP) to the **ESDF** (large smooth basin = the
+right field). End-to-end GPU test `tools/nvblox_sdf_selftest.cpp` (synthetic corner → integrate →
+query → ICP a drifted cloud): query CORRECT (z=1.8 → +0.22 m in front, z=2.0 → 0.000 on the wall),
+ICP converges (rms → 0). This is the geometric backend for the evaluator's channel-7 **live** v2 hook
+(the only metric that can resolve sub-decimetre doubling — the sparse cloud + the post-fusion mesh
+are both proven blind offline; `docs/EVAL_SYSTEM_01.md`). Gotcha: ESDF central-diff gradient needs a
+≥2-voxel finite-diff step. The PIMPL keeps slamko_ros CUDA-free.
+
+**Validated again (2026-06-26) on the 45 fps flash bag** via `run_slamko_casa_volumetric_live.sh`:
+605 kf, loop closed, **222 k-vert / 21 MB mesh from D455 HW depth** (emitter-ON frames routed by the
+content-splitter); a mid-height `tsdf_slice.py` cut showed a coherent floor plan (path in free space,
+median 0.58 m from walls). Store ~985 MB unbounded @ voxel 0.05 (the `enforceBudget` lever).
+
 ## 2026-06-23 — LIVE driver (policy) + slamko_ros node wiring (D455 HW depth) ✅
 
 Increment 2: the live POLICY over the engine + the ROS composition-root wiring, so a

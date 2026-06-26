@@ -10,7 +10,83 @@ Everything below was validated on the real D455 casa bags.
 
 ---
 
-## 0. 2026-06-19 — THE IMMORTALITY PUSH (read this for the latest state)
+## 0. 2026-06-26 — UNIVERSAL EVALUATOR + NEVER-JUMP GATE + cuVSLAM provider (read this FIRST)
+
+The session that built the **measurement system** and used it to find + fix a real defect. Full
+detail: [`EVAL_SYSTEM_01.md`](EVAL_SYSTEM_01.md), `slamko_ros/docs/STATUS.md` (2026-06-26),
+memory `slamko-universal-evaluator`.
+
+**Why it matters (user's reframe, verbatim):** *"tiene haber una sistema universal de evaluación que
+entienda bien y no deje despistarse."* The provider is untrusted/disposable BY DESIGN (HR#4), so the
+EVALUATION must be provider-agnostic too — else every provider quirk (cuVSLAM `camera_info`, OKVIS
+fps) derails the work into plumbing. **Don't pivot providers to dodge a blocker — the rumbo is
+cuVSLAM (OKVIS can't hold 45 fps); MEASURE the slamko LAYER instead.**
+
+**What got built + validated:**
+- **`scripts/slamko_eval.py` — the universal 7-channel ideology scorecard** over ANY run dir
+  (provider.tum, graph.tum, fusion.log, map/). 1 never-lose · 2 never-jump · 3 distrust(IMU) ·
+  4 never-lie · 5 recover · 6 stable-frag · 7 geometric. Three INDEPENDENT physical witnesses, none
+  trusting the provider: **IMU** (inertial), **depth→SDF** (geometric), **XFeat** (recognition).
+  Channel 3 IMU referee (per-jump, attitude-free): a real >3 m/s motion has `|accel|−g` elevated; a
+  TELEPORT moves position while the accel reads plain gravity → REAL vs LIE. **VALIDATED: across
+  cuVSLAM AND OKVIS casa runs, 100% of inertially-impossible provider teleports fell inside a slamko
+  LOST→RECOVERED sealed interval** (cuVSLAM `vol` diverged to 374 m / 102 teleports → all 102 sealed).
+- **NEVER-JUMP defect FOUND then FIXED.** The new live slewed-TF dump (`traj_slewed.tum` = the pose
+  Nav2 consumes) exposed channel 2 **FAIL**: the live robot pose jumped **17.5 m/s**, identical to
+  the provider's teleports. Root cause: the slew only rate-limits the `map→odom` correction leg; the
+  provider's teleport rides through the `odom→base` passthrough RAW. **Fix `gate_live_pose`** (opt-in,
+  default OFF): absorb the teleport into a single odom-frame accumulator `T_gate_` so the live
+  `odom→base` HOLDS (dead-reckons smooth) and re-anchors via the slew. A/B: **15 jumps/17.5 m/s →
+  0 jumps/2.19 m/s PASS**; geometric coherence IMPROVED (excess 0.058→0.028 m); stability unchanged.
+  Localized to the publish path — the optimized graph was ALREADY smooth (max 1 m node steps).
+- **cuVSLAM provider:** runs the rumbo on casa direct-infra (full slamko run, 6/7 PASS). It IS GOOD
+  (EuRoC 0 jumps); on uncalibrated casa it teleports but **slamko catches every teleport** — the whole
+  point of the untrusted-provider design, now MEASURED.
+- **`scripts/tsdf_slice.py`** — horizontal mid-height cut of a TSDF mesh (floor-plan view) + trajectory
+  overlay; auto-cuts at the navigable (trajectory) height.
+
+**The "travesuras" (small things that bit — check here first):**
+- **cuVSLAM rejects a dim-mismatched `camera_info`** (640 img vs 848 info) — inject the correct dims
+  (`cam_info_inject_{640,848}.py`). Use a dimension-consistent bag.
+- **BLOCKER (open):** the cuVSLAM **inject-variant** pipeline gives `body_tf → provider_fusion` =
+  **0 odometry** (wall/brutal bags) — a plumbing connection bug, NOT slamko logic (direct-infra casa
+  runs work). The evaluator turns this into a precise diagnostic (stream present, slamko consumed 0).
+- **never-jump:** the `map→odom` slew is NOT sufficient on its own — the provider teleport rides
+  `odom→base`; you need `gate_live_pose`. Threshold = **per-platform robot-max-speed + margin**
+  (5.0 m/s too lax for casa, 2.5 worked; the IMU referee tells you what's real fast-motion vs teleport).
+- **tsdf_slice:** ALWAYS cut at the NAVIGABLE (trajectory) height. A slice above/below the camera
+  height makes the path project onto walls that exist only at the other height → looks like
+  "trajectory inside a wall" but is a pure projection artefact (verified: 73% of the path >0.3 m clear,
+  median 0.58 m → map coherent).
+- **flash-bag splitter:** the pre-bag `n=0 / clean=0 / dotted=0` lines are WARMUP, not failure — it
+  routes by IMAGE CONTENT (dot energy), not the buggy `frame_emitter_mode` metadata; final run routed
+  3338 emitter-ON frames → `/nvblox/depth` (the D455 HW on-ASIC depth) → TSDF.
+- **channel 7 honest dead-end:** neither the sparse XFeat cloud (~5 cm density floor MASKS doubling)
+  NOR the dense TSDF mesh (the TSDF AVERAGES conflicting depth into one smoothed surface) can detect
+  doubling OFFLINE — proven twice with synthetic-doubling injection. True doubling detection needs the
+  LIVE point-to-SDF residual of a held-out revisit depth frame (the v2 hook).
+- **tooling:** `rosbags` lives in the venv `/tmp/rerunvenv` (NOT system python — PEP668); the harness
+  reports a background bash "failed exit 1" even when the run COMPLETED (check the output files, not
+  the exit code); don't prefix a background bash with `pkill` (the harness reaps the group).
+
+**Artifacts / "photos" for next sessions** (regenerate, don't re-derive):
+- TSDF mid-height floor plan of the 45 fps flash bag: `python3 scripts/tsdf_slice.py
+  /tmp/slamko_casa_vol/volumetric_live.ply out.png 0.25` (auto navigable height) — the deliverable
+  that proved the map coherent.
+- Full scorecard (with IMU referee): `/tmp/rerunvenv/bin/python3 scripts/slamko_eval.py <run_dir>
+  --bag /mnt/data/bags/bno_ab/CASA1_40cmH_Stereo60_RGB30_BNO_848_trim`.
+- Run the validated volumetric pipeline: `bash scripts/run_slamko_casa_volumetric_live.sh` (OKVIS +
+  D455 HW depth → live nvblox TSDF → mesh + `~/volumetric_costmap` OccupancyGrid).
+- Gated cuVSLAM A/B: `GATE=true GATESPD=2.5 bash scripts/run_slamko_cuvslam_casa.sh`.
+
+**NEXT (proposed):** Nav2 integration — the nvblox local costmap is ALREADY published
+(`~/volumetric_costmap`, nav_msgs/OccupancyGrid); wire it + the slamko global map into Nav2, gate
+lifecycle on `localized`, drive goals. The never-jump gate is the PREREQUISITE that just landed (a
+planner on a jumping TF would corrupt). See §"Next step" at the end of this doc.
+
+---
+
+## 0b. 2026-06-19 — THE IMMORTALITY PUSH (prior milestone)
 
 A long session took the map from "grows without bound" to **ORB-SLAM3-style bounded +
 never-lost + gated**, all measured on casa1 bags. The immortal core is now in place; what
@@ -184,7 +260,45 @@ PROVIDER=kltvo VPR=true scripts/bench_pa.sh <bag> results/<out> 0.5   # klt_vo p
 
 ---
 
-## 6. The queue (next session, in order — refreshed 2026-06-19)
+## 6. The queue (next session, in order — refreshed 2026-06-26)
+
+### Recommended next: NAV2 + nvblox local costmap (the "make it drive" phase)
+
+slamko now has both maps coherent + the never-jump gate (the planner prerequisite). The volumetric
+layer ALREADY publishes a 2D local costmap (`~/volumetric_costmap`, `nav_msgs/OccupancyGrid`,
+transient_local) from the live nvblox TSDF. The remaining work is **Nav2 wiring**, in order:
+1. **Publish the TF + map contract Nav2 expects** — slamko emits `slamko_map→slamko_odom→base`;
+   confirm/rename to Nav2's `map→odom→base_link`, and publish the GLOBAL 2D map as a latched
+   `/map` (OccupancyGrid). The global map can come from the sparse landmark occupancy OR a
+   mid-height slice of the TSDF (we already cut one — `tsdf_slice.py`).
+2. **Run gate_live_pose ON** — Nav2's costmaps/planner must consume the SMOOTH TF, never the raw
+   provider jump. This is non-negotiable for Nav2 (a jump corrupts the costmap + the controller).
+   Set `live_gate_speed` to the platform max + margin.
+3. **Wire the nvblox local costmap** into Nav2's `local_costmap` (it's already an OccupancyGrid;
+   either feed it as a static-layer source or port the `nvblox_costmap_layer` plugin — see
+   `~/coding/nvblox_ros2` + the workspace `CLAUDE.md` Step 1).
+4. **Gate Nav2 lifecycle on `localized`** (the bridge pattern from `okvis_nav2_bridge`) so goals
+   aren't accepted against the startup frame before the first reloc; `/initialpose` cold-start
+   override.
+5. **Send `/goal_pose`** in sim/replay; confirm the global planner uses slamko's `/map` and the
+   local controller respects the nvblox obstacles; spawn a dynamic obstacle → confirm reroute.
+
+Open questions to resolve while doing it: is the global `/map` the sparse-occupancy or the TSDF
+slice? does nvblox need its own TF (`odom→base` from slamko + `base→depth_optical` from a static
+URDF)? local-only nvblox first (no static prior). Trade-off: this is the first time slamko output
+drives a controller — start in **bag-replay → sim (`cerebro_robot_sim`) → real D455**, never
+real-robot first. **Write this up as `PLAN_NAV2_NVBLOX_01.md` when starting.**
+
+### Also queued (smaller, can interleave)
+- **Unify the gate threshold with the quality-break** so channel 2 (live output) and channel 3
+  (map-seal recall) move together (today the gate at 2.5 m/s caught more than the quality-break at
+  4.0). Feed a gate-detected teleport into the seal path.
+- **Fix the cuVSLAM inject-variant `body_tf → provider_fusion` 0-odometry bug** → unblocks
+  wall/brutal on the cuVSLAM rumbo (direct-infra works; the inject path drops the odom).
+- **Channel 7 v2 — live point-to-SDF revisit residual** (the only metric that resolves
+  sub-decimetre doubling; sparse + dense-mesh both proven blind offline).
+
+### Prior queued task: RECORD NEW BRUTAL STRESS BAGS (still valid)
 
 **NEXT TASK (user-chosen): RECORD NEW BRUTAL STRESS BAGS.** The immortal core is built
 + validated on casa1, but the EXTREME failure modes can't be stressed without data we

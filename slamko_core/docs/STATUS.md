@@ -3,6 +3,15 @@
 Living, dated progress log + current test results. Append on every validated
 change (see [`../../docs/DOC_PROCESS.md`](../../docs/DOC_PROCESS.md)).
 
+## 2026-06-26 — `VolumetricBackend::queryDistanceField` added to the contract ✅ (commit 7005ac7)
+
+`volumetric_map.hpp`: `virtual bool queryDistanceField(const std::vector<Vec3>& pts_map,
+std::vector<double>& dist, std::vector<double>& weight)` (default returns false = backend has no SDF
+query). Lets a caller batch-sample the signed distance field at world points — the contract the
+DENSE geometric channel (point-to-SDF ICP, channel 7 v2) registers against. `NvbloxBackend`
+implements it via the ESDF (slamko_tsdf STATUS 2026-06-26). Pure contract addition, ABI-compatible
+(default impl), no test change.
+
 ## 2026-06-22 — volumetric_map.hpp contract (slamko_tsdf) ✅
 
 New contract `volumetric_map.hpp` for the volumetric layer: `DepthFrame` (per-keyframe

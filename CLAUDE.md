@@ -18,7 +18,23 @@ research provenance — anchor-don't-weld, iSAM2-poses-only, raw-mag-not-BNO-fus
 GNSS init-then-re-anchor). Old own-VIO plan: `docs/archive/MASTER_PLAN_OWNVIO_01.md`.
 Also: [`docs/DECOUPLING.md`](docs/DECOUPLING.md), [`docs/DOC_PROCESS.md`](docs/DOC_PROCESS.md).
 
-> **Current focus (2026-06-20): COHERENT CROSS-SESSION FUSION shipped (A+B+E).** Cold-start →
+> **Current focus (2026-06-26): UNIVERSAL EVALUATOR + NEVER-JUMP GATE shipped; next = NAV2.**
+> Cold-start → [`docs/PIPELINE_STATUS_01.md`](docs/PIPELINE_STATUS_01.md) **§0 (2026-06-26)** +
+> [`docs/EVAL_SYSTEM_01.md`](docs/EVAL_SYSTEM_01.md) + memory `slamko-universal-evaluator`. Built
+> `scripts/slamko_eval.py` = the **provider-agnostic 7-channel ideology scorecard** (3 independent
+> witnesses: IMU inertial · depth→SDF geometric · XFeat recognition) — judges the slamko LAYER, not
+> the provider (untrusted by design). It MEASURED that cuVSLAM/OKVIS teleports are 100% caught
+> (sealed in LOST→RECOVERED), then FOUND + FIXED a real **never-jump defect**: the live robot pose
+> jumped 17.5 m/s with the provider (the `map→odom` slew bounds only the correction leg; the teleport
+> rode `odom→base` raw) → **`gate_live_pose`** absorbs it into `T_gate_` (A/B: 0 jumps/2.19 m/s PASS,
+> opt-in default OFF). Also `scripts/tsdf_slice.py` (TSDF floor-plan cut). The 45 fps "flash" bag
+> volumetric map (D455 HW depth → nvblox TSDF) is coherent (605 kf, loop closed, path in free space).
+> **NEXT = Nav2 + nvblox local costmap** (already published `~/volumetric_costmap`); the gate is the
+> planner prerequisite. GOTCHAS: cuVSLAM inject-variant `body_tf→provider_fusion` 0-odometry blocker
+> (open); gate threshold = robot-max-speed+margin; tsdf_slice MUST cut at navigable height (else
+> projection artefact looks like a wall-crossing); rosbags in `/tmp/rerunvenv` not system python.
+>
+> **Prior focus (2026-06-20): COHERENT CROSS-SESSION FUSION shipped (A+B+E).** Cold-start →
 > [`docs/RESEARCH_LIFELONG_FUSION_01.md`](docs/RESEARCH_LIFELONG_FUSION_01.md) +
 > [`docs/PLAN_BRUTAL_RUNS_VIZ_01.md`](docs/PLAN_BRUTAL_RUNS_VIZ_01.md) + memory
 > `slamko-lifelong-fusion-ABE`. The revisit "doubling" = rigid-SE3 re-base can't absorb

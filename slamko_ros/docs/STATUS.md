@@ -1,5 +1,34 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
+## 2026-06-26 — never-jump LIVE gate + slewed-TF dump ✅ (A/B validated on cuVSLAM casa)
+
+The universal evaluator (`scripts/slamko_eval.py`) found that the live robot pose JUMPED with the
+provider's teleports — the `map→odom` slew only bounds the correction leg, the provider teleport
+rides `odom→base` raw. Two changes in `provider_fusion_node.cpp`:
+
+- **`traj_slewed.tum` dump** — the LIVE rate-limited pose the nav stack consumes
+  (`T_map_odom_pub_ * live_TOB_`). Lets channel 2 measure the REAL never-jump guarantee, not a
+  graph-based file proxy. (`fused.tum`/`global.tum` apply the correction EXACTLY and jump at a loop
+  closure by design — only `traj_slewed` is the smoothed robot output.)
+- **`gate_live_pose`** (opt-in, default OFF — it changes the live odom→base TF a robot consumes).
+  Each provider sample, a physically-impossible step (>`live_gate_speed` / `live_gate_rot`) is
+  absorbed into ONE odom-frame accumulator `T_gate_` so the published `odom→base` HOLDS
+  (dead-reckons smooth) through the teleport; coherent steps pass 1:1 (`T_gate_` unchanged). The held
+  teleport = honest DR drift that a later weld/reloc re-anchors via the existing slew. Localized to
+  the publish path — does NOT touch `s.T_OB`, the chain, or the graph (the optimized graph was
+  ALREADY smooth, max 1 m node steps; the 17 m/s jump was purely the high-rate raw passthrough).
+  Params `live_gate_speed`(5.0 m/s), `live_gate_rot`(10.0 rad/s) — set per-platform (robot max speed
+  + margin); the IMU referee tells you what's real fast-motion vs teleport.
+
+**A/B VALIDATED** (cuVSLAM casa, channel 2 = live slewed output):
+`UNGATED 15 jumps>3m/s / max 17.49 m/s FAIL` → `GATED@5.0 3 jumps / 4.85 m/s` →
+**`GATED@2.5 0 jumps / 2.19 m/s PASS`**. Geometric coherence IMPROVED (revisit excess 0.058→0.028 m);
+stability/fragmentation unchanged (13 submaps, 0.36/m). Default OFF = exact passthrough, zero
+regression. Channel 3 (quality-break MAP-seal recall) is a SEPARATE axis from channel 2 (live-gate
+OUTPUT) — the gate caught ALL teleports for the output even where the quality-break sealed only some;
+unifying the two thresholds is a future tidy. Commits d73e393, a868d62. Tool: `scripts/tsdf_slice.py`
+(mid-height TSDF floor-plan cut, auto navigable height).
+
 ## 2026-06-23 — LIVE VOLUMETRIC wiring: D455 HW depth → live TSDF → OccupancyGrid ✅ (build-validated)
 
 provider_fusion_node now drives `slamko_tsdf`'s `VolumetricLiveDriver` so a running slamko builds a
