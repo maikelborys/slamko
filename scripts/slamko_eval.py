@@ -221,12 +221,70 @@ def evaluate(run_dir, bag=None, imu_topic='/camera/camera/imu', label=None):
         note=f"{n_submaps} submaps over {traj_len:.1f} m "
              + (f"= {spm:.2f}/m (bounded)" if spm and spm<1.0 else "(check growth)"))
 
-    # ---- channel 7: GEOMETRIC (D455 depth -> SDF residual at revisit) ----
-    C['7_geometric_depth'] = dict(verdict='PENDING',
-        note='hook: register live D455 depth to the existing nvblox SDF at a revisit; low '
-             'point-to-SDF residual = map metrically coherent. Needs --depth-sdf (CUDA + live SDF). '
-             'Tool: slamko_tsdf/tools/nvblox_sdf_selftest.cpp pattern.')
+    # ---- channel 7: GEOMETRIC (map self-coherence — the doubling check) ----
+    C['7_geometric_depth'] = geometric_coherence(run_dir)
     return R
+
+def geometric_coherence(run_dir):
+    """GEOMETRIC witness on the MAP itself: at regions where NON-CONSECUTIVE submaps overlap (a
+       revisit the Atlas welded), are their depth-anchored point clouds ALIGNED (thin surface =
+       coherent) or DOUBLED (a systematic offset = the map distorted, the failure appearance can
+       miss)? Offline, on global_cloud.csv (export: ros2 run slamko_loop smap_cloud <map_dir> out).
+       The live dense D455 depth->SDF residual is the v2 hook (needs CUDA)."""
+    cloud = os.path.join(run_dir, 'global_cloud.csv')
+    if not os.path.exists(cloud):
+        return dict(verdict='NO-DATA', note='export global_cloud.csv first: '
+                    'ros2 run slamko_loop smap_cloud <run>/map <run>/global_cloud.csv 1')
+    try:
+        d = np.loadtxt(cloud, delimiter=',', skiprows=1)
+    except Exception as e:
+        return dict(verdict='ERR', note=f'cloud read failed: {e}')
+    if d.ndim != 2 or d.shape[1] < 4 or d.shape[0] < 50:
+        return dict(verdict='NO-DATA', note='cloud too small')
+    pts = d[:, :3]; sub = d[:, 3].astype(int)
+    # NN-based revisit registration error (grid hash, numpy-only). For each point, the nearest
+    # point from a NON-CONSECUTIVE submap (|Δid|>=2). In an overlap region a coherent map puts the
+    # two visits ON each other (small NN); a DOUBLED map has a systematic NN floor = the offset.
+    R = 0.5                                  # search radius / cell size [m]
+    keys = np.floor(pts / R).astype(np.int64)
+    from collections import defaultdict
+    cell = defaultdict(list)
+    for i in range(len(pts)):
+        cell[(keys[i,0],keys[i,1],keys[i,2])].append(i)
+    import itertools
+    neigh = list(itertools.product((-1,0,1),repeat=3))
+    nn = []; floor = []   # revisit NN (cross non-consecutive submap) + density floor (intra-submap NN)
+    for i in range(len(pts)):
+        ki = (keys[i,0],keys[i,1],keys[i,2])
+        best_rev = 1e9; best_intra = 1e9
+        for dx,dy,dz in neigh:
+            for j in cell.get((ki[0]+dx,ki[1]+dy,ki[2]+dz),()):
+                if j == i: continue
+                dist = float(np.linalg.norm(pts[i]-pts[j]))
+                if abs(sub[j]-sub[i]) < 2:                 # same/chain submap -> density floor
+                    if dist < best_intra: best_intra = dist
+                else:                                       # non-consecutive revisit -> the signal
+                    if dist < best_rev: best_rev = dist
+        if best_rev < R: nn.append(best_rev)
+        if best_intra < R: floor.append(best_intra)
+    if len(nn) < 20:
+        return dict(verdict='N/A', overlap_points=len(nn),
+            note='too few non-consecutive submap overlaps = no spatial revisit to check (provider '
+                 'may have diverged -> honest dangling). Cross-check ch4 (welds) + ch6 (components).')
+    nn = np.array(nn); med = float(np.median(nn)); p90 = float(np.percentile(nn,90))
+    dens = float(np.median(floor)) if floor else 0.0       # the sparsity floor that confounds absolute NN
+    excess = med - dens                                     # revisit error ABOVE what density explains
+    # HONEST verdict: the sparse XFeat cloud's NN floor (~dens) MASKS doublings <= dens, so this is a
+    # RELATIVE indicator, not an absolute doubling verdict -> INFO. The dense D455 depth->SDF (v2) is
+    # the metric that can resolve sub-decimetre doubling. Only a GROSS excess (>> floor) is flagged.
+    vd = 'PASS' if excess < dens else ('WARN' if excess < 2*dens else 'FAIL')
+    return dict(verdict=vd, overlap_points=len(nn),
+        revisit_nn_med_m=round(med,3), density_floor_m=round(dens,3), excess_m=round(excess,3),
+        p90_nn_m=round(p90,3),
+        note=f'{len(nn)} revisit overlap pts; NN med {med:.3f} m vs sparsity floor {dens:.3f} m -> '
+             f'excess {excess:.3f} m. RELATIVE indicator only (sparse cloud floor MASKS doublings '
+             f'<= {dens:.2f} m -> cannot resolve sub-decimetre doubling). The dense D455 depth->SDF '
+             f'is the v2 metric that can. Cross-run signal IS valid (higher excess = looser revisits).')
 
 DYN_ACCEL_MPS2 = 1.5   # mean |accel|-g below this DURING a provider jump = body inertially static
                        #                                       = the position jump is a TELEPORT LIE

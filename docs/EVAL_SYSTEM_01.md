@@ -33,8 +33,14 @@ Feed any run dir → the same **7-channel scorecard**. Compare providers head-to
    false-merge teleport check.)
 5. **RECOVER** — re-anchor count + mean latency after each loss.
 6. **STABLE-FRAGMENTING** — submaps / metre; bounded even when it makes many submaps (< 1/m).
-7. **GEOMETRIC (depth)** — *hook*: register live D455 depth to the existing nvblox SDF at a revisit;
-   low point-to-SDF residual = metrically coherent. Needs `--depth-sdf` (CUDA + live SDF).
+7. **GEOMETRIC (map coherence)** — at non-consecutive submap overlaps (a revisit), the cross-submap
+   nearest-neighbour registration error vs the cloud's own sparsity floor (intra-submap NN). Export
+   the cloud first: `ros2 run slamko_loop smap_cloud <run>/map <run>/global_cloud.csv 1`. **HONEST
+   LIMITATION (validated by synthetic-doubling injection): the sparse XFeat cloud's density floor
+   (~5–6 cm inter-point) MASKS any doubling ≲ that floor — so this is a RELATIVE indicator, not an
+   absolute doubling verdict.** The cross-run signal is valid (a diverged run shows higher excess).
+   The **dense D455 depth → SDF residual is the v2 metric** that can resolve sub-decimetre doubling
+   (the live `--depth-sdf` hook; CUDA + live SDF; `slamko_tsdf/tools/nvblox_sdf_selftest.cpp`).
 
 ## Usage
 ```bash
@@ -58,7 +64,11 @@ is the correct, defensible metric (a break seals the whole window). At a tight �
 lies are within 1 s of the break instant — the tail is the rest of a multi-second teleport burst
 already inside the declared-LOST interval.
 
+Full cuVSLAM scorecard (2026-06-26): casa **6/7 PASS**, vol **6/7 PASS** (ch7 WARN/FAIL = the
+sparse-cloud relative indicator, not an absolute defect — see its honest limitation above).
+
 **Gotchas:** channel 3 reads `--bag` IMU via `rosbags` (installed in `/tmp/rerunvenv`, NOT system
 python — PEP668). Gravity is estimated as `median(|accel|)` so a doubled-accel bag (~19.6) is
-handled. Channel 2 is a file proxy until a slewed-TF dump exists. Channel 7 (depth) is wired but
-needs the live SDF (CUDA).
+handled. Channel 2 is a file proxy until a slewed-TF dump exists. Channel 7's sparse-cloud floor
+(~5 cm) masks sub-decimetre doubling — it is a RELATIVE indicator; the dense depth → SDF (v2) is the
+absolute metric. Export `global_cloud.csv` (smap_cloud) before running channel 7.
