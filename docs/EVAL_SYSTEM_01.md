@@ -67,6 +67,14 @@ already inside the declared-LOST interval.
 Full cuVSLAM scorecard (2026-06-26): casa **6/7 PASS**, vol **6/7 PASS** (ch7 WARN/FAIL = the
 sparse-cloud relative indicator, not an absolute defect — see its honest limitation above).
 
+**Channel 2 found a real defect → fix shipped.** The live slewed-TF dump exposed that the provider's
+teleports rode through `odom→base` raw (channel 2 FAIL, 17.5 m/s live jumps). Fix `gate_live_pose`
+(commit a868d62, opt-in default OFF): absorb the teleport into `T_gate_` so the live pose HOLDS
+smooth and re-anchors via the slew. A/B: UNGATED 15 jumps/17.5 m/s **FAIL** → GATED@2.5 m/s **0
+jumps/2.19 m/s PASS**; geometric coherence improved (excess 0.058→0.028 m), stability unchanged.
+Run it: `GATE=true GATESPD=2.5 bash scripts/run_slamko_cuvslam_casa.sh`. Threshold = per-platform
+robot-max-speed + margin (the IMU referee tells you what's real fast-motion vs teleport).
+
 **Gotchas:** channel 3 reads `--bag` IMU via `rosbags` (installed in `/tmp/rerunvenv`, NOT system
 python — PEP668). Gravity is estimated as `median(|accel|)` so a doubled-accel bag (~19.6) is
 handled. Channel 2 is a file proxy until a slewed-TF dump exists. Channel 7's sparse-cloud floor
