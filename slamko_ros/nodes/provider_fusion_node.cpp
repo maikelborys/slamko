@@ -107,6 +107,14 @@ class ProviderFusionNode : public rclcpp::Node {
     publish_odom_base_tf_ = declare_parameter("publish_odom_base_tf", true);
     slew_trans_ = declare_parameter("slew_trans_mps", 0.5);
     slew_rot_   = declare_parameter("slew_rot_radps", 0.5);
+    // never-jump LIVE gate (opt-in, default OFF — changes the live odom->base TF a robot consumes).
+    // The slew only bounds the map->odom correction; a provider TELEPORT rides through odom->base
+    // raw -> the live pose jumps (slamko_eval channel 2 found this). When on, a physically-
+    // impossible provider step is ABSORBED into T_gate_ so the published odom->base HOLDS (dead-
+    // reckons smooth) through the teleport and re-anchors via the slew when SLAM recovers.
+    gate_live_pose_  = declare_parameter("gate_live_pose", false);
+    live_gate_speed_ = declare_parameter("live_gate_speed", 5.0);    // m/s, impossible for the robot
+    live_gate_rot_   = declare_parameter("live_gate_rot", 10.0);     // rad/s
 
     slamko::ProviderChainConfig ccfg;
     ccfg.kf_min_translation = declare_parameter("kf_min_translation", ccfg.kf_min_translation);
@@ -908,6 +916,28 @@ class ProviderFusionNode : public rclcpp::Node {
     for (int i = 0; i < 6; ++i)
       for (int j = 0; j < 6; ++j) s.cov(i, j) = msg->pose.covariance[i * 6 + j];
 
+    // never-jump LIVE gate: detect a provider TELEPORT (physically-impossible step) and absorb it
+    // into T_gate_ so the published live odom->base (live_TOB_ = T_gate_ * s.T_OB) HOLDS instead of
+    // relaying the jump. Coherent steps leave T_gate_ unchanged -> they pass through 1:1. The held
+    // teleport becomes honest DR drift that a later weld/reloc re-anchors (slewed). Default OFF =
+    // exact passthrough (live_TOB_ == s.T_OB), zero change to existing behaviour.
+    if (gate_live_pose_ && have_last_raw_) {
+      const double gdt = s.t - last_raw_t_;
+      const slamko::SE3 dT = last_raw_TOB_.inverse() * s.T_OB;
+      const double v = gdt > 1e-6 ? dT.translation().norm() / gdt : 0.0;
+      const double w = gdt > 1e-6 ? dT.so3().log().norm() / gdt : 0.0;
+      if (v > live_gate_speed_ || w > live_gate_rot_) {
+        // hold: want gated_now == gated_prev  =>  T_gate_ = T_gate_ * last_raw * s.T_OB^-1
+        T_gate_ = T_gate_ * last_raw_TOB_ * s.T_OB.inverse();
+        ++live_gate_holds_;
+        RCLCPP_WARN(get_logger(),
+                    "live-gate HOLD: provider teleport %.1f m/s / %.1f rad/s absorbed (hold #%d)",
+                    v, w, live_gate_holds_);
+      }
+    }
+    last_raw_TOB_ = s.T_OB; last_raw_t_ = s.t; have_last_raw_ = true;
+    live_TOB_ = gate_live_pose_ ? (T_gate_ * s.T_OB) : s.T_OB;
+
     // --- never-lost loss detection + branch (R-C) ---
     if (t0_ < 0.0) t0_ = s.t;
     const double rel = s.t - t0_;
@@ -1147,8 +1177,8 @@ class ProviderFusionNode : public rclcpp::Node {
     if (dt_r.norm() > max_r) dt_r *= max_r / dt_r.norm();
     T_map_odom_pub_ = T_map_odom_pub_ * slamko::SE3(slamko::SO3::exp(dt_r), dt_t);
 
-    // the LIVE robot pose = slewed map->odom * odom->base; dump it (the never-jump ground truth).
-    if (slewed_file_) dumpTum(slewed_file_, last_sample_.t, T_map_odom_pub_ * last_sample_.T_OB);
+    // the LIVE robot pose = slewed map->odom * (gated) odom->base; dump it (never-jump ground truth).
+    if (slewed_file_) dumpTum(slewed_file_, last_sample_.t, T_map_odom_pub_ * live_TOB_);
 
     const auto stamp = now();
     geometry_msgs::msg::TransformStamped tf_mo;
@@ -1163,7 +1193,7 @@ class ProviderFusionNode : public rclcpp::Node {
       tf_ob.header.stamp = stamp;
       tf_ob.header.frame_id = odom_frame_;
       tf_ob.child_frame_id = base_frame_;
-      toTransformMsg(last_sample_.T_OB, tf_ob.transform);
+      toTransformMsg(live_TOB_, tf_ob.transform);  // gated when gate_live_pose_ (never-jump); else raw
       tf_broadcaster_->sendTransform(tf_ob);
     }
 
@@ -2392,6 +2422,13 @@ class ProviderFusionNode : public rclcpp::Node {
   std::string map_frame_, odom_frame_, base_frame_;
   bool publish_tf_ = true, publish_odom_base_tf_ = true;
   double slew_trans_ = 0.5, slew_rot_ = 0.5;
+  // never-jump live gate state (opt-in)
+  bool gate_live_pose_ = false;
+  double live_gate_speed_ = 5.0, live_gate_rot_ = 10.0;
+  slamko::SE3 T_gate_;          // odom-frame left-multiplier absorbing provider teleports
+  slamko::SE3 live_TOB_;        // published odom->base = gated when on, raw otherwise
+  slamko::SE3 last_raw_TOB_; double last_raw_t_ = -1.0; bool have_last_raw_ = false;
+  int live_gate_holds_ = 0;
 
   slamko::ProviderChain chain_;
   slamko::PoseGraph graph_;
