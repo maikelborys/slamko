@@ -36,6 +36,14 @@
 
 namespace slamko {
 
+// Which nonlinear solver backs optimize(). CERES = the default, always built. GTSAM_LM = a
+// Levenberg-Marquardt GTSAM backend (built only with -DSLAMKO_LOOP_WITH_GTSAM=ON), the step toward
+// the MASTER_PLAN P-C′ iSAM2 incremental smoother (GTSAM is purpose-built for robotics factor
+// graphs). The same factor graph + permuted [trans;rot]↔[rot;trans] information makes the cost
+// IDENTICAL to Ceres, so the two are A/B-validated to agree (test_pose_graph_gtsam). If GTSAM_LM is
+// requested but the GTSAM build is OFF, optimize() transparently falls back to CERES + warns.
+enum class PoseGraphBackend { Ceres, GtsamLM };
+
 struct PoseGraphConfig {
   // Robust kernel half-width for LOOP edges, in units of the whitened residual
   // (≈ sigmas). <=0 disables the kernel (treat loops as trusted). Odometry edges
@@ -44,6 +52,7 @@ struct PoseGraphConfig {
   double loop_huber_delta = 2.45;
   int    max_iters        = 50;
   bool   verbose          = false;
+  PoseGraphBackend backend = PoseGraphBackend::Ceres;
 };
 
 class PoseGraph {
@@ -127,6 +136,12 @@ class PoseGraph {
   std::unordered_map<std::uint64_t, std::uint64_t> connectedComponents() const;
 
  private:
+  // optimize() dispatches to one of these by cfg_.backend. optimizeCeres_ is the always-built
+  // default; optimizeGtsam_ lives in pose_graph_gtsam.cpp (real GTSAM under -DSLAMKO_LOOP_WITH_GTSAM,
+  // otherwise a stub that falls back to Ceres). Both share this class's private structs/members.
+  Result optimizeCeres_();
+  Result optimizeGtsam_();
+
   struct Edge {
     std::uint64_t from = 0, to = 0;
     SE3 meas;

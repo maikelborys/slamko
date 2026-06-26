@@ -165,6 +165,12 @@ void PoseGraph::addYawPrior(std::uint64_t id, double yaw_target_rad, double sigm
 }
 
 PoseGraph::Result PoseGraph::optimize() {
+  // Dispatch to the configured backend. GtsamLM is the step toward the MASTER_PLAN P-C′ iSAM2
+  // smoother; it falls back to Ceres (with a warn) when slamko_loop was built without GTSAM.
+  return cfg_.backend == PoseGraphBackend::GtsamLM ? optimizeGtsam_() : optimizeCeres_();
+}
+
+PoseGraph::Result PoseGraph::optimizeCeres_() {
   Result res;
   res.num_nodes = static_cast<int>(nodes_.size());
   for (const auto& e : edges_) (e.is_loop ? res.num_loops : res.num_odom)++;

@@ -2,6 +2,30 @@
 
 Living, dated progress + numbers log. Plan: [`PLAN_P2_loop.md`](PLAN_P2_loop.md).
 
+## 2026-06-26 — GTSAM pose-graph backend (LevenbergMarquardt) — A/B-validated vs Ceres ✅
+
+The step toward the MASTER_PLAN P-C′ iSAM2 smoother (GTSAM is purpose-built for robotics factor
+graphs). `optimize()` now dispatches on `PoseGraphConfig::backend` (`Ceres` default | `GtsamLM`):
+- `src/pose_graph.cpp` `optimize()` → `optimizeCeres_()` (the renamed existing body) or
+  `optimizeGtsam_()`.
+- `src/pose_graph_gtsam.cpp` (new): builds the SAME factor graph in GTSAM — relative
+  `BetweenFactor<Pose3>` (loops Huber-robust), cross-session `PriorFactor<Pose3>`, per-CONNECTED-
+  COMPONENT gauge (identical union-find; fixed/anchor/auto-gauge nodes pinned by a σ≈1e-6 tight
+  prior since batch LM has no constant variables) → `LevenbergMarquardtOptimizer`. **Load-bearing
+  detail:** slamko's 6×6 information is `[trans;rot]`, GTSAM's Pose3 tangent is `[rot;trans]` — we
+  PERMUTE the information block-wise so the whitened cost `r·I·r` is identical → both solvers
+  minimise the same objective → same minimum.
+- **Opt-in** `-DSLAMKO_LOOP_WITH_GTSAM=ON` (default OFF keeps the build Ceres-only + GTSAM-free; the
+  .cpp still compiles as a stub that falls back to Ceres + warns when GtsamLM is requested).
+
+**VALIDATED** (`test_pose_graph_gtsam`, built only with the flag): a drifted 6-node square loop +
+loop closure optimised by BOTH backends → optimised absolute poses agree node-by-node to
+**< 2 mm / < 2 mrad**; both reduce the cost. Default build (GTSAM OFF) green, existing
+`test_pose_graph` 7/7 unaffected. GTSAM 4.2.0 (system). v1 limitation: yaw priors not yet ported to
+the GTSAM factor (skipped + warned — use Ceres if compass yaw is active; gated OFF indoors anyway).
+**NEXT:** iSAM2 incremental (the real robotics win — relinearise only the affected sub-tree as the
+graph grows) + a `pose_graph_backend` ROS param in provider_fusion_node + a full-stack GTSAM build.
+
 ## 2026-06-26 — DENSE geometric channel: nvblox ESDF query + end-to-end (step 2) + HONEST finding
 
 Step 2 done (commit pending): `VolumetricBackend::queryDistanceField(pts)->{dist,weight}`

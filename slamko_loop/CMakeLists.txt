@@ -24,6 +24,12 @@ add_compile_options(-Wall -Wextra)
 # relocalizer transparently falls back to brute-force NN.
 option(SLAMKO_LOOP_WITH_TORCH "Build the LighterGlue libtorch matcher" OFF)
 
+# GTSAM pose-graph backend (PoseGraphBackend::GtsamLM) — the step toward the MASTER_PLAN P-C′ iSAM2
+# smoother. OFF keeps the default build Ceres-only + GTSAM-free; pose_graph_gtsam.cpp still compiles
+# (as a stub that falls back to Ceres). Turn ON to A/B GTSAM vs Ceres:
+#   colcon build --packages-select slamko_loop --cmake-args -DSLAMKO_LOOP_WITH_GTSAM=ON
+option(SLAMKO_LOOP_WITH_GTSAM "Build the GTSAM Levenberg-Marquardt pose-graph backend" OFF)
+
 find_package(ament_cmake REQUIRED)
 find_package(slamko_core REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
@@ -41,13 +47,21 @@ add_library(slamko_loop SHARED
   src/bow.cpp
   src/xfeat_relocalizer.cpp
   src/lightglue_matcher.cpp
-  src/pose_graph.cpp)
+  src/pose_graph.cpp
+  src/pose_graph_gtsam.cpp)
 target_include_directories(slamko_loop PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 target_link_libraries(slamko_loop Eigen3::Eigen Ceres::ceres)
 ament_target_dependencies(slamko_loop slamko_core)
 target_compile_features(slamko_loop PUBLIC cxx_std_17)
+
+if(SLAMKO_LOOP_WITH_GTSAM)
+  find_package(GTSAM REQUIRED)
+  target_compile_definitions(slamko_loop PRIVATE SLAMKO_HAVE_GTSAM)
+  target_link_libraries(slamko_loop gtsam)
+  message(STATUS "slamko_loop: GTSAM pose-graph backend ENABLED (${GTSAM_VERSION})")
+endif()
 
 if(SLAMKO_LOOP_WITH_TORCH)
   find_package(Torch REQUIRED HINTS /home/maikel/libtorch $ENV{HOME}/libtorch)
@@ -99,6 +113,11 @@ if(BUILD_TESTING)
     ament_add_gtest(test_lightglue test/test_lightglue.cpp)
     target_link_libraries(test_lightglue slamko_loop Eigen3::Eigen)
     ament_target_dependencies(test_lightglue slamko_core)
+  endif()
+  if(SLAMKO_LOOP_WITH_GTSAM)
+    ament_add_gtest(test_pose_graph_gtsam test/test_pose_graph_gtsam.cpp)
+    target_link_libraries(test_pose_graph_gtsam slamko_loop Eigen3::Eigen)
+    ament_target_dependencies(test_pose_graph_gtsam slamko_core)
   endif()
 endif()
 
