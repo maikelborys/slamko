@@ -644,7 +644,13 @@ class ProviderFusionNode : public rclcpp::Node {
           depth_topic, dqos,
           std::bind(&ProviderFusionNode::onDepth, this, std::placeholders::_1));
       pub_costmap_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
-          "~/volumetric_costmap", rclcpp::QoS(1).transient_local());
+          "~/volumetric_costmap", rclcpp::QoS(1).transient_local());  // GLOBAL (latched, whole map)
+      // LOCAL costmap: a rolling window around the robot (NOT latched — it follows the base). Window
+      // edge = local_costmap_size_m. Feed Nav2's local_costmap obstacle/static layer with this.
+      local_costmap_m_ = declare_parameter("local_costmap_size_m", 4.0);
+      if (local_costmap_m_ > 0.0)
+        pub_local_costmap_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
+            "~/local_costmap", rclcpp::QoS(2));
       RCLCPP_INFO(get_logger(),
                   "LIVE VOLUMETRIC on: depth=%s backend=%s voxel=%.2f m correct_every=%d "
                   "store_budget=%zu MB keep_recent=%zu",
@@ -1370,7 +1376,35 @@ class ProviderFusionNode : public rclcpp::Node {
       const float v = s.data[i];
       g.data[i] = (v < 0.f) ? -1 : (v >= 100.f ? 100 : 0);
     }
-    pub_costmap_->publish(g);
+    pub_costmap_->publish(g);          // GLOBAL costmap: the whole TSDF occupancy slice (latched)
+
+    // LOCAL costmap: a rolling square window of the same slice, centred on the robot's current
+    // map-frame position — the reactive map a Nav2 local controller / DWB uses. Same data, cropped +
+    // re-origined each tick (NOT latched). The robot pose = slewed map->odom * (gated) odom->base.
+    if (pub_local_costmap_ && have_sample_) {
+      const slamko::SE3 T_map_base = T_map_odom_pub_ * live_TOB_;
+      const double rx = T_map_base.translation().x(), ry = T_map_base.translation().y();
+      const int half = std::max(1, static_cast<int>(0.5 * local_costmap_m_ / s.resolution));
+      const int rcx = static_cast<int>((rx - s.origin_x) / s.resolution);
+      const int rcy = static_cast<int>((ry - s.origin_y) / s.resolution);
+      const int x0 = rcx - half, y0 = rcy - half, side = 2 * half + 1;
+      nav_msgs::msg::OccupancyGrid l;
+      l.header = g.header;
+      l.info.resolution = s.resolution;
+      l.info.width = side; l.info.height = side;
+      l.info.origin.position.x = s.origin_x + x0 * s.resolution;
+      l.info.origin.position.y = s.origin_y + y0 * s.resolution;
+      l.info.origin.orientation.w = 1.0;
+      l.data.assign(static_cast<std::size_t>(side) * side, -1);  // outside the global slice = unknown
+      for (int j = 0; j < side; ++j)
+        for (int i = 0; i < side; ++i) {
+          const int gx = x0 + i, gy = y0 + j;
+          if (gx < 0 || gy < 0 || gx >= static_cast<int>(s.width) || gy >= static_cast<int>(s.height))
+            continue;
+          l.data[j * side + i] = g.data[gy * s.width + gx];
+        }
+      pub_local_costmap_->publish(l);
+    }
   }
 
   void onInfo(const sensor_msgs::msg::CameraInfo::SharedPtr m, bool right) {
@@ -2704,7 +2738,9 @@ class ProviderFusionNode : public rclcpp::Node {
   std::size_t vmap_no_depth_ = 0;
   std::string volumetric_mesh_path_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_depth_;
-  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_costmap_;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_costmap_;        // global (latched)
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_local_costmap_;  // rolling window
+  double local_costmap_m_ = 4.0;
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_image_, sub_image_r_;
