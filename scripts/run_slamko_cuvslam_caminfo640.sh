@@ -35,6 +35,8 @@ ros2 run slamko_ros provider_fusion_node --ros-args \
   -p imu_topic:=/camera/camera/imu \
   -p map_dir:="$OUT/map" \
   -p traj_provider_path:="$OUT/provider.tum" -p traj_graph_path:="$OUT/graph.tum" \
+  -p traj_slewed_path:="$OUT/traj_slewed.tum" \
+  -p gate_live_pose:="${GATE:-false}" -p live_gate_speed:="${GATESPD:-2.5}" \
   -p reloc:=true -p use_scan_context:=true \
   -p atlas_break_on_quality:=true -p quality_soft_bridge:="${QSOFT:-true}" \
   -p use_imu_shock:=true \
