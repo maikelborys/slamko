@@ -32,15 +32,9 @@ class Cap(Node):
     def cb_g(self, m): self.g = m
     def cb_l(self, m): self.l = m
 
-def main():
-    rclpy.init()
-    n = Cap()
-    import time
-    t0 = time.time()
-    while rclpy.ok() and (n.g is None or n.l is None) and time.time() - t0 < 60:
-        rclpy.spin_once(n, timeout_sec=0.5)
+def render(n, out):
     if n.g is None and n.l is None:
-        print('no costmaps received'); return
+        return False
     cmap = ListedColormap(['#1a1a2e', '#2bd66b', '#e63946'])  # -1 unknown / 0 free / 100 occ
     fig, axes = plt.subplots(1, 2, figsize=(16, 8), dpi=120)
     for ax, (name, msg) in zip(axes, [('GLOBAL ~/volumetric_costmap (latched, whole map)', n.g),
@@ -58,8 +52,29 @@ def main():
         ax.set_aspect('equal'); ax.tick_params(colors='#888')
         for s in ax.spines.values(): s.set_color('#333')
     fig.patch.set_facecolor('#0a0a0a'); fig.tight_layout()
-    fig.savefig(OUT, facecolor='#0a0a0a', bbox_inches='tight')
-    print('wrote', OUT)
+    fig.savefig(out, facecolor='#0a0a0a', bbox_inches='tight')
+    plt.close(fig)
+    return True
+
+def main():
+    # CONTINUOUS capture: spin for up to `dur` s, re-rendering every ~8 s so the LAST render before
+    # the node dies has the FULL map (the global grows as the bag plays — a mid-run grab is only the
+    # room mapped so far). 3rd arg = duration seconds (default 240).
+    import time
+    dur = float(sys.argv[3]) if len(sys.argv) > 3 else 240.0
+    rclpy.init()
+    n = Cap()
+    t0 = time.time(); last = 0.0; saved = False
+    while rclpy.ok() and time.time() - t0 < dur:
+        rclpy.spin_once(n, timeout_sec=0.5)
+        if time.time() - last > 8.0 and (n.g is not None or n.l is not None):
+            if render(n, OUT):
+                saved = True
+                occ = sum(1 for v in n.g.data if v >= 100) if n.g else 0
+                print(f'[{int(time.time()-t0)}s] saved {OUT} (global occ cells: {occ})', flush=True)
+            last = time.time()
+    if saved: print('final map saved (last update before exit)')
+    else: print('no costmaps received')
     rclpy.shutdown()
 
 if __name__ == '__main__':
