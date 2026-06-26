@@ -14,6 +14,10 @@ source /opt/ros/jazzy/setup.bash
 source ~/coding/isaac_ros_ws/install/setup.bash
 source ~/coding/slamko/install/setup.bash 2>/dev/null
 export OMP_NUM_THREADS=2
+# nvblox lives in the ~/ros2_ws workspace; ament doesn't bake its dir into the install RPATH,
+# so the loader needs it on LD_LIBRARY_PATH (the proper find_package link only fixes the
+# segfault, not the load path).
+export LD_LIBRARY_PATH=/home/maikel/ros2_ws/install/nvblox_ros/lib:${LD_LIBRARY_PATH}
 rm -rf "$OUT"; mkdir -p "$OUT/map"
 
 echo "[pre] reap"

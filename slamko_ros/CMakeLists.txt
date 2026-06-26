@@ -38,6 +38,19 @@ find_package(geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 
+# slamko_tsdf hides nvblox behind a PIMPL, but its .so carries UNDEFINED nvblox symbols
+# that the CONSUMER (this node) must resolve at link time — slamko_tsdf does not export
+# nvblox transitively. When nvblox is present (the volumetric build) find + link it here so
+# the symbols resolve and the RPATH is baked (no -Wl,--allow-shlib-undefined, no runtime
+# LD_LIBRARY_PATH, no segfault in the nvblox init — the S3 stress regression). Absent (CUDA-
+# free build) slamko_tsdf is a no-op stub and nvblox isn't needed.
+find_package(nvblox QUIET)
+if(nvblox_FOUND)
+  find_package(glog QUIET)
+  find_package(gflags QUIET)
+  message(STATUS "slamko_ros: linking nvblox (volumetric path)")
+endif()
+
 # TensorRT 10 ships no CMake config (same discovery as slamko_vio).
 find_path(TENSORRT_INCLUDE_DIR NvInfer.h HINTS /usr/include/x86_64-linux-gnu /usr/include)
 find_library(NVINFER nvinfer HINTS /usr/lib/x86_64-linux-gnu)
@@ -61,6 +74,9 @@ ament_target_dependencies(provider_fusion_node
 # has undefined cudart/nvinfer refs the consumer must satisfy).
 target_link_libraries(provider_fusion_node Eigen3::Eigen ${OpenCV_LIBS}
   ${NVINFER} ${NVONNXPARSER} CUDA::cudart)
+if(nvblox_FOUND)
+  target_link_libraries(provider_fusion_node nvblox::nvblox_lib)
+endif()
 if(SLAMKO_WITH_RERUN)
   target_compile_definitions(provider_fusion_node PRIVATE SLAMKO_WITH_RERUN)
   target_link_libraries(provider_fusion_node rerun_sdk)
