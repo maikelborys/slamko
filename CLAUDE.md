@@ -33,8 +33,12 @@ Also: [`docs/DECOUPLING.md`](docs/DECOUPLING.md), [`docs/DOC_PROCESS.md`](docs/D
 > (`pose_graph_backend=isam2`, GTSAM auto-detected; `PoseGraphBackend::{Ceres,GtsamLM,GtsamISAM2}`):
 > native GTSAM yaw factor, EuRoC ATE Ceres≈iSAM2 (19.1 mm), **6× faster live** (O(touched)), brutal-bag
 > validated. GTSAM is ONLY the pose-graph solver — volumetric nvblox / provider / reloc unchanged.
-> **NEXT = Nav2 navigation: a GLOBAL costmap + a LOCAL costmap** (nvblox already publishes
-> `~/volumetric_costmap`); the never-jump gate is the planner prerequisite. GOTCHAS: cuVSLAM 0-odometry
+> **The GLOBAL + LOCAL costmaps are SHIPPED** (2026-06-26): `~/volumetric_costmap` (global, whole TSDF
+> slice, latched) + `~/local_costmap` (local, rolling 4 m window of the live nvblox slice). **NEXT =
+> the Nav2 planner+controller** over the two costmaps, lifecycle gated on `localized` (the never-jump
+> gate is the prerequisite, already default-ON). GOTCHAS: capture the GLOBAL costmap at END-of-run (it
+> grows; mid-run = one room = "solo salón"); the flash-bag splitter chain is flaky on repeated runs;
+> cuVSLAM 0-odometry
 > "body_tf" blocker was a missing LD_LIBRARY_PATH (libnvblox) — FIXED; gate threshold =
 > robot-max-speed+margin; tsdf_slice MUST cut at navigable height (else projection artefact looks like
 > a wall-crossing); rosbags in `/tmp/rerunvenv` not system python; build with `-DSLAMKO_LOOP_WITH_GTSAM`

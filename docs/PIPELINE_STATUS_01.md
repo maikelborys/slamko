@@ -279,19 +279,20 @@ PROVIDER=kltvo VPR=true scripts/bench_pa.sh <bag> results/<out> 0.5   # klt_vo p
 
 ### Recommended next: NAV2 + nvblox local costmap (the "make it drive" phase)
 
-slamko now has both maps coherent + the never-jump gate (the planner prerequisite). The volumetric
-layer ALREADY publishes a 2D local costmap (`~/volumetric_costmap`, `nav_msgs/OccupancyGrid`,
-transient_local) from the live nvblox TSDF. The remaining work is **Nav2 wiring**, in order:
-1. **Publish the TF + map contract Nav2 expects** — slamko emits `slamko_map→slamko_odom→base`;
-   confirm/rename to Nav2's `map→odom→base_link`, and publish the GLOBAL 2D map as a latched
-   `/map` (OccupancyGrid). The global map can come from the sparse landmark occupancy OR a
-   mid-height slice of the TSDF (we already cut one — `tsdf_slice.py`).
-2. **Run gate_live_pose ON** — Nav2's costmaps/planner must consume the SMOOTH TF, never the raw
-   provider jump. This is non-negotiable for Nav2 (a jump corrupts the costmap + the controller).
-   Set `live_gate_speed` to the platform max + margin.
-3. **Wire the nvblox local costmap** into Nav2's `local_costmap` (it's already an OccupancyGrid;
-   either feed it as a static-layer source or port the `nvblox_costmap_layer` plugin — see
-   `~/coding/nvblox_ros2` + the workspace `CLAUDE.md` Step 1).
+slamko now has both maps coherent + the never-jump gate (the planner prerequisite). **The two
+costmaps are SHIPPED** (2026-06-26, commits 7cdc37d/378116f): `~/volumetric_costmap` = GLOBAL (whole
+TSDF occupancy slice, latched) + `~/local_costmap` = LOCAL (rolling 4 m window of the live nvblox
+slice, re-centred on the robot each tick). Both validated live (`scripts/capture_costmaps.py`).
+Default backend is iSAM2; `gate_live_pose` default ON. The remaining work is **Nav2 wiring**:
+1. **TF/map contract**: slamko emits `slamko_map→slamko_odom→slamko_base`; remap to Nav2's
+   `map→odom→base_link`, and expose the GLOBAL costmap as `/map` (or point Nav2's global_costmap
+   static_layer at `~/volumetric_costmap`). Capture the GLOBAL at END-of-run (it grows; mid-run = one
+   room only — the "solo salón" gotcha).
+2. **gate_live_pose stays ON** (default) — Nav2 must consume the SMOOTH TF; set `live_gate_speed` to
+   platform max + margin.
+3. **Wire `~/local_costmap`** into Nav2's `local_costmap` (already an OccupancyGrid). Refinements: use
+   the ESDF distance (reactive gradient) or the `nvblox_nav2/nvblox_costmap_layer` plugin (needs the
+   ESDF exposed — today behind the PIMPL); publish the local at 30 Hz (re-crop a cached slice).
 4. **Gate Nav2 lifecycle on `localized`** (the bridge pattern from `okvis_nav2_bridge`) so goals
    aren't accepted against the startup frame before the first reloc; `/initialpose` cold-start
    override.

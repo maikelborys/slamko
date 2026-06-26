@@ -1,5 +1,28 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
+## 2026-06-26 — NAV costmaps: GLOBAL + LOCAL (the Nav2 foundation) ✅
+
+`provider_fusion_node` publishes BOTH navigation costmaps from the live nvblox volumetric layer
+(`volumetric:=true`):
+- **`~/volumetric_costmap`** (existing) = GLOBAL: the whole TSDF occupancy slice, latched
+  (transient_local), in `map_frame`.
+- **`~/local_costmap`** (NEW) = LOCAL: a rolling square window (`local_costmap_size_m`, default 4 m)
+  of the SAME live nvblox slice, re-centred on the robot's map pose (`T_map_odom_pub_ * live_TOB_`)
+  each publish tick. NOT latched. nvblox-direct (the live `vmap_->costmap()` cropped per-tick).
+
+Viz: `scripts/capture_costmaps.py <out.png> /provider_fusion_node [dur_s]` (continuous mode re-saves
+every ~8 s → the last save = the FULL map). **VALIDATED live** (global 192×280 whole house, local
+81×81 4 m window, both coherent green-free/red-occ). Commits 7cdc37d, 378116f.
+
+**GOTCHA:** the global costmap GROWS as the bag plays — a MID-run grab shows only the room mapped so
+far (capture at END). **OPEN GOTCHA:** the flash-bag splitter chain (bag→d455_splitter_auto→OKVIS)
+flaked on repeated runs this session (`clean->okvis=0`, 0 frames matched → 0 keyframes; NOT
+memory/GPU). **Refinements (not done):** local from the ESDF *distance* (reactive gradient); the
+`nvblox_nav2/nvblox_costmap_layer` Nav2 plugin (needs exposing slamko's nvblox ESDF, today PIMPL);
+publish the local at 30 Hz (`onTfTimer`) by re-cropping a cached slice (today = map rate).
+**NEXT:** the Nav2 planner+controller over these two costmaps, lifecycle gated on `localized`.
+
+
 ## 2026-06-26 — iSAM2 is now the DEFAULT live backend (auto-detected, compass native) ✅
 
 `pose_graph_backend` defaults to **isam2** + GTSAM is **auto-detected** in CMake (option default ON +
