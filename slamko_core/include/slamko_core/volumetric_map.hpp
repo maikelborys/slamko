@@ -156,6 +156,17 @@ class VolumetricBackend {
   // Update the distance field and export the 2D ground slice in the map frame.
   virtual CostmapSlice exportCostmap(const CostmapParams& params) = 0;
 
+  // DYNAMIC LOCAL map (the reactive Nav2 costmap source): a SECOND, decaying volume integrated
+  // per-frame at the LIVE (uncorrected) pose. `integrateLocal` adds one depth frame;
+  // `exportLocalCostmap` decays-to-free + bounds to `radius_m` around `center` (drop the drifted
+  // history → old fades, new appears) then slices. Default no-op (CUDA-free build / backends
+  // without a dynamic layer). The STATIC global map (integrate/exportCostmap) is unaffected.
+  virtual void integrateLocal(const DepthFrame& /*frame*/, const SE3& /*T_map_body*/) {}
+  virtual CostmapSlice exportLocalCostmap(const CostmapParams& /*params*/,
+                                          const Eigen::Vector3d& /*center*/, double /*radius_m*/) {
+    return {};
+  }
+
   // Optional: dump the dense mesh / cloud for visualization (PLY path).
   virtual void exportMesh(const std::string& /*ply_path*/) {}
 

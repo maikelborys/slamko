@@ -63,6 +63,18 @@ class VolumetricLiveDriver {
 
   CostmapSlice costmap(const CostmapParams& cp) { return mapper_.exportCostmap(cp); }
   void exportMesh(const std::string& ply) { mapper_.exportMesh(ply); }
+  // Dense geometric loop channel read side (depth-ICP-to-TSDF) — forwards to the backend ESDF.
+  bool queryDistanceField(const std::vector<Eigen::Vector3d>& pts_map,
+                          std::vector<float>& dist, std::vector<float>& weight) const {
+    return mapper_.queryDistanceField(pts_map, dist, weight);
+  }
+  // DYNAMIC LOCAL reactive costmap (per-frame @ live pose, decays-to-free, bounded window).
+  void integrateLocal(const DepthFrame& frame, const SE3& T_map_body) {
+    mapper_.integrateLocal(frame, T_map_body);
+  }
+  CostmapSlice localCostmap(const CostmapParams& cp, const Eigen::Vector3d& center, double radius_m) {
+    return mapper_.exportLocalCostmap(cp, center, radius_m);
+  }
 
   bool backendAvailable() const { return mapper_.backendAvailable(); }
   std::size_t numKeyframes() const { return kf_order_.size(); }

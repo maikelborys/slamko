@@ -43,6 +43,8 @@
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
+#include <Eigen/Eigenvalues>  // degeneracy gate on the depth-loop information matrix
+#include <optional>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -69,6 +71,7 @@
 #include "slamko_loop/pose_graph.hpp"
 #include "slamko_loop/xfeat_relocalizer.hpp"
 #include "slamko_loop/imu_shock.hpp"
+#include "slamko_loop/sdf_registration.hpp"  // Phase-1 depth geometric loop refine (point-to-SDF ICP)
 #include "slamko_ros/viz_sink.hpp"
 #include "slamko_tsdf/live_driver.hpp"
 #include "slamko_tsdf/nvblox_backend.hpp"
@@ -434,6 +437,14 @@ class ProviderFusionNode : public rclcpp::Node {
       quality_break_hard_jump_ = declare_parameter("quality_break_hard_jump", 15.0);
       // P0.3 IMU-shock/kidnap detector (raw accel-jerk + gyro spike) — the knock/lift/flip
       // trigger the pose-based gate misses. On a shock the interval seals + breaks (dangle).
+      // P-A live IMU referee (the coherence GATE that catches the featureless-corridor IMU-coast
+      // forward-drift, which speed/jump/cov miss). Provider-independent: a fast step with no real
+      // inertial acceleration = a teleport lie -> seal+break. OFF by default (opt-in).
+      imu_referee_ = declare_parameter("imu_referee", false);
+      imu_referee_speed_ = declare_parameter("imu_referee_speed", 3.0);  // m/s, a step worth checking
+      imu_referee_dyn_ = declare_parameter("imu_referee_dyn", 1.5);      // |a|-g below this = lie
+      // P-A HOLD: while LOST, withhold ALL map growth (no submap from the uncertain stretch).
+      hold_on_loss_ = declare_parameter("hold_on_loss", false);
       use_imu_shock_ = declare_parameter("use_imu_shock", true);
       { slamko::ImuShockConfig sc;
         sc.jerk_thresh = declare_parameter("imu_shock_jerk", 200.0);
@@ -459,6 +470,17 @@ class ProviderFusionNode : public rclcpp::Node {
       dr_gate_reject_deg_ = declare_parameter("dr_gate_reject_deg", 15.0);
       loop_sigma_t_ = declare_parameter("loop_sigma_t", 0.10);
       loop_sigma_r_ = declare_parameter("loop_sigma_r", 0.05);
+      // Phase-1 depth geometric loop refine (point-to-SDF ICP over the nvblox ESDF). Opt-in.
+      depth_loop_refine_ = declare_parameter("depth_loop_refine", false);
+      depth_loop_step_ = declare_parameter("depth_loop_step", 8);            // depth subsample stride
+      depth_loop_min_inliers_ = declare_parameter("depth_loop_min_inliers", 80);
+      depth_loop_max_rms_ = declare_parameter("depth_loop_max_rms", 0.15);   // m — accept gate (~3
+                                                                             // ESDF voxels: nvblox
+                                                                             // getVoxels is nearest-
+                                                                             // voxel, so ~1-voxel
+                                                                             // quantization is the rms floor)
+      depth_loop_max_corr_ = declare_parameter("depth_loop_max_corr", 1.0);  // m — ESDF pull range
+      depth_loop_min_cond_ = declare_parameter("depth_loop_min_cond", 0.02); // min/max eigenvalue gate
       max_loop_disagree_m_ = declare_parameter("max_loop_disagree_m", 30.0);
       slamko::LoopConsensusConfig gcfg;
       gcfg.tol_t = declare_parameter("pcm_tol_t", gcfg.tol_t);
@@ -618,7 +640,10 @@ class ProviderFusionNode : public rclcpp::Node {
       volumetric_mesh_path_ = declare_parameter("volumetric_mesh_path", std::string(""));
       slamko::VolumetricParams vp;
       vp.voxel_size_m = volumetric_voxel_;
-      vp.max_integration_distance_m = declare_parameter("volumetric_max_range_m", 5.0);
+      // D455 stereo depth noise grows with distance² — integrating far depth is the #1 cause of
+      // thick/double walls (4-agent research, docs/RESEARCH_D455_CLEAN_MAP_01.md). Cap at ~3.5 m
+      // where D455 Z-error is still <2%; everything past that smears walls fat.
+      vp.max_integration_distance_m = declare_parameter("volumetric_max_range_m", 3.5);
       vp.min_integration_distance_m = declare_parameter("volumetric_min_range_m", 0.3);
       slamko::LiveParams lp;
       lp.move_threshold_m = declare_parameter("volumetric_move_thresh_m", 0.05);
@@ -647,10 +672,22 @@ class ProviderFusionNode : public rclcpp::Node {
           "~/volumetric_costmap", rclcpp::QoS(1).transient_local());  // GLOBAL (latched, whole map)
       // LOCAL costmap: a rolling window around the robot (NOT latched — it follows the base). Window
       // edge = local_costmap_size_m. Feed Nav2's local_costmap obstacle/static layer with this.
+      // 2D occupancy speckle filter: min occupied 8-neighbours for an occupied cell to survive.
+      costmap_noise_min_neighbors_ = declare_parameter("costmap_noise_min_neighbors", 3);
+      // DYNAMIC LOCAL: reactive local costmap from a SECOND decaying nvblox mapper integrated
+      // per-frame @ live pose (45 Hz) instead of cropping the global. ON by default.
+      local_dynamic_ = declare_parameter("local_dynamic", true);
       local_costmap_m_ = declare_parameter("local_costmap_size_m", 4.0);
-      if (local_costmap_m_ > 0.0)
+      if (local_costmap_m_ > 0.0) {
         pub_local_costmap_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
             "~/local_costmap", rclcpp::QoS(2));
+        // Fixed-rate LOCAL re-crop: the window follows the robot smoothly (incl. stationary),
+        // decoupled from the keyframe-correction cadence that produces the whole-map slice.
+        const double lc_rate = declare_parameter("local_costmap_rate_hz", 10.0);
+        local_costmap_timer_ = create_wall_timer(
+            std::chrono::duration<double>(1.0 / std::max(lc_rate, 1.0)),
+            std::bind(&ProviderFusionNode::publishLocalCostmap, this));
+      }
       RCLCPP_INFO(get_logger(),
                   "LIVE VOLUMETRIC on: depth=%s backend=%s voxel=%.2f m correct_every=%d "
                   "store_budget=%zu MB keep_recent=%zu",
@@ -932,17 +969,47 @@ class ProviderFusionNode : public rclcpp::Node {
     // quality-break (the provider coasts on IMU → smooth pose) but spikes the RAW IMU. Flag it
     // so onOdometry seals + BREAKS the interval (unobservable → dangle honestly, re-anchor on
     // the next recognized revisit) — never trust a pose dead-reckoned through a knock.
-    if (use_imu_shock_) {
+    if (use_imu_shock_ || imu_referee_) {
       const Eigen::Vector3d a(m->linear_acceleration.x, m->linear_acceleration.y,
                               m->linear_acceleration.z);
-      const slamko::ShockEvent ev = imu_shock_.feed(a, w, dt, t);
-      if (ev.detected()) {
-        imu_shock_pending_ = true;
-        RCLCPP_WARN(get_logger(),
-                    "IMU SHOCK: %s (jerk=%.0f |a|=%.1f |w|=%.1f) -> seal+break the interval",
-                    ev.name(), ev.jerk, ev.accel_mag, ev.gyro_mag);
+      // P-A live coherence gate: keep a short window of |accel| + a slow-EMA gravity estimate so
+      // onOdometry can run the IMU referee (a fast provider step with |accel|~g = inertially
+      // impossible = a TELEPORT LIE). Gravity is ESTIMATED from data (the D455 IMU reads ~8.9, not
+      // 9.81 — uncalibrated scale), provider-agnostic. The EMA tracks the long-run mean |accel|,
+      // which equals g because real dynamic accelerations average to zero over the window.
+      if (imu_referee_) {
+        const double amag = a.norm();
+        g_est_ = (g_est_ < 0.0) ? amag : (1.0 - g_ema_alpha_) * g_est_ + g_ema_alpha_ * amag;
+        accel_buf_.emplace_back(t, amag);
+        while (!accel_buf_.empty() && t - accel_buf_.front().first > 2.0)
+          accel_buf_.pop_front();
+      }
+      if (use_imu_shock_) {
+        const slamko::ShockEvent ev = imu_shock_.feed(a, w, dt, t);
+        if (ev.detected()) {
+          imu_shock_pending_ = true;
+          RCLCPP_WARN(get_logger(),
+                      "IMU SHOCK: %s (jerk=%.0f |a|=%.1f |w|=%.1f) -> seal+break the interval",
+                      ev.name(), ev.jerk, ev.accel_mag, ev.gyro_mag);
+        }
       }
     }
+  }
+
+  // Mean dynamic acceleration |‖accel‖ − g| over [t0,t1] from the live IMU buffer; <0 if no data.
+  // The inertial witness for the teleport-lie test (slamko_eval channel 3, brought live).
+  double liveImuDyn(double t0, double t1) const {
+    if (g_est_ < 0.0 || accel_buf_.empty()) return -1.0;
+    double lo = t0, hi = t1;
+    if (hi <= lo) return -1.0;
+    double sum = 0.0; int n = 0;
+    for (const auto& [ts, amag] : accel_buf_)
+      if (ts >= lo && ts <= hi) { sum += std::abs(amag - g_est_); ++n; }
+    if (n == 0) {  // widen ±50 ms (same fallback as the offline referee)
+      for (const auto& [ts, amag] : accel_buf_)
+        if (ts >= lo - 0.05 && ts <= hi + 0.05) { sum += std::abs(amag - g_est_); ++n; }
+    }
+    return n > 0 ? sum / n : -1.0;
   }
 
   void onOdometry(const nav_msgs::msg::Odometry::SharedPtr msg) {
@@ -1039,19 +1106,38 @@ class ProviderFusionNode : public rclcpp::Node {
       const double jump = last_speed_ >= 0.0 ? std::abs(cur_speed - last_speed_) : 0.0;
       viz_speed_ = cur_speed;   // surfaced on the Rerun timeline so a human can correlate
       viz_jump_ = jump;         // the speed-jump (incoherence signal) with the actual maneuver
-      if (atlas_break_on_quality_) {
+      if (atlas_break_on_quality_ || imu_referee_) {
         const double cov_tr = s.cov(0, 0) + s.cov(1, 1) + s.cov(2, 2);
-        const bool incoherent = cur_speed > quality_break_speed_ || jump > quality_break_jump_ ||
-                                (quality_break_cov_ > 0.0 && cov_tr > quality_break_cov_) ||
+        // P-A LIVE IMU REFEREE (the TRUSTED, provider-independent signal): a fast provider step
+        // whose inertial witness shows ~no real acceleration (|‖a‖−g| < thresh) is a TELEPORT LIE
+        // — the featureless-corridor IMU-coast forward-drift that speed/jump/cov CANNOT catch
+        // (the provider reports it confidently). This is slamko_eval channel 3, brought live.
+        const double dyn_mean = imu_referee_ ? liveImuDyn(last_odom_t_, s.t) : -1.0;
+        const bool teleport_lie = imu_referee_ && cur_speed > imu_referee_speed_ &&
+                                  dyn_mean >= 0.0 && dyn_mean < imu_referee_dyn_;
+        // Pose-derived terms are the UNTRUSTED provider signal — only when explicitly enabled.
+        const bool pose_incoherent =
+            atlas_break_on_quality_ &&
+            (cur_speed > quality_break_speed_ || jump > quality_break_jump_ ||
+             (quality_break_cov_ > 0.0 && cov_tr > quality_break_cov_));
+        const bool incoherent = pose_incoherent || teleport_lie ||
                                 imu_shock_pending_;  // P0.3: a knock/kidnap the pose hides
+        if (teleport_lie)
+          RCLCPP_WARN(get_logger(),
+                      "IMU REFEREE: teleport-lie @t=%.1f (speed=%.1f m/s, dyn|a|-g=%.2f < %.2f, "
+                      "g_est=%.2f) -> seal+%s (provider dead-reckoned a false motion)",
+                      rel, cur_speed, dyn_mean, imu_referee_dyn_, g_est_,
+                      quality_soft_bridge_ ? "HOLD-soft" : "BREAK-island");
         // CATASTROPHIC tier (P0.1, the never-LIE gate): a PHYSICALLY-IMPOSSIBLE jump (the cuVSLAM
         // 90 m teleport — measured >20 m/s vs <17 m/s on clean runs) must HARD-BREAK into a
         // dangling island, NEVER soft-bridge. Soft-bridging a catastrophic gap connects two
         // halves 90 m apart with a "weak" edge = a confident-looking lie about their relative
         // placement. A glitch (6-20 m/s) stays soft (recoverable); a teleport dangles honestly.
-        const bool catastrophic = cur_speed > quality_break_hard_speed_ ||
-                                  jump > quality_break_hard_jump_ ||
-                                  imu_shock_pending_;  // a knock = unobservable interval → dangle
+        const bool catastrophic =
+            (atlas_break_on_quality_ &&
+             (cur_speed > quality_break_hard_speed_ || jump > quality_break_hard_jump_)) ||
+            (teleport_lie && cur_speed > quality_break_hard_speed_) ||  // a fast LIE dangles honestly
+            imu_shock_pending_;  // a knock = unobservable interval → dangle
         imu_shock_pending_ = false;                    // consume the one-shot shock flag
         if (!tracking_lost_) {
           if (incoherent && kfs_in_component_ >= atlas_min_component_kfs_) {
@@ -1302,6 +1388,27 @@ class ProviderFusionNode : public rclcpp::Node {
     while (!depth_buf_.empty() &&
            depth_buf_.back().first - depth_buf_.front().first > image_buffer_s_)
       depth_buf_.pop_front();
+
+    // DYNAMIC LOCAL reactive map: integrate THIS depth frame at the LIVE (gated) pose into the
+    // decaying local nvblox mapper — every frame (~45 Hz), NOT per keyframe. The local costmap timer
+    // then decays-to-free + bounds it to a window around the robot, so old/stale/dynamic geometry
+    // fades and the uncorrected-pose drift never accumulates (short rolling window). The STATIC
+    // global map (per-keyframe, corrected, deformable) is untouched.
+    if (local_dynamic_ && volumetric_enable_ && vmap_ && have_sample_ && depth_fx_ > 0.0) {
+      slamko::DepthFrame f;
+      f.kf_id = 0;
+      f.width = d.cols;
+      f.height = d.rows;
+      f.K = {depth_fx_, depth_fy_, depth_cx_, depth_cy_, d.cols, d.rows};
+      f.T_body_cam = depth_extrinsic_;
+      f.depth.resize(static_cast<std::size_t>(d.cols) * d.rows);
+      for (int r = 0; r < d.rows; ++r) {
+        const std::uint16_t* row = d.ptr<std::uint16_t>(r);
+        float* out = f.depth.data() + static_cast<std::size_t>(r) * d.cols;
+        for (int c = 0; c < d.cols; ++c) out[c] = row[c] * 0.001f;  // mm → m
+      }
+      vmap_->integrateLocal(f, T_map_odom_pub_ * live_TOB_);  // live map→base pose
+    }
   }
 
   // Corrected world (map-frame) BODY pose of a keyframe: the optimized graph pose
@@ -1354,6 +1461,115 @@ class ProviderFusionNode : public rclcpp::Node {
 
   // CostmapSlice (occupancy: -1 unknown / 0 free / 100 occupied; +row→+y, origin =
   // min corner) → Nav2 OccupancyGrid (same convention, no flip).
+  // Phase-1 DEPTH GEOMETRIC LOOP REFINE (point-to-SDF ICP, the Voxgraph field-align channel):
+  // given the XFeat/proximity COARSE prior (raw ICP can't bridge metres of drift — de-risked), snap
+  // the live depth cloud onto the already-mapped nvblox ESDF so the cloud lands on the existing
+  // surfaces; that refinement IS the precise loop correction, and it recovers DIFFERENT-HEADING
+  // revisits the sparse XFeat misses (a room's 3D shape is viewpoint-independent). Returns the
+  // refined a->query relative + rms on a GATED pass (converged + low rms + enough inliers + NOT a
+  // degenerate/ill-conditioned match — the corridor along-axis), else nullopt -> caller keeps the
+  // XFeat edge (no regress). Whole thing opt-in (depth_loop_refine, default OFF).
+  std::optional<std::pair<slamko::SE3, double>> tryDepthLoopRefine(
+      std::uint64_t a, std::uint64_t q_id, double t_q, const slamko::SE3& T_query_match_coarse) {
+    if (!depth_loop_refine_ || !vmap_ || !vmap_->backendAvailable()) {
+      RCLCPP_WARN(get_logger(), "DEPTH LOOP skip: refine=%d vmap=%d avail=%d", (int)depth_loop_refine_,
+                  (int)(vmap_ != nullptr), (int)(vmap_ && vmap_->backendAvailable()));
+      return std::nullopt;
+    }
+    const std::pair<double, cv::Mat>* best = nullptr;
+    double bdt = 1e9;
+    for (const auto& e : depth_buf_)
+      if (std::abs(e.first - t_q) < bdt) { bdt = std::abs(e.first - t_q); best = &e; }
+    if (!best || bdt > vmap_depth_tol_s_) {
+      RCLCPP_WARN(get_logger(), "DEPTH LOOP skip: no depth near kf %llu (bdt=%.3f tol=%.3f buf=%zu)",
+                  (unsigned long long)q_id, bdt, vmap_depth_tol_s_, depth_buf_.size());
+      return std::nullopt;
+    }
+    const cv::Mat& dm = best->second;
+    std::vector<Eigen::Vector3d> cloud;  // query/body frame
+    for (int r = 0; r < dm.rows; r += depth_loop_step_) {
+      const std::uint16_t* row = dm.ptr<std::uint16_t>(r);
+      for (int c = 0; c < dm.cols; c += depth_loop_step_) {
+        const float z = row[c] * 0.001f;
+        if (z < 0.3f || z > 6.0f) continue;  // RealSense usable range
+        const double x = (c - depth_cx_) * z / depth_fx_, y = (r - depth_cy_) * z / depth_fy_;
+        cloud.push_back(depth_extrinsic_ * Eigen::Vector3d(x, y, z));  // -> body frame
+      }
+    }
+    if (static_cast<int>(cloud.size()) < depth_loop_min_inliers_) {
+      RCLCPP_WARN(get_logger(), "DEPTH LOOP skip: cloud too small (%zu < %d)", cloud.size(),
+                  depth_loop_min_inliers_);
+      return std::nullopt;
+    }
+    RCLCPP_INFO(get_logger(), "DEPTH LOOP try: kf %llu cloud=%zu bdt=%.3f", (unsigned long long)q_id,
+                cloud.size(), bdt);
+    const slamko::SE3 T_init = graph_.pose(a) * T_query_match_coarse;  // loop-implied map pose
+    const double eps = volumetric_voxel_;  // finite-diff gradient step ~ 1 voxel
+    auto field = [this, eps](const std::vector<Eigen::Vector3d>& xs) -> slamko::SdfBatch {
+      slamko::SdfBatch out;
+      const std::size_t n = xs.size();
+      out.dist.assign(n, 0.0);
+      out.grad.assign(n, Eigen::Vector3d::Zero());
+      out.valid.assign(n, 0);
+      std::vector<float> d, w;
+      if (!vmap_->queryDistanceField(xs, d, w)) return out;
+      std::vector<Eigen::Vector3d> q;
+      q.reserve(n * 6);  // ±1 voxel per axis for the central-difference gradient (∇dist ≈ normal)
+      for (const auto& p : xs)
+        for (int ax = 0; ax < 3; ++ax)
+          for (int s = -1; s <= 1; s += 2) { Eigen::Vector3d o = p; o[ax] += s * eps; q.push_back(o); }
+      std::vector<float> dd, ww;
+      vmap_->queryDistanceField(q, dd, ww);
+      for (std::size_t i = 0; i < n; ++i) {
+        out.dist[i] = d[i];
+        if (w[i] <= 0.0f) continue;
+        Eigen::Vector3d g;
+        bool ok = true;
+        for (int ax = 0; ax < 3; ++ax) {
+          const std::size_t im = i * 6 + ax * 2, ip = im + 1;
+          if (ww[im] <= 0.0f || ww[ip] <= 0.0f) { ok = false; break; }
+          g[ax] = (dd[ip] - dd[im]) / (2.0 * eps);
+        }
+        const double gn = g.norm();
+        if (ok && gn > 1e-6) { out.grad[i] = g / gn; out.valid[i] = 1; }
+      }
+      return out;
+    };
+    slamko::SdfRegistrationConfig cfg;
+    cfg.min_inliers = depth_loop_min_inliers_;
+    cfg.max_correspondence_dist = depth_loop_max_corr_;  // ESDF pull range (band can be narrow)
+    cfg.max_iters = 50;          // finite-diff gradient noise settles slowly -> give it room
+    cfg.convergence_dx = 5e-4;   // a sub-mm SE3 step is "settled enough" for a loop edge
+    const auto res = slamko::registerToSdfBatch(cloud, T_init, field, cfg);
+    // ACCEPT on the real quality metrics (inliers + RMS), NOT the strict `converged` flag — the
+    // finite-diff ESDF gradient keeps taking tiny steps so `converged` can stay false even at a
+    // 6 cm-RMS / 5000-inlier solution (the offline de-risk number). RMS is the fitness.
+    if (res.inliers < depth_loop_min_inliers_ || res.rms <= 0.0 || res.rms > depth_loop_max_rms_) {
+      RCLCPP_WARN(get_logger(),
+                  "DEPTH LOOP no-pass: rms=%.3f (max %.3f) inliers=%d (min %d) converged=%d iters=%d "
+                  "— ESDF overlap/refine weak",
+                  res.rms, depth_loop_max_rms_, res.inliers, depth_loop_min_inliers_,
+                  (int)res.converged, res.iters);
+      return std::nullopt;
+    }
+    // Degeneracy gate (Zhang): a corridor along-axis is unconstrained -> tiny eigenvalue. Use the
+    // CONDITION (min/max) so it's scale-invariant. Reject if the weakest axis is too weak.
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<double, 6, 6>> es(res.information);
+    const double cond = es.eigenvalues()(0) / std::max(es.eigenvalues()(5), 1e-12);
+    if (cond < depth_loop_min_cond_) {
+      RCLCPP_INFO(get_logger(),
+                  "DEPTH LOOP rejected: degenerate (cond=%.3g < %.3g) — geometry under-constrains "
+                  "the pose (e.g. corridor along-axis); keep the XFeat edge", cond, depth_loop_min_cond_);
+      return std::nullopt;
+    }
+    const slamko::SE3 rel = graph_.pose(a).inverse() * res.T_refined;
+    RCLCPP_INFO(get_logger(),
+                "DEPTH LOOP refine: kf %llu rms=%.3f m inliers=%d cond=%.3g iters=%d -> geometric "
+                "edge (sharper than XFeat-only)",
+                (unsigned long long)q_id, res.rms, res.inliers, cond, res.iters);
+    return std::make_pair(rel, res.rms);
+  }
+
   void publishVolumetricCostmap(double t) {
     if (!vmap_ || !pub_costmap_ || !vmap_->backendAvailable()) return;
     slamko::CostmapParams cp;
@@ -1376,35 +1592,104 @@ class ProviderFusionNode : public rclcpp::Node {
       const float v = s.data[i];
       g.data[i] = (v < 0.f) ? -1 : (v >= 100.f ? 100 : 0);
     }
+    // 2D occupancy NOISE FILTER (RTAB-Map Grid/NoiseFilteringRadius): demote an occupied cell with
+    // too few occupied neighbours to free — removes the speckle + tiny stray fragments that D455
+    // stereo-depth noise sprays at edges (4-agent research, docs/RESEARCH_D455_CLEAN_MAP_01.md).
+    if (costmap_noise_min_neighbors_ > 0) {
+      const int W = static_cast<int>(s.width), H = static_cast<int>(s.height);
+      const std::vector<std::int8_t> in = g.data;  // read from a snapshot, write into g.data
+      for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+          const std::size_t idx = static_cast<std::size_t>(y) * W + x;
+          if (in[idx] < 100) continue;  // only prune occupied cells
+          int occ = 0;
+          for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) {
+              if (dx == 0 && dy == 0) continue;
+              const int nx = x + dx, ny = y + dy;
+              if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+              if (in[static_cast<std::size_t>(ny) * W + nx] >= 100) ++occ;
+            }
+          if (occ < costmap_noise_min_neighbors_) g.data[idx] = 0;  // isolated speck -> free
+        }
+    }
     pub_costmap_->publish(g);          // GLOBAL costmap: the whole TSDF occupancy slice (latched)
 
-    // LOCAL costmap: a rolling square window of the same slice, centred on the robot's current
-    // map-frame position — the reactive map a Nav2 local controller / DWB uses. Same data, cropped +
-    // re-origined each tick (NOT latched). The robot pose = slewed map->odom * (gated) odom->base.
-    if (pub_local_costmap_ && have_sample_) {
+    // Cache the whole-map grid so the LOCAL costmap timer can re-crop a rolling window around the
+    // robot at a FIXED RATE (decoupled from this keyframe cadence — the window must follow the robot
+    // smoothly, including while stationary, for a Nav2 local controller). The slice content only
+    // changes on a keyframe correction; the WINDOW re-centres at local_costmap_rate_hz.
+    cached_global_ = g;
+    have_global_grid_ = true;
+    publishLocalCostmap();  // also emit one immediately on fresh data (don't wait for the next tick)
+  }
+
+  // LOCAL costmap: a rolling square window of the cached whole-map grid, centred on the robot's
+  // current map-frame position — the reactive map a Nav2 local controller / DWB uses. Same data,
+  // cropped + re-origined each tick (NOT latched). The robot pose = slewed map->odom * (gated)
+  // odom->base. Driven by a fixed-rate wall timer so the window tracks the robot even between
+  // keyframes (single-threaded executor → shares the cache with the keyframe path, no locking).
+  void publishLocalCostmap() {
+    if (!pub_local_costmap_ || !have_sample_) return;
+    // DYNAMIC LOCAL (reactive): decay-to-free + bound the local mapper to a window around the robot,
+    // then slice. Old/stale/dynamic geometry fades; the window follows the live pose. This is the
+    // 45 Hz-integrated reactive map (per-frame in onDepth), NOT a crop of the deformable global.
+    if (local_dynamic_ && vmap_ && vmap_->backendAvailable()) {
       const slamko::SE3 T_map_base = T_map_odom_pub_ * live_TOB_;
-      const double rx = T_map_base.translation().x(), ry = T_map_base.translation().y();
-      const int half = std::max(1, static_cast<int>(0.5 * local_costmap_m_ / s.resolution));
-      const int rcx = static_cast<int>((rx - s.origin_x) / s.resolution);
-      const int rcy = static_cast<int>((ry - s.origin_y) / s.resolution);
-      const int x0 = rcx - half, y0 = rcy - half, side = 2 * half + 1;
-      nav_msgs::msg::OccupancyGrid l;
-      l.header = g.header;
-      l.info.resolution = s.resolution;
-      l.info.width = side; l.info.height = side;
-      l.info.origin.position.x = s.origin_x + x0 * s.resolution;
-      l.info.origin.position.y = s.origin_y + y0 * s.resolution;
-      l.info.origin.orientation.w = 1.0;
-      l.data.assign(static_cast<std::size_t>(side) * side, -1);  // outside the global slice = unknown
-      for (int j = 0; j < side; ++j)
-        for (int i = 0; i < side; ++i) {
-          const int gx = x0 + i, gy = y0 + j;
-          if (gx < 0 || gy < 0 || gx >= static_cast<int>(s.width) || gy >= static_cast<int>(s.height))
-            continue;
-          l.data[j * side + i] = g.data[gy * s.width + gx];
+      slamko::CostmapParams cp;
+      cp.occupancy = true;
+      cp.resolution_m = volumetric_voxel_;
+      cp.slice_height_m = volumetric_slice_h_;
+      const double radius = 0.5 * local_costmap_m_ + 0.5;  // window half-size + margin
+      const slamko::CostmapSlice s = vmap_->localCostmap(cp, T_map_base.translation(), radius);
+      if (!s.empty()) {
+        nav_msgs::msg::OccupancyGrid l;
+        l.header.stamp = now();
+        l.header.frame_id = map_frame_;
+        l.info.resolution = s.resolution;
+        l.info.width = s.width;
+        l.info.height = s.height;
+        l.info.origin.position.x = s.origin_x;
+        l.info.origin.position.y = s.origin_y;
+        l.info.origin.orientation.w = 1.0;
+        l.data.resize(static_cast<std::size_t>(s.width) * s.height);
+        for (std::size_t i = 0; i < l.data.size(); ++i) {
+          const float v = s.data[i];
+          l.data[i] = (v < 0.f) ? -1 : (v >= 100.f ? 100 : 0);
         }
-      pub_local_costmap_->publish(l);
+        pub_local_costmap_->publish(l);
+        return;
+      }
     }
+    // FALLBACK: crop the cached GLOBAL grid (dynamic local off / not yet available).
+    if (!have_global_grid_) return;
+    const nav_msgs::msg::OccupancyGrid& g = cached_global_;
+    const double res = g.info.resolution;
+    if (res <= 0.0) return;
+    const int gw = static_cast<int>(g.info.width), gh = static_cast<int>(g.info.height);
+    const double gox = g.info.origin.position.x, goy = g.info.origin.position.y;
+    const slamko::SE3 T_map_base = T_map_odom_pub_ * live_TOB_;
+    const double rx = T_map_base.translation().x(), ry = T_map_base.translation().y();
+    const int half = std::max(1, static_cast<int>(0.5 * local_costmap_m_ / res));
+    const int rcx = static_cast<int>((rx - gox) / res);
+    const int rcy = static_cast<int>((ry - goy) / res);
+    const int x0 = rcx - half, y0 = rcy - half, side = 2 * half + 1;
+    nav_msgs::msg::OccupancyGrid l;
+    l.header.stamp = now();           // current stamp so consumers see a live local map
+    l.header.frame_id = map_frame_;
+    l.info.resolution = res;
+    l.info.width = side; l.info.height = side;
+    l.info.origin.position.x = gox + x0 * res;
+    l.info.origin.position.y = goy + y0 * res;
+    l.info.origin.orientation.w = 1.0;
+    l.data.assign(static_cast<std::size_t>(side) * side, -1);  // outside the global slice = unknown
+    for (int j = 0; j < side; ++j)
+      for (int i = 0; i < side; ++i) {
+        const int gx = x0 + i, gy = y0 + j;
+        if (gx < 0 || gy < 0 || gx >= gw || gy >= gh) continue;
+        l.data[j * side + i] = g.data[gy * gw + gx];
+      }
+    pub_local_costmap_->publish(l);
   }
 
   void onInfo(const sensor_msgs::msg::CameraInfo::SharedPtr m, bool right) {
@@ -1606,6 +1891,20 @@ class ProviderFusionNode : public rclcpp::Node {
         }
       }
     }
+
+    // P-A HOLD (the immortal "seal-on-doubt + don't-map-the-uncertain-stretch" rule): while
+    // tracking is LOST (a teleport-lie / incoherent maneuver), this keyframe enters NO map — no
+    // landmark buffering, no submap seal, no dense depth integration. The graph node still exists
+    // (chain continuity) and the live output gate keeps the published pose smooth, but nothing
+    // dead-reckoned is mapped; on recovery a fresh island starts (pending_break_), leaving no false
+    // submap behind. Reloc above still runs (it's how we recover). Don't map what you don't trust.
+    if (hold_on_loss_ && tracking_lost_) {
+      if (held_kfs_++ == 0)
+        RCLCPP_WARN(get_logger(), "HOLD: tracking LOST -> withholding map growth (no submap from "
+                                  "the dead-reckoned stretch) until coherence returns");
+      return;
+    }
+    held_kfs_ = 0;
 
     pending_kfs_.push_back(std::move(rec));
     if (volumetric_enable_) volumetricOnKeyframe(id, t, T_map);
@@ -2002,13 +2301,27 @@ class ProviderFusionNode : public rclcpp::Node {
     const std::uint64_t a = submap_first_kf_.at(r.submap_id);
     // Submap-local frame == its first KF's body frame (sealing convention), so
     // T_query_match IS the a->query relative measurement.
-    graph_.addLoopEdge(a, q_id, r.T_query_match, loop_sigma_t_, loop_sigma_r_);
+    // Phase-1: REFINE the (XFeat coarse) edge with depth point-to-SDF ICP when it passes the gate;
+    // otherwise keep the XFeat edge (no regress). The refined edge is sharper (geometric) and
+    // recovers different-heading revisits XFeat alone misses.
+    slamko::SE3 loop_rel = r.T_query_match;
+    double lst = loop_sigma_t_, lsr = loop_sigma_r_;
+    bool depth_refined = false;
+    if (auto dr = tryDepthLoopRefine(a, q_id, node_time_.count(q_id) ? node_time_[q_id] : t,
+                                     r.T_query_match)) {
+      loop_rel = dr->first;
+      lst = std::max(dr->second, 0.02);  // geometric refinement is precise -> tighter than XFeat
+      lsr = 0.02;
+      depth_refined = true;
+    }
+    graph_.addLoopEdge(a, q_id, loop_rel, lst, lsr);
     const auto res = optimizeTimed_();
     T_map_odom_target_ = graph_.pose(q_id) * chain_.lastKeyframe().T_OB.inverse();
     refreshOcc();  // P2: the loop removed drift -> realign occupancy -> revisits now fuse
     RCLCPP_INFO(get_logger(),
-                "LOOP CLOSED: kf %llu -> submap %llu (kf %llu), inliers=%d assoc=%zu | optimize: "
+                "LOOP CLOSED%s: kf %llu -> submap %llu (kf %llu), inliers=%d assoc=%zu | optimize: "
                 "converged=%d iters=%d cost %.2e -> %.2e",
+                depth_refined ? " [DEPTH-REFINED]" : "",
                 (unsigned long long)q_id, (unsigned long long)r.submap_id,
                 (unsigned long long)a, r.num_inliers, r.matches.size(), (int)res.converged,
                 res.iterations, res.initial_cost, res.final_cost);
@@ -2025,8 +2338,7 @@ class ProviderFusionNode : public rclcpp::Node {
     // R1.1 HARD inter-map edge: the building submap (its future id == next_submap_id_)
     // is verified-connected to target submap r.submap_id. Recorded for the anchor
     // graph + the multi-map viz (reversible: it is just an entry we can drop).
-    anchor_edges_.push_back(AnchorEdge{next_submap_id_, r.submap_id, r.T_query_match,
-                                       loop_sigma_t_, loop_sigma_r_, 2});
+    anchor_edges_.push_back(AnchorEdge{next_submap_id_, r.submap_id, loop_rel, lst, lsr, 2});
     dumpAnchorEdges();
     // LIVE VIZ: the "sees another keyframe" link q<->matched (red) + redraw the graph.
     if (viz_enable_ && viz_.enabled()) {
@@ -2655,6 +2967,14 @@ class ProviderFusionNode : public rclcpp::Node {
   // covariance spike enters LOST (the maneuver); a sustained coherent streak RECOVERS into a
   // fresh clean island. The bad bridge between them dangles (hard-loss).
   bool atlas_break_on_quality_ = false;
+  // P-A live IMU referee (coherence gate): the inertial witness for the teleport-lie test.
+  bool imu_referee_ = false;
+  double imu_referee_speed_ = 3.0, imu_referee_dyn_ = 1.5;
+  std::deque<std::pair<double, double>> accel_buf_;  // (t, |accel|), ~2 s window
+  double g_est_ = -1.0;            // robust gravity magnitude (slow EMA of |accel|)
+  double g_ema_alpha_ = 0.002;     // EMA rate -> tracks long-run mean |accel| ~ g
+  bool hold_on_loss_ = false;      // P-A HOLD: withhold map growth while LOST (don't map the doubt)
+  std::size_t held_kfs_ = 0;       // keyframes withheld in the current LOST stretch
   bool tracking_lost_ = false;        // in a quality-LOST stretch (a bad maneuver)
   int coherent_streak_ = 0;           // consecutive coherent samples since the last incoherence
   int quality_recover_samples_ = 30;  // sustained coherent samples needed to declare recovery
@@ -2741,6 +3061,15 @@ class ProviderFusionNode : public rclcpp::Node {
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_costmap_;        // global (latched)
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_local_costmap_;  // rolling window
   double local_costmap_m_ = 4.0;
+  int costmap_noise_min_neighbors_ = 3;   // 2D occupancy speckle filter (RTAB NoiseFilteringRadius)
+  bool local_dynamic_ = true;             // reactive local from a 2nd decaying nvblox mapper @ live
+  // Phase-1 depth geometric loop refine (point-to-SDF ICP over the nvblox ESDF).
+  bool depth_loop_refine_ = false;
+  int depth_loop_step_ = 8, depth_loop_min_inliers_ = 80;
+  double depth_loop_max_rms_ = 0.15, depth_loop_max_corr_ = 1.0, depth_loop_min_cond_ = 0.02;
+  rclcpp::TimerBase::SharedPtr local_costmap_timer_;  // fixed-rate LOCAL re-crop, decoupled from kf
+  nav_msgs::msg::OccupancyGrid cached_global_;        // last whole-map grid the local window crops
+  bool have_global_grid_ = false;
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_image_, sub_image_r_;

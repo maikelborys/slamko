@@ -93,6 +93,22 @@ class VolumetricMapper {
   bool backendAvailable() const { return backend_ && backend_->available(); }
   const VolumetricParams& params() const { return params_; }
 
+  // Read side of the dense geometric loop channel: batch-sample the signed distance field at
+  // map-frame points (forwards to the backend ESDF query). slamko_loop::registerToSdf drives it.
+  bool queryDistanceField(const std::vector<Eigen::Vector3d>& pts_map,
+                          std::vector<float>& dist, std::vector<float>& weight) const {
+    return backend_ && backend_->queryDistanceField(pts_map, dist, weight);
+  }
+
+  // DYNAMIC LOCAL reactive costmap (per-frame @ live pose, decays-to-free, bounded window).
+  void integrateLocal(const DepthFrame& frame, const SE3& T_map_body) {
+    if (backend_) backend_->integrateLocal(frame, T_map_body);
+  }
+  CostmapSlice exportLocalCostmap(const CostmapParams& params, const Eigen::Vector3d& center,
+                                  double radius_m) {
+    return backend_ ? backend_->exportLocalCostmap(params, center, radius_m) : CostmapSlice{};
+  }
+
  private:
   // A stored depth source + where it was last fused (for re-pose / windowing).
   struct StoredFrame {

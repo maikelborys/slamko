@@ -47,6 +47,11 @@ struct SdfRegistrationResult {
   int inliers = 0;        // points within the correspondence gate at convergence
   int iters = 0;
   bool converged = false; // step fell below convergence_dx AND inliers >= min_inliers
+  // Final Gauss-Newton Hessian H = Σ wᵢ Jᵢᵀ Jᵀ (information, [rho; omega] order). A degenerate
+  // direction (a straight corridor's along-axis) shows as a SMALL eigenvalue — the read side of
+  // the degeneracy-aware covariance for the loop edge (inflate cov along small-eigenvalue axes,
+  // Zhang/X-ICP), and the gate that rejects a rank-deficient (geometrically unconstrained) match.
+  Eigen::Matrix<double, 6, 6> information = Eigen::Matrix<double, 6, 6>::Zero();
 };
 
 // Per-iteration result of a BATCH distance-field query (NaN dist = invalid / unmapped).
@@ -100,6 +105,7 @@ SdfRegistrationResult registerToSdfBatch(const std::vector<Eigen::Vector3d>& que
     res.iters = it + 1;
     if (inl < cfg.min_inliers) break;  // not enough overlap — bail (caller rejects)
     res.rms = std::sqrt(sse / inl);
+    res.information = H;               // pre-damping Hessian = the degeneracy-aware information
     H.diagonal().array() += 1e-9;  // Levenberg damping for conditioning
     const Eigen::Matrix<double, 6, 1> dxi = H.ldlt().solve(-b);
     T = T * SE3::exp(dxi);

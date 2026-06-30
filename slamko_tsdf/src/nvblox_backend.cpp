@@ -45,7 +45,8 @@ nvblox::Transform toTransform(const SE3& T) {
 
 struct NvbloxBackend::Impl {
   VolumetricParams params;
-  std::unique_ptr<nvblox::Mapper> mapper;
+  std::unique_ptr<nvblox::Mapper> mapper;        // STATIC global: no decay, deformable, lifelong.
+  std::unique_ptr<nvblox::Mapper> local_mapper;  // DYNAMIC local: decays to free, reactive @ live pose.
   nvblox::EsdfSlicer slicer;
 
   explicit Impl(VolumetricParams p) : params(p) { build(); }
@@ -63,6 +64,22 @@ struct NvbloxBackend::Impl {
         .projective_integrator_max_integration_distance_m.set(
             static_cast<float>(params.max_integration_distance_m));
     mapper->setMapperParams(mp);
+
+    // DYNAMIC LOCAL mapper: the reactive costmap source. Integrated per-frame at the LIVE
+    // (uncorrected) pose, then DECAYED-to-free + bounded to a window around the robot every tick —
+    // so old/stale/dynamic geometry fades (decayTsdf set_free_distance_on_decayed) and the
+    // uncorrected-pose drift never accumulates (short-lived rolling window). This is nvblox's
+    // static_mapper (ours = global) + dynamic_mapper (this) split.
+    local_mapper = std::make_unique<nvblox::Mapper>(
+        static_cast<float>(params.voxel_size_m));
+    nvblox::MapperParams lp;
+    lp.projective_integrator_params.projective_integrator_max_weight.set(20.0f);  // low → decays fast
+    lp.projective_integrator_params
+        .projective_integrator_max_integration_distance_m.set(
+            static_cast<float>(params.max_integration_distance_m));
+    lp.tsdf_decay_integrator_params.tsdf_decay_factor.set(0.8f);       // weight *0.8 per decay tick
+    lp.tsdf_decay_integrator_params.tsdf_set_free_distance_on_decayed.set(true);  // decayed → FREE
+    local_mapper->setMapperParams(lp);
   }
 };
 
@@ -136,26 +153,26 @@ void NvbloxBackend::clearRegion(const Aabb& region) {
   tsdf.clearBlocks(blocks);
 }
 
-CostmapSlice NvbloxBackend::exportCostmap(const CostmapParams& params) {
+// Shared ESDF→slice for both the static (global) and dynamic (local) mappers.
+static CostmapSlice sliceMapper(nvblox::Mapper& m, nvblox::EsdfSlicer& slicer,
+                                const CostmapParams& params, double voxel_size_m) {
   CostmapSlice out;
-  out.resolution = impl_->params.voxel_size_m;  // slice grid = voxel grid
+  out.resolution = voxel_size_m;  // slice grid = voxel grid
   out.slice_height = params.slice_height_m;
   out.is_occupancy = params.occupancy;
 
-  impl_->mapper->updateEsdf();  // 3D ESDF from the fused TSDF
-  const auto& esdf = impl_->mapper->esdf_layer();
+  m.updateEsdf();  // 3D ESDF from the fused TSDF
+  const auto& esdf = m.esdf_layer();
 
   const float h = static_cast<float>(params.slice_height_m);
-  const nvblox::AxisAlignedBoundingBox aabb =
-      impl_->slicer.getAabbOfLayerAtHeight(esdf, h);
+  const nvblox::AxisAlignedBoundingBox aabb = slicer.getAabbOfLayerAtHeight(esdf, h);
   if (aabb.isEmpty()) return out;  // nothing observed yet
 
   // The slicer fills the image on the GPU (it reallocates to device memory
   // regardless of the type we pass), so we must copyTo a host buffer — a direct
   // memcpy from dataConstPtr() would dereference a device pointer (segfault).
   nvblox::Image<float> dist(nvblox::MemoryType::kDevice);
-  impl_->slicer.sliceLayerToDistanceImage(esdf, h, out.unknown_value, aabb,
-                                          &dist);
+  slicer.sliceLayerToDistanceImage(esdf, h, out.unknown_value, aabb, &dist);
   if (dist.rows() <= 0 || dist.cols() <= 0) return out;
 
   out.height = dist.rows();
@@ -177,6 +194,33 @@ CostmapSlice NvbloxBackend::exportCostmap(const CostmapParams& params) {
   return out;
 }
 
+CostmapSlice NvbloxBackend::exportCostmap(const CostmapParams& params) {
+  return sliceMapper(*impl_->mapper, impl_->slicer, params, impl_->params.voxel_size_m);
+}
+
+// DYNAMIC LOCAL: integrate one depth frame at the LIVE pose into the reactive local mapper.
+void NvbloxBackend::integrateLocal(const DepthFrame& frame, const SE3& T_map_body) {
+  if (!frame.valid()) return;
+  const nvblox::Transform T_L_C = toTransform(T_map_body * frame.T_body_cam);
+  nvblox::DepthImage depth(nvblox::MemoryType::kUnified);
+  depth.copyFrom(frame.height, frame.width, frame.depth.data());
+  const nvblox::Camera cam(
+      static_cast<float>(frame.K.fx), static_cast<float>(frame.K.fy),
+      static_cast<float>(frame.K.cx), static_cast<float>(frame.K.cy),
+      frame.width, frame.height);
+  impl_->local_mapper->integrateDepth(depth, T_L_C, cam);
+}
+
+// DYNAMIC LOCAL: decay-to-free (old/dynamic fades) + bound to a window around the robot (drop the
+// uncorrected-pose history), then slice → the reactive occupancy. One call per timer tick.
+CostmapSlice NvbloxBackend::exportLocalCostmap(const CostmapParams& params,
+                                               const Eigen::Vector3d& center, double radius_m) {
+  impl_->local_mapper->decayTsdf();  // stale/dynamic voxels fade to free
+  impl_->local_mapper->clearOutsideRadius(center.cast<float>(),
+                                          static_cast<float>(radius_m));  // rolling window
+  return sliceMapper(*impl_->local_mapper, impl_->slicer, params, impl_->params.voxel_size_m);
+}
+
 void NvbloxBackend::exportMesh(const std::string& ply_path) {
   impl_->mapper->updateColorMesh();
   impl_->mapper->saveColorMeshAsPly(ply_path);
@@ -194,6 +238,9 @@ void NvbloxBackend::integrate(const DepthFrame&, const SE3&) {}
 void NvbloxBackend::reset() {}
 void NvbloxBackend::clearRegion(const Aabb&) {}
 CostmapSlice NvbloxBackend::exportCostmap(const CostmapParams&) { return {}; }
+void NvbloxBackend::integrateLocal(const DepthFrame&, const SE3&) {}
+CostmapSlice NvbloxBackend::exportLocalCostmap(const CostmapParams&, const Eigen::Vector3d&,
+                                               double) { return {}; }
 void NvbloxBackend::exportMesh(const std::string&) {}
 bool NvbloxBackend::available() const { return false; }
 

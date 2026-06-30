@@ -27,6 +27,9 @@ class NvbloxBackend : public VolumetricBackend {
   void reset() override;
   void clearRegion(const Aabb& region) override;
   CostmapSlice exportCostmap(const CostmapParams& params) override;
+  void integrateLocal(const DepthFrame& frame, const SE3& T_map_body) override;
+  CostmapSlice exportLocalCostmap(const CostmapParams& params,
+                                  const Eigen::Vector3d& center, double radius_m) override;
   void exportMesh(const std::string& ply_path) override;
   bool available() const override;
   bool queryDistanceField(const std::vector<Eigen::Vector3d>& pts_map,

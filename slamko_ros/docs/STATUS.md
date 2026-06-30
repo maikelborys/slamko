@@ -1,5 +1,86 @@
 # slamko_ros — STATUS (validated facts + numbers)
 
+## 2026-06-30 — DYNAMIC LOCAL costmap: 2nd decaying nvblox mapper @ 45 Hz live ✅
+
+The reactive Nav2 local costmap is now a SECOND, DECAYING nvblox mapper (nvblox's static+dynamic
+split, inside slamko), NOT a crop of the deformable global. `slamko_tsdf/NvbloxBackend` gains a
+`local_mapper` (TSDF, low max_weight=20, `tsdf_decay_factor=0.8`, `set_free_distance_on_decayed=true`)
++ `integrateLocal` / `exportLocalCostmap` (decayTsdf + clearOutsideRadius(robot,R) + slice).
+`provider_fusion_node`:
+- **`onDepth` integrates EVERY depth frame** (~45 Hz) into the local mapper at the LIVE gated pose
+  (`T_map_odom_pub_ * live_TOB_`) — per-frame, NOT per-keyframe.
+- `publishLocalCostmap` (the 10 Hz timer) decays-to-free + bounds to a window around the robot +
+  slices the LOCAL mapper → `~/local_costmap`. Falls back to the global-crop if `local_dynamic:=false`.
+- Param `local_dynamic` (default **true**).
+- **WHY**: short decaying window → (a) uncorrected-pose drift never accumulates, (b) dynamic obstacles
+  clear, (c) always reactive/fresh — what a Nav2 controller wants. The STATIC global (per-keyframe,
+  corrected, no-decay, deformable) is untouched.
+- **VALIDATED LIVE** (casa bag, `local_dynamic:=true volumetric:=true`): the 2nd mapper integrates
+  per-frame without crashing / starving the GPU (runs alongside OKVIS+TRT+global mapper); the local
+  costmap is a clean reactive window (64×88 @ 5 cm, 1277 occ / 1829 free, free/occupied/unknown around
+  the robot), NOT a static crop. Contract: `VolumetricBackend::{integrateLocal,exportLocalCostmap}`
+  (default no-op for CUDA-free build) + passthroughs on VolumetricMapper/VolumetricLiveDriver.
+- Builds green. NEXT: tune decay rate vs reactivity; wire into Nav2 local_costmap (sim/real, not bags).
+
+## 2026-06-30 — D455 clean-map fixes: range cap 8→3.5 m + 2D occupancy noise filter ✅ (RESEARCH_D455_CLEAN_MAP_01.md)
+
+4-agent internet research → the universal D455 clean-map recipe. Applied the 2 cheapest high-impact:
+`volumetric_max_range_m` default 5→**3.5 m** (far stereo depth = #1 wall-thickener, noise grows z²);
+`costmap_noise_min_neighbors` (default **3**) demotes occupied cells with <3 occupied 8-neighbours →
+removes speckle/stray-fragments (deterministic A/B: −466 isolated cells, walls intact; 5 too aggressive).
+Honest: range-cap A/B confounded by OKVIS non-determinism. Bigger pending levers (high impact): depth
+pre-filter (decimation/spatial/temporal), sensor-error 1/z² weight, clean export re-integration.
+
+## 2026-06-29 — Phase-1 DEPTH geometric loop closure WIRED + validated live ✅ (PLAN_DEPTH_ODOM_01.md)
+
+The casa corridor "return-by-a-different-trajectory" = drift because depth fed only the MAP, not the
+odometry. Phase 1 (flavor b) wires the ALREADY-BUILT point-to-SDF ICP (`sdf_registration.hpp`) +
+nvblox ESDF query into the loop weld. New method `tryDepthLoopRefine` at the XFeat loop weld
+(`provider_fusion_node.cpp` ~2099): from the XFeat COARSE prior, snap the live depth cloud onto the
+mapped nvblox ESDF (finite-diff gradient BatchField over `queryDistanceField`), gate on inliers + RMS
++ degeneracy (Zhang condition number of the GN Hessian), and replace the XFeat edge with the sharper
+geometric one (else fall back, no regress). Opt-in: `depth_loop_refine` (default OFF).
+- Enabling plumbing: `SdfRegistrationResult.information` (the GN Hessian); `queryDistanceField`
+  passthrough on VolumetricMapper + VolumetricLiveDriver.
+- **VALIDATED LIVE** (`depth_loop_refine:=true volumetric:=true`, casa bag): `DEPTH LOOP refine:
+  kf 565 rms=0.072 m inliers=5158 cond=0.0233 -> geometric edge`; `LOOP CLOSED [DEPTH-REFINED]`;
+  optimized graph closes start-end to **0.19 m** (fused 0.18 m), coherent house. 1/2 loops refined.
+- TUNING learned: accept on RMS+inliers, NOT the strict `converged` flag (finite-diff gradient keeps
+  taking tiny steps); `depth_loop_max_rms=0.15` (~3 ESDF voxels — nvblox `getVoxels` is nearest-voxel
+  so ~1-voxel quantization is the RMS floor); `min_inliers=80`, `max_corr=1.0 m`, `min_cond=0.02`.
+- A/B depth-ON-vs-OFF is confounded by OKVIS GPU non-determinism (each run drifts differently: 0.83 m
+  here vs 7.97 m in g1) → the RIGOROUS correction proof is the OFFLINE de-risk (FPFH+ICP recovered
+  8.07 m, 6 cm RMSE); the live run proves the wiring produces the correct tight geometric edge.
+- **COHERENCE VALIDATED against OKVIS-full-SLAM as GT** (user's method, the clean way past the
+  non-determinism confound): ran OKVIS2-X in full VI-SLAM mode (`rsD455_map848`, do_loop_closures=true,
+  its own loop closure to 0.18 m start-end) → Umeyama-aligned slamko's depth-refined `fused.tum` to it:
+  **ATE RMSE 0.182 m, median 0.075 m, scale 1.02 (2905 pairs)**. The two trace the SAME house; largest
+  divergence is the low-texture corridor (what depth-loop targets). slamko agrees with a mature
+  independent SLAM to 7.5 cm median = coherent. Plot `/tmp/slamko_casa_g1dd/coherence_vs_okvis.*`.
+- Builds green. NEXT: per-axis degeneracy-aware covariance via `addEdge(info)` (today isotropic
+  loop sigma); Phase 2 = small_gicp continuous depth-odom as a 2nd provider.
+
+## 2026-06-29 — Nav2 step 1: LOCAL costmap on a FIXED-RATE timer 🟢 (plan PLAN_NAV2_01.md)
+
+Decoupled the LOCAL costmap publish from the keyframe-correction cadence so the rolling window
+tracks the robot at a fixed rate (incl. while stationary) — the first Nav2-grade fix (gap #1 in
+`docs/PLAN_NAV2_01.md`). Changes in `provider_fusion_node.cpp`:
+- New param **`local_costmap_rate_hz`** (default 10). A `create_wall_timer` calls the new
+  `publishLocalCostmap()` at that rate.
+- `publishVolumetricCostmap()` now CACHES the whole-map grid (`cached_global_`) + publishes the
+  GLOBAL (still on the kf cadence + shutdown — it's the latched static map), then calls
+  `publishLocalCostmap()` once on fresh data.
+- `publishLocalCostmap()` re-crops `cached_global_` around the live pose (`T_map_odom_pub_ *
+  live_TOB_`) and publishes `~/local_costmap`, stamped `now()`, frame `map_frame_`. Single-threaded
+  executor → shares the cache with the keyframe path, no locking (same model as `onTfTimer`).
+- Decision recorded: **self-contained in slamko, NOT the external `nvblox_ros`/`nvblox_nav2`**
+  (slamko's in-loop nvblox already emits the ESDF slice AND deforms with the pose-graph; upstream is
+  rigid in odom). nvblox_nav2 left untouched (it serves the RTABmap stack).
+- **Builds green** (`colcon build --packages-select slamko_ros`). PENDING validation gate G1: run a
+  bag with `volumetric:=true`, confirm `ros2 topic hz ~/local_costmap ≈ 10` + the window follows the
+  robot via `capture_costmaps.py`. Next steps (2-6): ESDF/distance mode, decay, nav2_params+bringup,
+  lifecycle gate on `localized`, goal in bag→sim.
+
 ## 2026-06-26 — NAV costmaps: GLOBAL + LOCAL (the Nav2 foundation) ✅
 
 `provider_fusion_node` publishes BOTH navigation costmaps from the live nvblox volumetric layer
