@@ -18,8 +18,19 @@ research provenance — anchor-don't-weld, iSAM2-poses-only, raw-mag-not-BNO-fus
 GNSS init-then-re-anchor). Old own-VIO plan: `docs/archive/MASTER_PLAN_OWNVIO_01.md`.
 Also: [`docs/DECOUPLING.md`](docs/DECOUPLING.md), [`docs/DOC_PROCESS.md`](docs/DOC_PROCESS.md).
 
-> **Current focus (2026-06-26): UNIVERSAL EVALUATOR + NEVER-JUMP GATE shipped; next = NAV2.**
-> Cold-start → [`docs/PIPELINE_STATUS_01.md`](docs/PIPELINE_STATUS_01.md) **§0 (2026-06-26)** +
+> **Current focus (2026-06-30): IMMORTAL GATES + DEPTH GEOMETRIC LOOP + DYNAMIC LOCAL COSTMAP +
+> D455 CLEAN-MAP shipped (commit 220c130); NEXT = ISAAC SIM (Nav2 closed-loop — bags can't drive +
+> only 1 D455-HW-depth bag).** Cold-start → [`docs/PIPELINE_STATUS_01.md`](docs/PIPELINE_STATUS_01.md)
+> **§0 (2026-06-30)** + [`docs/PLAN_ISAACSIM_01.md`](docs/PLAN_ISAACSIM_01.md) + memories
+> `slamko-isaacsim-next`, `slamko-immortal-seal-on-doubt`, `slamko-d455-clean-map`. Shipped: A live
+> IMU referee (`imu_referee`, recall 0→0.67) + B HOLD (`hold_on_loss`) seal-on-doubt; depth geometric
+> loop weld (`depth_loop_refine`, 7.2cm, point-to-SDF ICP on nvblox ESDF); DYNAMIC LOCAL costmap (2nd
+> DECAYING nvblox mapper @45Hz per-frame@live, `local_dynamic` ON — static+dynamic split); Nav2 local
+> timer; D455 fixes (range 5→3.5, speckle filter). Validated vs OKVIS-full-SLAM GT (ATE 7.5cm median).
+> Open levers: nvblox 1/z² weight, depth pre-filter, push. (Prior focus below kept for provenance.)
+>
+> **Prior focus (2026-06-26): UNIVERSAL EVALUATOR + NEVER-JUMP GATE shipped.**
+> Cold-start → [`docs/PIPELINE_STATUS_01.md`](docs/PIPELINE_STATUS_01.md) **§0b (2026-06-26)** +
 > [`docs/EVAL_SYSTEM_01.md`](docs/EVAL_SYSTEM_01.md) + memory `slamko-universal-evaluator`. Built
 > `scripts/slamko_eval.py` = the **provider-agnostic 7-channel ideology scorecard** (3 independent
 > witnesses: IMU inertial · depth→SDF geometric · XFeat recognition) — judges the slamko LAYER, not

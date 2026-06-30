@@ -10,7 +10,60 @@ Everything below was validated on the real D455 casa bags.
 
 ---
 
-## 0. 2026-06-26 — UNIVERSAL EVALUATOR + NEVER-JUMP GATE + cuVSLAM provider (read this FIRST)
+## 0. 2026-06-30 — IMMORTAL GATES + DEPTH GEOMETRIC LOOP + DYNAMIC LOCAL COSTMAP + D455 CLEAN-MAP (read this FIRST)
+
+**Commit `220c130` on `klt-fork-loopclosure`. All opt-in or validated; 4 packages build green.** This
+session pushed never-lost enforcement + the Nav2 costmap foundation + D455 map quality. Full detail:
+`slamko_ros/docs/STATUS.md` (3 dated entries) + the 4 docs below + memories `slamko-immortal-seal-on-doubt`,
+`slamko-depth-odom-loop-closure`.
+
+**What shipped (all in `provider_fusion_node.cpp` + `slamko_tsdf` + `slamko_loop` + `slamko_core`):**
+- **A — live IMU referee** (`imu_referee`, default OFF): per-step accel-vs-gravity teleport-lie gate,
+  gravity auto-estimated (EMA→8.9). The slamko_eval ch3 referee, brought LIVE → seal+break. Recall 0/5→0.67.
+- **B — HOLD state** (`hold_on_loss`, default OFF): while tracking LOST, withhold ALL map growth (don't
+  map the dead-reckoned stretch); fresh island on recovery. The user's "seal-on-doubt, don't connect".
+- **Depth geometric loop weld** (`depth_loop_refine`, default OFF, Phase-1 of PLAN_DEPTH_ODOM_01): at the
+  XFeat loop weld, snap the live depth cloud onto the nvblox ESDF (point-to-SDF ICP, `sdf_registration.hpp`
+  ALREADY existed) from the XFeat coarse prior; gate inliers+RMS+Zhang-condition; refined edge else fall
+  back. VALIDATED `LOOP CLOSED [DEPTH-REFINED]` 7.2cm rms. **Reject was honest** at the corridor (cond<0.02
+  = along-axis degenerate). Accept on RMS+inliers NOT the strict `converged` flag; `max_rms=0.15` (~3 ESDF
+  voxels = nvblox getVoxels nearest-voxel quantization floor).
+- **Nav2 LOCAL costmap on a fixed-rate timer** (`local_costmap_rate_hz`, default 10) — decoupled from kf.
+- **DYNAMIC LOCAL costmap** (`local_dynamic`, default **ON**): a 2nd DECAYING nvblox mapper integrated
+  **per-frame @ live pose (~45 Hz)** in `onDepth`, decay-to-free + `clearOutsideRadius` window each tick
+  (nvblox static+dynamic split). Reactive; uncorrected-pose drift never accumulates. Validated live
+  (64×88 window, free/occ/unknown, no GPU starvation alongside OKVIS+TRT+global).
+- **D455 clean-map fixes** (RESEARCH_D455_CLEAN_MAP_01): `volumetric_max_range_m` default 5→**3.5 m**
+  (far stereo depth = #1 wall-thickener) + `costmap_noise_min_neighbors`=3 (2D speckle filter; −466
+  isolated cells, walls intact).
+
+**VALIDATED (casa bag, the ONLY D455-HW-depth bag):** coherence vs **OKVIS-full-SLAM as GT** (run
+`rsD455_map848` do_loop_closures=true) — slamko depth-refined ATE **7.5 cm median / 18 cm RMSE, scale 1.02**.
+Global costmap topic OK (`225×328 @5cm, latched, slamko_map`). Full immortal run: break-into-islands at the
+corridor → weld onto submap 0 at the return (9 components → 4 fused).
+
+**⇒ NEXT STEP (user-chosen): ISAAC SIM.** Bags CANNOT close the Nav2 loop (passive replay) and we have
+only 1 D455-HW-depth bag (stereo→depth bags too low quality). So Nav2 driving + brutal stress + map
+iteration must go to **simulation or the real robot**. The user chose **Isaac Sim** (natural fit:
+pairs with nvblox / Isaac ROS, GPU). See **`docs/PLAN_ISAACSIM_01.md`** (the next-session entry point).
+
+**OPEN LEVERS (cheap, high-value, not done):** (1) sensor-error **`1/z²` integration weight** in nvblox
+(thins walls; `nvblox_backend` — currently constant weight); (2) **depth pre-filter** (decimation/spatial/
+temporal in disparity domain) before integrate; (3) fix `capture_costmaps.py` global QoS (it MISSES the
+latched global — use a transient_local subscriber that waits, see `/tmp/glob_cap.py`); (4) per-axis
+degeneracy-aware covariance on the depth loop edge (today isotropic); (5) **push** to remote.
+
+**GOTCHAS for the next session:** the harness reports background bash "failed exit 1" even when a run
+COMPLETES — check the output files, not the exit code. OKVIS is GPU-NONDETERMINISTIC (each run drifts
+differently: 0.83 vs 7.97 m start-end on the same bag) → A/B map quality is confounded; use OKVIS-full-SLAM
+as GT or deterministic offline A/B. The casa bag is `/mnt/data/d455_bags/casa_084815_flashbno_trim`; run
+scripts in `scratchpad/run_full_immortal.sh` (all gates+depth-loop+dynamic-local) and
+`scripts/run_slamko_casa_volumetric_live.sh`. Python with open3d/plotly = venv `/tmp/depthvenv`; rerun
+viewer = `/tmp/rrviewer`.
+
+---
+
+## 0b. 2026-06-26 — UNIVERSAL EVALUATOR + NEVER-JUMP GATE + cuVSLAM provider
 
 The session that built the **measurement system** and used it to find + fix a real defect. Full
 detail: [`EVAL_SYSTEM_01.md`](EVAL_SYSTEM_01.md), `slamko_ros/docs/STATUS.md` (2026-06-26),
