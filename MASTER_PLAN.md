@@ -4,7 +4,15 @@
 research provenance + §11 addendum live there) · previous own-VIO plan archived at
 docs/archive/MASTER_PLAN_OWNVIO_01.md -->
 
-> **Robustness track (active, authoritative for remaining work):**
+> **v3 consolidation campaign (2026-07-02, authoritative for current work):**
+> [`docs/PLAN_IMMORTAL_FRAMEWORK_01.md`](docs/PLAN_IMMORTAL_FRAMEWORK_01.md) —
+> the user's immortal-framework vision IS the built architecture; the gap is
+> consolidation: T1 regression battery over all bags → T2 immortal gates
+> default-ON → T3 targeted decomposition (delete own-VIO, carve the god node;
+> NO root rewrite — audit 2026-07-02) → T4 BNO055 compass live → T5 soft-edge
+> navigation → T6 viewpoint-recall bags.
+>
+> **Robustness track (prior, provenance):**
 > [`docs/PLAN_ROBUSTNESS_01.md`](docs/PLAN_ROBUSTNESS_01.md) — invariants-first
 > (never ingest garbage / never false-merge / never permanently lost), reorders
 > §8 to **gates before anchor-edges**, and folds in the S1–S9 stress battery +
