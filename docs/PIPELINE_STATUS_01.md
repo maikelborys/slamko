@@ -10,7 +10,39 @@ Everything below was validated on the real D455 casa bags.
 
 ---
 
-## 0. 2026-06-30 — IMMORTAL GATES + DEPTH GEOMETRIC LOOP + DYNAMIC LOCAL COSTMAP + D455 CLEAN-MAP (read this FIRST)
+## 0. 2026-07-02 — MASTER PLAN v3 + THE FULL-BAG REGRESSION BATTERY (T1) (read this FIRST)
+
+**The user restated his immortal-framework vision + asked for a total root refactor if needed.
+Verdict (code audit): the vision IS the built architecture; consolidate, don't rewrite.** Plan:
+[`PLAN_IMMORTAL_FRAMEWORK_01.md`](PLAN_IMMORTAL_FRAMEWORK_01.md) (T1 battery → T2 gates
+default-ON → T3 decomposition [delete ~6.9k LOC own-VIO + carve the 3,087-line god node, 0 gtests]
+→ T4 BNO055 compass → T5 soft-edge navigation). Memory `slamko-immortal-framework-v3`.
+
+**T1 SHIPPED + first full run done:** `scripts/battery.sh` (one command, serial, all 10 real
+bags with per-bag correct configs, GATES=on|off) + `scripts/battery_report.py` →
+[`battery/BATTERY_t1_full_on.md`](battery/BATTERY_t1_full_on.md). **Result: 55 PASS / 7 FAIL,
+0 crashes in all 10 bags; blackouts recover 100% (~0.8s re-anchor, IMU-referee recall 1.0);
+never-lie ✅ everywhere.** The FAILs = 3 real findings:
+1. **never-jump residual (T2 blocker):** with `gate_live_pose` @2.5 m/s the live pose still
+   steps 0.139 m/tick (6.25 m/s) on flash + 0.065 m (3.87 m/s) on brutal1 — both at the FINAL
+   loop-closure correction: the map→odom slew leg exceeds its 0.5 m/s bound per published tick.
+   Fix = absolute per-published-step clamp at the publish path (one place, covers both legs).
+2. **wall stays the hardest:** provider dead-reckons ~20 km "tracking ok"; referee seals only
+   184/1214 lies; final loss never re-localizes (bag ends 4 s after return). Seal-on-doubt must
+   be more aggressive on the blank-wall regime (feature-count channel).
+3. **brutal1 welds back only 3 of 8 breaks** → 8 honest islands (the known VIEWPOINT recall
+   ceiling; the pending multi-direction bags attack exactly this).
+
+**GOTCHAS (hard-won today):** the harness KILLS background bash at ~300 s — `setsid nohup ... &
+disown` from a foreground call for any long run, and CHECK FOR ORPHANED orchestrators after a
+harness kill (two half-dead battery.sh were alive concurrently = the mutual-reap hazard).
+`set -u` before `source /opt/ros/jazzy/setup.bash` dies silently — source first. Durable eval
+venv: `~/.venvs/slamko-eval` (numpy+rosbags; /tmp venvs get wiped). suave bag = 49.5 s (157 s
+row @rate 0.5 is a COMPLETE run, not truncated).
+
+---
+
+## 0a. 2026-06-30 — IMMORTAL GATES + DEPTH GEOMETRIC LOOP + DYNAMIC LOCAL COSTMAP + D455 CLEAN-MAP
 
 **Commit `220c130` on `klt-fork-loopclosure`. All opt-in or validated; 4 packages build green.** This
 session pushed never-lost enforcement + the Nav2 costmap foundation + D455 map quality. Full detail:
