@@ -102,18 +102,25 @@ T(MH01): MH01 4.0 · MH02 104 · MH03 67 · MH04 204 · MH05 333 cm → joint 10
   instrumentación (pendiente: un fprintf en `ApplyLoopClosureResult` slam.cpp:306 con los
   kf-ids → separa LC in-session vs vs-loaded en un run).
 
-**Palancas siguientes (en orden):**
-1. **Instrumentar `ApplyLoopClosureResult`** (fork, 1 línea) → medir cuántos LC atan a
-   KFs CARGADOS. Si ~0: los gates del LC-vs-loaded (NCC 0.9 / LSI retrieval bajo drift
-   ~1 m / `lcs_two_steps_easy` thresholds) son el objetivo del fix del fork.
-2. **Multi-stitch**: re-localizar periódicamente AUNQUE ya localizado = anclas
-   distribuidas sin tocar internals — PERO el swap de LocalizeInMap descarta los KFs
-   nuevos no guardados → requiere save_map antes de cada re-stitch (caro) o un modo
-   "localize-without-swap" en el fork (mejor: devuelve pose+inliers → slamko lo usa como
-   edge, sin reemplazar el mapa).
-3. La comparación fiel con ORB-SLAM3 en cadena LARGA exige su equivalente de welding-BA;
-   cuVSLAM une por PGO — si (1)+(2) no bastan, el welding-window BA del estudio ORB es el
-   refactor mayor (autorizado por el usuario si hace falta).
+**Diagnóstico completado hasta el fondo (2026-07-10b, fork a80a083):**
+1. `ApplyLoopClosureResult` instrumentado → **sesión 2: 21 LC edges, TODOS a keyframes
+   propios, 0 a cargados.** Los landmarks frescos propios ECLIPSAN a los cargados en la
+   selección — el problema exacto que ORB-SLAM3 resuelve con SearchAndFuse (fusión de
+   duplicados). Sin fusión, el mapa cargado queda en sombra → cada sesión cuelga de su
+   único stitch (~1 m).
+2. **Fix en curso (plumbing completo, filtro aún no dispara):** segundo pase de
+   `DetectLoopClosure` RESTRINGIDO a landmarks cargados (`LoopClosureTask.
+   loaded_kf_boundary` + filtro en lcs_simple + boundary capturado en el swap de
+   LocalizeInMap + pase en AsyncSlam con funnel). MEDIDO: `sel=0` — las RELACIONES de
+   los landmarks cargados NO están en el LSI en memoria (viven en pose graph/DB), el
+   predicado por relaciones rechaza todo.
+3. **SIGUIENTE PASO EXACTO:** cambiar la fuente del predicado a `map_.pose_graph_`
+   (que sí carga las relaciones landmark→keyframe), o materializar las relaciones al
+   cargar (el patrón del fix de descriptores c8ebed4). Después: re-medir MH01→MH02
+   (objetivo: cross-binds > 0 distribuidos y coherencia 104 cm → ~10-20 cm), luego la
+   cadena de 5, luego el gate ≥40 de two_steps_easy si el pool restringido se queda corto.
+4. Plan B si el pase restringido no basta: fusión de duplicados al estilo SearchAndFuse
+   (asociar landmark nuevo → cargado en el LSI al crear) — el refactor mayor autorizado.
 
 ## 4. Riesgos/gotchas
 
