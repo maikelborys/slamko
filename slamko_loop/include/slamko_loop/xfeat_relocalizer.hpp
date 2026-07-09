@@ -154,6 +154,19 @@ class XFeatRelocalizer : public Relocalizer {
   RelocResult relocalizeNear(const Features& query, const SE3& T_query_global,
                              double radius) const;
 
+  // PROJECTION association (RESEARCH_ATLAS_MULTISESSION_01: the ORB-SLAM3 merge
+  // mechanism slamko lacked). Once roughly localized, PROJECT each nearby submap's 3D
+  // landmarks into the query image via the pose estimate and match by descriptor
+  // within a PIXEL gate — geometry replaces global appearance, so it welds where
+  // viewpoints differ (the cross-trajectory hall interior appearance-verify never
+  // matches: MH multi-session welded ONLY at the shared platform). The pixel gate
+  // also sidesteps the Lowe-ratio failure on self-similar scenes. Same PnP-RANSAC +
+  // min_inliers as every other path; the caller's 3-tier/I2 gates still apply.
+  // px_gate must cover the pose-estimate error: ~fx * (coherence_m / depth_m).
+  RelocResult associateByProjection(const Features& query, const SE3& T_query_global,
+                                    double radius, double px_gate,
+                                    float min_cos) const;
+
   std::size_t numSubMaps() const { return db_.size(); }
 
   // GEOMETRIC retrieval (ScanContext): match the query's local 3D geometry (in the query

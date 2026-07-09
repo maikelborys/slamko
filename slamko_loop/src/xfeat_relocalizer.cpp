@@ -346,6 +346,81 @@ RelocResult XFeatRelocalizer::relocalizeNear(const Features& query,
   return verifyAgainst(query, cand);
 }
 
+RelocResult XFeatRelocalizer::associateByProjection(const Features& query,
+                                                    const SE3& T_query_global,
+                                                    double radius, double px_gate,
+                                                    float min_cos) const {
+  RelocResult best;
+  if (!query.hasDescriptors() || cfg_.fx <= 0) return best;
+  const int D = query.descriptorDim();
+  const Eigen::Vector3d p = T_query_global.translation();
+  const double gate2 = px_gate * px_gate;
+  int best_inliers = 0;
+
+  for (const auto& e : db_) {
+    if ((e.anchor.translation() - p).norm() > radius) continue;
+    if (e.desc.cols() != D || e.pos.empty()) continue;
+    // Predicted CAMERA pose in this submap's sealed-local frame.
+    const SE3 T_sl_cam_pred = e.anchor.inverse() * T_query_global * cfg_.body_T_cam;
+    const SE3 T_cam_sl = T_sl_cam_pred.inverse();
+
+    std::vector<Eigen::Vector2d> uv;
+    std::vector<Eigen::Vector3d> X;
+    std::vector<std::pair<int, std::uint64_t>> corr;
+    for (std::size_t m = 0; m < e.pos.size(); ++m) {
+      const Eigen::Vector3d Xc = T_cam_sl.so3().unit_quaternion() * e.pos[m] +
+                                 T_cam_sl.translation();
+      if (Xc.z() < 0.2 || Xc.z() > 40.0) continue;
+      const double u = cfg_.fx * Xc.x() / Xc.z() + cfg_.cx;
+      const double v = cfg_.fy * Xc.y() / Xc.z() + cfg_.cy;
+      if (u < -px_gate || v < -px_gate || u > 2 * cfg_.cx + px_gate ||
+          v > 2 * cfg_.cy + px_gate)
+        continue;
+      // Best-cosine query keypoint inside the pixel gate (geometry constrains the
+      // ambiguity a global Lowe ratio cannot resolve on self-similar scenes).
+      int best_q = -1;
+      float best_c = min_cos;
+      for (int q = 0; q < query.size(); ++q) {
+        const double du = query.keypoints(q, 0) - u;
+        const double dv = query.keypoints(q, 1) - v;
+        if (du * du + dv * dv > gate2) continue;
+        const float c = query.descriptors.row(q).dot(e.desc.row(m));
+        if (c > best_c) {
+          best_c = c;
+          best_q = q;
+        }
+      }
+      if (best_q < 0) continue;
+      uv.emplace_back(query.keypoints(best_q, 0), query.keypoints(best_q, 1));
+      X.push_back(e.pos[m]);
+      corr.emplace_back(best_q, e.lm_ids.empty() ? 0 : e.lm_ids[m]);
+    }
+
+    SE3 T_sl_cam;
+    int inliers = 0;
+    std::vector<int> inlier_idx;
+    if (static_cast<int>(X.size()) < cfg_.min_inliers) continue;
+    if (!pnpRansac(X, uv, cfg_, T_sl_cam, inliers, &inlier_idx)) continue;
+    if (cfg_.min_inlier_ratio > 0.0 &&
+        inliers < cfg_.min_inlier_ratio * static_cast<double>(X.size()))
+      continue;
+    if (inliers <= best_inliers) continue;
+
+    best_inliers = inliers;
+    best.found = true;
+    best.submap_id = e.id;
+    best.T_query_match = T_sl_cam * cfg_.body_T_cam.inverse();
+    best.confidence = static_cast<double>(inliers) /
+                      static_cast<double>(std::max<std::size_t>(1, X.size()));
+    best.num_inliers = inliers;
+    best.matches.clear();
+    best.matches.reserve(inlier_idx.size());
+    for (int k : inlier_idx)
+      if (k >= 0 && k < static_cast<int>(corr.size())) best.matches.push_back(corr[k]);
+  }
+  return best;
+}
+
 RelocResult XFeatRelocalizer::relocalize(const Features& query) const {
   return relocalize(query, {});  // appearance-only path
 }

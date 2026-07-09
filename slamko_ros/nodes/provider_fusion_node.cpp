@@ -527,6 +527,13 @@ class ProviderFusionNode : public rclcpp::Node {
       // Consistent votes to the SAME prior submap needed to promote a weak (inl<strong)
       // proximity match -> a weld. Accumulated per-submap (robust to interleaved candidates).
       proximity_votes_needed_ = declare_parameter("proximity_votes_needed", 2);
+      // PROJECTION association (opt-in; RESEARCH_ATLAS_MULTISESSION_01): project prior
+      // landmarks into the query image via the pose estimate, descriptor-match inside a
+      // PIXEL gate, PnP -> weld. px_gate must absorb the pose-estimate error
+      // (~fx * coherence/depth: 436 * 1m / 8m ~ 55 px on MH).
+      projection_assoc_ = declare_parameter("projection_assoc", false);
+      projection_px_gate_ = declare_parameter("projection_px_gate", 60.0);
+      projection_min_cos_ = declare_parameter("projection_min_cos", 0.80);
       // Looser tolerance for ACCUMULATING votes than for a single strong match: weak
       // cross-recording matches (inl 15-34) have noisy PnP (~0.5-1 m), so consecutive
       // votes to the SAME place scatter > proximity_agree_m. The submap IDENTITY repeating
@@ -2031,6 +2038,17 @@ class ProviderFusionNode : public rclcpp::Node {
         processRelocResult(
             reloc_prior_->relocalizeNear(query, T_q_global, proximity_radius_), q_id, t,
             /*from_proximity=*/true);
+        // PROJECTION association (RESEARCH_ATLAS_MULTISESSION_01): geometry-gated
+        // matching via the pose estimate — welds where the appearance verify never
+        // fires (cross-trajectory viewpoints; MH welded ONLY at the shared platform).
+        // Routed through the SAME 3-tier proximity gating (never-false-merge intact).
+        if (projection_assoc_) {
+          processRelocResult(
+              reloc_prior_->associateByProjection(query, T_q_global, proximity_radius_,
+                                                  projection_px_gate_,
+                                                  (float)projection_min_cos_),
+              q_id, t, /*from_proximity=*/true);
+        }
       }
     }
   }
@@ -3034,6 +3052,8 @@ class ProviderFusionNode : public rclcpp::Node {
   int proximity_votes_needed_ = 2;
   double proximity_vote_agree_m_ = 2.0;
   int prox_candidates_ = 0, prox_promoted_ = 0;
+  bool projection_assoc_ = false;
+  double projection_px_gate_ = 60.0, projection_min_cos_ = 0.80;
   // Accumulated viz edge segments by class (session frame). Chain/Soft are rebuilt from
   // anchor_edges_ each push; these three accumulate kf<->target links as matches fire.
   std::vector<std::array<Eigen::Vector3d, 2>> viz_cand_segs_;   // proximity, pre-promotion (grey)

@@ -66,7 +66,7 @@ PY
   echo "=== session $i: $seq (dur ${dur}s, budget ${budget}s, prior: $prior) ==="
   timeout "$budget" ros2 launch slamko_ros pa_okvis_euroc_x.launch.py \
     bag_path:="$bag" seq:="$seq" out_dir:="$out" rate:="$RATE" \
-    "${PRIOR_ARG[@]}" "${MP_ARGS[@]}" "proximity_radius:=${PROX_RADIUS:-3.0}" \
+    "${PRIOR_ARG[@]}" "${MP_ARGS[@]}" "proximity_radius:=${PROX_RADIUS:-3.0}" "projection_assoc:=${PROJ_ASSOC:-false}" \
     > "$out.launch.log" 2>&1
   pkill -INT -f '[p]rovider_fusion_node' 2>/dev/null; sleep 4
   pkill -KILL -f "$PATTERN" 2>/dev/null; sleep 2

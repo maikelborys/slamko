@@ -70,8 +70,38 @@ depth). Encaja en anchor-don't-weld: más weld edges, cero BA cross-map, el graf
 poses-only. Implementación: `XFeatRelocalizer::associateByProjection(query_kps,
 prior_landmarks_in_frustum, T_estimate)` + los mismos gates I2 (inliers/PCM/Huber).
 
-Después: re-medir C (coherencia debería caer a ~10-20 cm; dedup cross-session →
-plateau) · MH02/04 cuando el server ETH responda (`euroc_make_bag.py` listo).
+## Run D + diagnóstico del funnel — 2026-07-09c: PROYECCIÓN IMPLEMENTADA; la pared es el DESCRIPTOR
+
+`XFeatRelocalizer::associateByProjection` SHIPPED (opt-in `projection_assoc` +
+`projection_px_gate`/`projection_min_cos`; enrutado por el 3-tier — never-false-merge
+intacto). **Run D + funnel instrumentado:** la proyección alcanza los submapas interiores
+(candidatos 3/5/8/9/11/12/13 en radio, landmarks proyectados en frustum ✓), pero:
+- gate 60 px / cos 0.80 → corr 0–6 (bajo el mínimo 15)
+- gate 150 px / cos 0.70 → corr hasta 22–23 en interiores… **y el PnP los RECHAZA**
+  (geométricamente inconsistentes = matches falsos que el coseno bajo dejó pasar).
+Los 73 welds siguen siendo todos → submapa 1 (la plataforma).
+
+**Conclusión (la más pura medición del techo hasta la fecha):** ni con la GEOMETRÍA
+haciendo el retrieval, los descriptores XFeat del mismo punto físico visto desde
+trayectorias de vuelo distintas se corresponden (cos_verdadero < 0.7). No es la
+maquinaria (candidatos ✓, funnel ✓, gates honestos ✓) — es la invariancia del descriptor
+sparse bajo cambio fuerte de viewpoint. Consistente con la cancelación SALAD/LoFTR
+(2026-06-19) y el cliff de VPR.
+
+**Implicación para el sistema real (el insight que importa):**
+1. **Un robot de suelo NO vive en este régimen:** revisita pasillos por los mismos
+   caminos (misma altura, headings similares) = el régimen intra-sesión donde welds +
+   dedup + plateau YA están validados (+3%/visita). EuRoC MH aéreo cross-trayectoria es
+   el peor caso posible de solape de viewpoint.
+2. **El canal viewpoint-independiente para multi-sesión YA EXISTE en slamko: el weld
+   geométrico de DEPTH** (`depth_loop_refine`, point-to-SDF ICP vs el ESDF del prior,
+   7.2 cm validado) — EuRoC no tiene depth; los bags casa y el robot SÍ. La coherencia
+   multi-sesión del sistema real pasa por depth-geométrico, no por descriptores sparse.
+3. `projection_assoc` queda como capacidad opt-in correcta — pagará en cruces de
+   same-viewpoint (casa, robot) donde el coseno sí aguanta; A/B en casa pendiente.
+
+Después: A/B multi-sesión en bags CASA (mismo-viewpoint + depth disponible) ·
+MH02/04 cuando el server ETH responda (`euroc_make_bag.py` listo).
 
 GOTCHAS del harness: arg de launch VACÍO (`prior_map_dir:=`) = "malformed" y mata la sesión
 entera en silencio; `loadSubMaps` exige `submaps.manifest` (la unión debe regenerarlo);
