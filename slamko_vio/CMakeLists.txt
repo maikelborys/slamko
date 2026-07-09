@@ -7,6 +7,11 @@ project(slamko_vio LANGUAGES CXX CUDA)
 
 option(SLAMKO_VIO_BUILD_TESTS "Build gtest unit tests" ON)
 option(SLAMKO_VIO_BUILD_NODE  "Build the ROS 2 node" ON)
+# cuVSLAM provider adapter (odometry-only, slamko/trusted-health fork). OFF unless
+# the fork build exists — set SLAMKO_CUVSLAM_ROOT to the repo checkout.
+option(SLAMKO_WITH_CUVSLAM "Build the cuVSLAM provider adapter" ON)
+set(SLAMKO_CUVSLAM_ROOT "$ENV{HOME}/coding/cuVSLAM_src" CACHE PATH
+    "cuVSLAM source checkout (headers at libs/cuvslam, lib at build/bin)")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -86,6 +91,41 @@ set_target_properties(slamko_vio_core PROPERTIES
 target_compile_options(slamko_vio_core PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda --expt-relaxed-constexpr>)
 
+# --------------------------------------------- cuVSLAM provider adapter (opt-in)
+# Links the slamko/trusted-health fork's libcuvslam.so. RPATH-pinned with
+# --disable-new-dtags (DT_RPATH beats LD_LIBRARY_PATH) so the APT isaac_ros 4.4
+# libcuvslam.so — a DIFFERENT ABI, C API removed upstream in v15 — can never
+# shadow it in a ROS-sourced shell (the exact trap that broke the Python wheel).
+if(SLAMKO_WITH_CUVSLAM AND EXISTS "${SLAMKO_CUVSLAM_ROOT}/build/bin/libcuvslam.so")
+  add_library(slamko_cuvslam_provider SHARED src/cuvslam_provider.cpp)
+  target_include_directories(slamko_cuvslam_provider PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+    PRIVATE ${SLAMKO_CUVSLAM_ROOT}/libs/cuvslam)
+  target_link_libraries(slamko_cuvslam_provider
+    Eigen3::Eigen ${SLAMKO_CUVSLAM_ROOT}/build/bin/libcuvslam.so)
+  ament_target_dependencies(slamko_cuvslam_provider slamko_core)
+  set_target_properties(slamko_cuvslam_provider PROPERTIES
+    BUILD_RPATH "${SLAMKO_CUVSLAM_ROOT}/build/bin"
+    INSTALL_RPATH "${SLAMKO_CUVSLAM_ROOT}/build/bin")
+  target_link_options(slamko_cuvslam_provider PRIVATE -Wl,--disable-new-dtags)
+  install(TARGETS slamko_cuvslam_provider
+    LIBRARY DESTINATION lib ARCHIVE DESTINATION lib RUNTIME DESTINATION bin)
+
+  add_executable(cuvslam_provider_node nodes/cuvslam_provider_node.cpp)
+  target_link_libraries(cuvslam_provider_node slamko_cuvslam_provider)
+  ament_target_dependencies(cuvslam_provider_node
+    slamko_core rclcpp sensor_msgs nav_msgs std_msgs message_filters)
+  set_target_properties(cuvslam_provider_node PROPERTIES
+    BUILD_RPATH "${SLAMKO_CUVSLAM_ROOT}/build/bin"
+    INSTALL_RPATH "${SLAMKO_CUVSLAM_ROOT}/build/bin")
+  target_link_options(cuvslam_provider_node PRIVATE -Wl,--disable-new-dtags)
+  install(TARGETS cuvslam_provider_node DESTINATION lib/${PROJECT_NAME})
+  message(STATUS "slamko_vio: cuVSLAM provider adapter ON (${SLAMKO_CUVSLAM_ROOT})")
+else()
+  message(STATUS "slamko_vio: cuVSLAM provider adapter OFF (fork build not found)")
+endif()
+
 # ------------------------------------------------------------------- ROS 2 node
 if(SLAMKO_VIO_BUILD_NODE)
   add_executable(slamko_vio_node nodes/vio_node.cpp)
@@ -122,6 +162,12 @@ if(BUILD_TESTING AND SLAMKO_VIO_BUILD_TESTS)
     ament_add_gtest(${t} tests/${t}.cpp)
     target_link_libraries(${t} slamko_vio_core)
   endforeach()
+  # Conversions are pure Eigen (no cuVSLAM link) — always testable.
+  ament_add_gtest(test_cuvslam_conversions tests/test_cuvslam_conversions.cpp)
+  target_include_directories(test_cuvslam_conversions PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(test_cuvslam_conversions Eigen3::Eigen)
+  ament_target_dependencies(test_cuvslam_conversions slamko_core)
 endif()
 
 ament_export_dependencies(slamko_core rclcpp sensor_msgs nav_msgs visualization_msgs cv_bridge Eigen3 OpenCV)

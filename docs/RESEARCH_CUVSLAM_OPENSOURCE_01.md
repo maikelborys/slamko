@@ -171,6 +171,17 @@ success flag passes. **Provisional adapter gates: `inliers < 10 || info_conditio
 SUSPECT/REJECT`.** This recovers the true loss signal cuVSLAM never had — at the source,
 feeding slamko's existing seal-on-doubt machinery (which stays ON regardless).
 
-**Next (adapter, PLAN_CUVSLAM_PROVIDER_01 §6):** Step 0 extract ProviderIngest; adapter
-links OUR fork's .so (`~/coding/cuVSLAM_src/build/bin`, NOT the APT lib — C-API mismatch);
-map pnp_health → ProviderSample quality; A/B vs OKVIS per §4.2 before any default flip.
+### R-ADAPTER — SHIPPED same day (2026-07-09, later session): slamko_vio cuVSLAM adapter
+
+`slamko_vio` now builds (behind `SLAMKO_WITH_CUVSLAM`, auto-detected fork build):
+`cuvslam_conversions.hpp` (pure-Eigen, 3 gtests) · `CuvslamProvider` (PIMPL, odometry-only,
+quality=covariance per Hard Rule #3) · `cuvslam_provider_node` (→ `/cuvslam/odometry`, the
+exact `provider_fusion_node odom_topic:=` contract, + `/cuvslam/health` Float64MultiArray).
+RPATH-pinned to the fork lib (`--disable-new-dtags`) — immune to the APT-lib shadowing.
+**E2E on CASA1_brutal1 live replay: 52/56 teleport frames SUSPECT (93%), covariance 1777×
+inflated during teleports; chain offline PASS at 4e-13 m.** Full entry:
+`slamko_vio/docs/STATUS.md` 2026-07-09.
+
+**Next:** A/B vs OKVIS through the FULL fusion graph on casa bags
+(`provider_fusion_node odom_topic:=/cuvslam/odometry`), then Gazebo closed-loop; default
+flip only on §4.2 green (ATE within 5%, un-aligned divergence ≈ 0, map density preserved).

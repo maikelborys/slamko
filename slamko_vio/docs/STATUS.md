@@ -5,9 +5,41 @@ Living, dated progress + numbers log. Append on every validated change
 [`PLAN_P0_vio.md`](PLAN_P0_vio.md).
 
 > **DEPRECATED (2026-06-12 pivot, noted 2026-06-26).** Legacy own-VIO (XFeat/KLT/IMU); the
-> loose-fusion pipeline uses an EXTERNAL provider (OKVIS2-X / cuVSLAM). The package is **slated for
-> deletion** (klt_vo HEAD is strictly better) — frozen pending removal, not under active development.
-> The last src commit (2026-06-12, D455 live-image support) is intentionally not logged in detail.
+> loose-fusion pipeline uses an EXTERNAL provider (OKVIS2-X / cuVSLAM). The own-VIO sources are
+> **slated for deletion** (klt_vo HEAD is strictly better) — frozen pending removal.
+> **EXCEPTION — under active development: the thin provider adapters (the package's charter).**
+
+## 2026-07-09 — cuVSLAM provider adapter SHIPPED + E2E validated (brutal bag, live)
+
+New (all behind `SLAMKO_WITH_CUVSLAM`, auto-ON when `~/coding/cuVSLAM_src/build/bin/libcuvslam.so`
+exists — the slamko/trusted-health fork build, CUDA 12.6 sm_89):
+
+- `include/slamko_vio/cuvslam_conversions.hpp` — pure-Eigen basis conjugation (OpenCV→ROS)
+  + 6×6 covariance block-reorder (rot-first→trans-first). **3 gtests PASS** (relative-motion
+  invariance, block landing, symmetry) — the dossier §2.3 "unit-test FIRST" traps.
+- `include/slamko_vio/cuvslam_provider.hpp` + `src/cuvslam_provider.cpp` — PIMPL adapter,
+  ODOMETRY-ONLY (never instantiates `cuvslam::Slam` → the tail re-anchor jump machinery does
+  not exist in-process). Quality = covariance (Hard Rule #3): healthy → cuVSLAM 6×6
+  reordered+re-based ×`cov_scale` (80, NEES-measured); SUSPECT (fork pnp_health:
+  `inliers<10 || cond>1e6`) → ×`suspect_cov_mult` (25, bounded); hard invalid → nullopt.
+- `nodes/cuvslam_provider_node.cpp` — stereo IR + camera_info → `/cuvslam/odometry`
+  (nav_msgs, the exact contract `provider_fusion_node odom_topic:=` consumes) +
+  `/cuvslam/health` (Float64MultiArray `[t,obs,inliers,residual,cost,cond,suspect,valid]`;
+  Float32 t was a bug — 256 s resolution at epoch scale). RPATH-pinned to the fork lib with
+  `--disable-new-dtags` (DT_RPATH beats the ROS LD_LIBRARY_PATH that shadows with the
+  ABI-incompatible APT isaac_ros 4.4 lib).
+
+**E2E validation (CASA1_brutal1 live replay, 3037 frames tracked):** 52/56 teleport-arrival
+frames flagged SUSPECT (93%); published covariance during teleports **1777×** normal
+(9.5e0 vs 5.4e-3) → near-free edges in the chain, bounded by quality_mult_max; 26% of
+non-teleport frames also SUSPECT (genuinely degraded brutal-bag stretches — down-weighted,
+not rejected). The 4 unflagged margin teleports are the slamko-side referee's job (defense
+in depth — all layer-2 gates stay ON). Chain contract: cuVSLAM traj through
+`provider_chain_offline` reproduces to 4e-13 m (PASS).
+
+Numbers + method: [`../../docs/RESEARCH_CUVSLAM_OPENSOURCE_01.md`](../../docs/RESEARCH_CUVSLAM_OPENSOURCE_01.md) §5.
+Next: A/B vs OKVIS through the FULL fusion graph on casa bags (`odom_topic:=/cuvslam/odometry`),
+then Gazebo closed-loop.
 
 ## 2026-06-04 — VIO health-trace instrumentation + VI-BA-dropout root cause (branch klt-fork-loopclosure)
 
