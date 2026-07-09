@@ -37,9 +37,16 @@ not rejected). The 4 unflagged margin teleports are the slamko-side referee's jo
 in depth — all layer-2 gates stay ON). Chain contract: cuVSLAM traj through
 `provider_chain_offline` reproduces to 4e-13 m (PASS).
 
+**P-A GATE (full fusion graph): PASS same day.** `slamko_ros/launch/pa_cuvslam_bag.launch.py`
+(mirror of pa_okvis_bag) on CASA1_Suave: 4419 poses, **fused-vs-provider divergence 0.0000 m**
+(exact, as the no-global-constraints gate requires); provider clean (0 teleports, max 1.2 m/s,
+9.9 m span); a bounded hard-loss stretch absorbed by atlas/soft-bridge. GOTCHA: the fusion
+node needs `source ~/ros2_ws/install/setup.bash` for `libnvblox_lib.so` (exit 127 otherwise —
+the battery.sh S3 fix; the nvblox_ros2 in-tree symlink is DANGLING).
+
 Numbers + method: [`../../docs/RESEARCH_CUVSLAM_OPENSOURCE_01.md`](../../docs/RESEARCH_CUVSLAM_OPENSOURCE_01.md) §5.
-Next: A/B vs OKVIS through the FULL fusion graph on casa bags (`odom_topic:=/cuvslam/odometry`),
-then Gazebo closed-loop.
+Next: full A/B vs OKVIS (same bags, ATE + un-aligned divergence + map density per dossier
+§4.2), VPR/P-B path on cuVSLAM (`vpr:=true`), then Gazebo closed-loop.
 
 ## 2026-06-04 — VIO health-trace instrumentation + VI-BA-dropout root cause (branch klt-fork-loopclosure)
 
