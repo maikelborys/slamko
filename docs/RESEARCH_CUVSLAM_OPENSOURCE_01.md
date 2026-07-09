@@ -99,7 +99,78 @@ immortality axis (no appearance reloc, single map, unsmoothed re-anchor, map-rep
 reset + map wipe vs our HOLD/seal-on-doubt-island model; their guess-driven reloc vs our
 VPR+proximity; their unsmoothed tail vs our gated live pose.
 
-**Sequencing vs current focus:** Isaac-Sim/Nav2 closed-loop remains the active track. R1 is
-cheap, offline, and parallelizable; R2/R3 are the "second provider" workstream to schedule
-after (or alongside) the Nav2 milestone. R3 without R2 is useless; R2 without R1 violates
-the measure-before-build method.
+**Sequencing vs current focus:** Nav2 closed-loop (GAZEBO, not Isaac — user decision
+2026-07-09: Isaac starves the 8 GB GPU; surfaces = D455/EuRoC bags + Gazebo) remains the
+active track; R1–R3 executed 2026-07-09 as the second-provider workstream (below).
+
+---
+
+## 5. EXECUTED 2026-07-09 — R1+R2+R3 shipped, all measured
+
+**Setup:** venv `~/.venvs/cuvslam` (PyCuVSLAM 16 wheel cu12/py312 + rosbags/evo/scipy).
+**GOTCHA (cost an hour):** a ROS-sourced shell has `/opt/ros/jazzy/lib` on LD_LIBRARY_PATH
+→ the OLD isaac_ros 4.4 libcuvslam.so shadows the wheel's bundled v16 lib → import fails
+with `undefined symbol: ...LocalizeInMap...`. Fix baked into
+`scripts/bench_cuvslam_provider.sh` (prepends the wheel dir). Same trap hits the binding
+build (stub generation). Source build: CUDA **12.6** explicitly
+(`-DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.6/bin/nvcc` — default cmake picked 13.1, which
+the 580 driver rejects) + `-DCMAKE_CUDA_ARCHITECTURES=89`.
+
+**Benchmark harness (committed a2b7778):** `scripts/bench_cuvslam_provider.{py,sh}` —
+4-channel provider scorecard: accuracy (ATE Sim3 vs GT) · never-jump (5 m/s velocity-gate
+teleports, same gate as legacy detect_tracking_loss.py) · trust (covariance regime census +
+translation NEES + pnp_health) · realtime (track-time percentiles). EuRoC + D455-rosbag
+inputs. NVIDIA example loaders imported at runtime, never vendored.
+
+### R1b — EuRoC v16 odometry-only (Slam class NOT instantiated = the provider mode)
+
+| seq | stereo ATE | VIO ATE | stereo NEES(3) | VIO NEES(3) | fps (compute) |
+|---|---|---|---|---|---|
+| MH_01 | 0.052 | 0.081 | 82 | 707 | 1844 / 698 |
+| MH_03 | 0.111–0.129* | **0.084** | 177 | 769 | 1465 / 729 |
+| MH_05 | 0.115 | 0.141 (1 tele) | 103 | 1078 | 1739 / 746 |
+
+*run-to-run variance ~15% from async SBA — use `--sync-sba` for tight A/Bs.
+Findings: (a) v16 IMU fixes real — VIO no longer 2× worse, wins MH_03; stereo still the
+safe default. (b) These are ODOMETRY numbers — the old binary's 0.023–0.057 were
+post-loop-closure `slam_path`; the ~3× gap matches the known online-vs-slam_path ratio.
+(c) **Covariance NOT calibrated: NEES 82–1078 vs expected 3 → 30–350× overconfident**
+(worse in VIO). §7-A settled: DCS/residual gating or a measured scale, never raw NIS.
+(d) OKVIS 31-fps ceiling: shattered (0.5 ms/frame).
+
+### R1c — casa brutal/wall (D455 640×480, stereo-only, rig from bag camera_info)
+
+| bag | teleports (>5 m/s) | max speed | lost flagged | cov trace tele/normal |
+|---|---|---|---|---|
+| brutal1_trim | 78 | 2273 m/s | **0** | 52× (38% >p95) |
+| wall_trim | 242–307 | 6074 m/s | **0** | 20× (52% >p95) |
+
+vo_state pathology fully alive in v16. Covariance trace spikes on teleports but only
+separates ~half the frames → SUSPECT signal (bounded multiplier), never the sole gate.
+
+### R3 — trusted-health fork SHIPPED + VALIDATED (cuVSLAM_src branch `slamko/trusted-health`, 9f861e0)
+
+10 files, +143 lines, minimal/upstreamable: `common::PnpHealth` {observations, inliers,
+mean_residual, initial/final_cost, info_condition} populated in `PNPSolver::solve()` (one
+residual pass at the final pose + eigenvalue spread of H), threaded
+`ISFMSolver::lastPnpHealth()` → `VOFrameStat` → `Odometry::State::pnp_health` → PyCuVSLAM.
+Multicamera solver only (mono/inertial return empty). Needs `enable_observations_export`
+(measured cost: none — 1522 fps with it ON).
+
+**Validation on wall_trim (the blank-wall killer):**
+
+| signal | during teleports (median) | normal (median) | clean-data bound (MH_03) |
+|---|---|---|---|
+| **inliers** | **1** | 16 | p5 = 14, p50 = 53 |
+| **info_condition** | **1e12 (H singular)** | 1497 | p95 = 1.9e4, max = 4.7e4 |
+| mean_residual | 2.3e-5 | 0.31 | — |
+
+Perfect separation with orders-of-magnitude margin. The low residual DURING teleports
+confirms the source-read mechanism: garbage matches are mutually consistent → tiny cost →
+success flag passes. **Provisional adapter gates: `inliers < 10 || info_condition > 1e6 ⇒
+SUSPECT/REJECT`.** This recovers the true loss signal cuVSLAM never had — at the source,
+feeding slamko's existing seal-on-doubt machinery (which stays ON regardless).
+
+**Next (adapter, PLAN_CUVSLAM_PROVIDER_01 §6):** Step 0 extract ProviderIngest; adapter
+links OUR fork's .so (`~/coding/cuVSLAM_src/build/bin`, NOT the APT lib — C-API mismatch);
+map pnp_health → ProviderSample quality; A/B vs OKVIS per §4.2 before any default flip.
