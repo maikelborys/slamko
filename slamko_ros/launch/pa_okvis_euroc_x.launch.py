@@ -83,6 +83,9 @@ def setup(context):
             'map_dir': out_dir + '/map',   # loop_assoc.csv auto-written here
             'prior_map_dir': LaunchConfiguration('prior_map_dir').perform(context),
             'imu_topic': '/euroc/imu0',
+            # Cross-session proximity (E) reach: prior anchors are SUBMAP-granular
+            # (~13 m apart on MH) — the 3 m default geometrically misses between anchors.
+            'proximity_radius': float(LaunchConfiguration('proximity_radius').perform(context)),
             'dr_gate_path': out_dir + '/dr_gate.csv',
             'atlas_break_on_loss':
                 LaunchConfiguration('atlas_break_on_loss').perform(context).lower() == 'true',
@@ -109,6 +112,8 @@ def generate_launch_description():
         DeclareLaunchArgument('rate', default_value='1.0'),
         DeclareLaunchArgument('start_offset', default_value='0.0',
             description='Bag-relative start [s] — mid->end session 1 (0 = full).'),
+        DeclareLaunchArgument('proximity_radius', default_value='3.0',
+            description='Cross-session proximity reach [m]; ~8 for submap-granular priors.'),
         DeclareLaunchArgument('prior_map_dir', default_value='',
             description='Session-1 map dir for cross-session relocalization.'),
         DeclareLaunchArgument('atlas_break_on_loss', default_value='false',
