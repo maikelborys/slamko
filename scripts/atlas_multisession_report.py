@@ -57,7 +57,7 @@ def assoc(ta, tb, tol=0.02):
     return out
 
 
-sessions = sorted(glob.glob(os.path.join(ROOT, 's[0-9]_*')))
+sessions = sorted(d for d in glob.glob(os.path.join(ROOT, 's[0-9]_*')) if os.path.isdir(d))
 data = []
 for sdir in sessions:
     seq = os.path.basename(sdir).split('_', 1)[1]

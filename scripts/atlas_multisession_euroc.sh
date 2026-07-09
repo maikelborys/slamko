@@ -18,6 +18,11 @@ cd "$(dirname "$0")/.."
 OUT_ROOT=${1:-$PWD/results/atlas_ms}
 RATE=${2:-1.0}
 SEQS=${SEQS:-"MH_01_easy MH_02_easy MH_03_medium MH_04_difficult MH_05_difficult"}
+# MAPPOINT=on -> cross-submap + prior-seeded landmark dedup (bounded-by-area side of
+# the A/B; the validated anti-doubling combo). Default off = the unbounded baseline.
+MAPPOINT=${MAPPOINT:-off}
+MP_ARGS=()
+[ "$MAPPOINT" = on ] && MP_ARGS=("mappoint_assoc:=true" "mappoint_xsession:=true")
 declare -A BAGS=(
   [MH_01_easy]=/mnt/data/euroc_bags/mh_01_okvis
   [MH_02_easy]=/mnt/data/euroc_bags/mh_02_okvis
@@ -43,8 +48,13 @@ for seq in $SEQS; do
   i=$((i+1)); out="$OUT_ROOT/s${i}_${seq}"
   bag=${BAGS[$seq]}
   [ -d "$bag" ] || { echo "MISSING BAG $bag — skipping $seq"; continue; }
-  prior=""
-  [ "$(ls -A "$ACCUM" 2>/dev/null)" ] && prior="$ACCUM"
+  # GOTCHA: an EMPTY launch-arg value (prior_map_dir:=) is "malformed" to ros2 launch
+  # and kills the whole session instantly — only pass the arg when a prior exists.
+  PRIOR_ARG=()
+  prior="NONE"
+  if [ "$(ls -A "$ACCUM" 2>/dev/null)" ]; then
+    prior="$ACCUM"; PRIOR_ARG=("prior_map_dir:=$ACCUM")
+  fi
   # bag duration + margin (rate-scaled): parse once via metadata
   dur=$(python3 - "$bag" <<'PY'
 import sys, yaml
@@ -53,16 +63,19 @@ print(int(m['rosbag2_bagfile_information']['duration']['nanoseconds'] / 1e9) + 1
 PY
 )
   budget=$(( ${dur%.*} * 2 + 90 ))
-  echo "=== session $i: $seq (dur ${dur}s, budget ${budget}s, prior: ${prior:-NONE}) ==="
+  echo "=== session $i: $seq (dur ${dur}s, budget ${budget}s, prior: $prior) ==="
   timeout "$budget" ros2 launch slamko_ros pa_okvis_euroc_x.launch.py \
     bag_path:="$bag" seq:="$seq" out_dir:="$out" rate:="$RATE" \
-    prior_map_dir:="$prior" > "$out.launch.log" 2>&1
+    "${PRIOR_ARG[@]}" "${MP_ARGS[@]}" > "$out.launch.log" 2>&1
   pkill -INT -f '[p]rovider_fusion_node' 2>/dev/null; sleep 4
   pkill -KILL -f "$PATTERN" 2>/dev/null; sleep 2
   n_new=$(ls "$out/map/"submap_*.smap 2>/dev/null | wc -l)
-  # UNION-accumulate (ids are globally unique across sessions)
+  # UNION-accumulate (ids are globally unique across sessions once the prior loads)
   cp -n "$out/map/"submap_*.smap "$ACCUM/" 2>/dev/null
-  echo "    session $i done: $n_new new submaps, accum total $(ls "$ACCUM" | wc -l)"
-  grep -cE 'LOOP CLOSED|weld|anchor' "$out/launch.log" 2>/dev/null || true
+  # loadSubMaps requires submaps.manifest (the id list) — regenerate for the union.
+  ls "$ACCUM"/submap_*.smap 2>/dev/null | sed 's/.*submap_\([0-9]*\)\.smap/\1/' \
+    | sort -n > "$ACCUM/submaps.manifest"
+  echo "    session $i done: $n_new new submaps, accum total $(grep -c . "$ACCUM/submaps.manifest")"
+  grep -cE 'LOOP CLOSED|weld|anchor' "$out.launch.log" 2>/dev/null || true
 done
 echo "=== ALL SESSIONS DONE -> $OUT_ROOT ==="
