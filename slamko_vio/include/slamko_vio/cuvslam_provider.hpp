@@ -42,6 +42,20 @@ struct CuvslamProviderConfig {
   bool async_sba = true;   // production default; sync for deterministic A/Bs
   bool health = true;      // pnp_health gates (needs the slamko/trusted-health fork)
 
+  // Inertial (VIO) mode — the stairs-scale fix (stereo-only under-scaled the casa
+  // Escaleras climb 5.2-6.6%, RESEARCH_CUVSLAM_OPENSOURCE_01 A/B 2026-07-09).
+  // Noise defaults = the OKVIS-tuned values for THIS D455 unit (rsD455 config; the
+  // cuVSLAM package defaults over-trust this IMU 11-13x -> gradual VIO divergence,
+  // scripts/cuvslam_casa.launch.py lesson). rig_from_imu: both optical frames share
+  // the rotation; translation measured from scripts/d455.urdf (imu==gyro frame).
+  bool use_imu = false;
+  double gyro_noise_density = 0.00278;
+  double gyro_random_walk = 0.0008;
+  double accel_noise_density = 0.0252;
+  double accel_random_walk = 0.04;
+  double imu_frequency = 200.0;
+  double imu_tx = 0.03022, imu_ty = -0.0074, imu_tz = -0.01602;  // rig(=cam0 optical) <- imu
+
   // Gates measured 2026-07-09 (RESEARCH_CUVSLAM_OPENSOURCE_01 §5): clean-data floor
   // inliers p5=14 / cond max 4.7e4; teleport frames inliers=1 / cond 1e12.
   int min_inliers = 10;
@@ -67,6 +81,12 @@ class CuvslamProvider {
 
   // Builds the rig + tracker and warms up the GPU. Returns false on failure.
   bool init(const CuvslamProviderConfig& cfg);
+
+  // Feed one IMU sample (timestamps ascending, BEFORE the tracked frame that follows
+  // it). accel m/s^2, gyro rad/s, in the IMU's own (optical) frame. No-op unless
+  // cfg.use_imu.
+  void registerImu(double t_s, double ax, double ay, double az,
+                   double gx, double gy, double gz);
 
   // One synchronized mono8 stereo pair (row-major, pitch = bytes per row).
   // Returns the pose sample in the ROS basis with gated covariance, or nullopt on

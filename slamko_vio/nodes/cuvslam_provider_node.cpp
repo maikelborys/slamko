@@ -16,6 +16,7 @@
 // (rig is built lazily from the first synced camera_info).
 
 #include <array>
+#include <deque>
 #include <memory>
 #include <optional>
 
@@ -26,6 +27,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 
 #include "slamko_vio/cuvslam_provider.hpp"
@@ -50,6 +52,17 @@ class CuvslamProviderNode : public rclcpp::Node {
     cfg_.cov_scale = declare_parameter("cov_scale", 80.0);
     cfg_.suspect_cov_mult = declare_parameter("suspect_cov_mult", 25.0);
 
+    // Inertial (VIO) mode. imu_scale: bno_ab casa1-original bags have DOUBLED accel
+    // (fix_imu_scale gotcha) -> 0.5 there; CASA1_*_BNO measured ~8.9 = fine at 1.0.
+    cfg_.use_imu = declare_parameter("use_imu", false);
+    cfg_.gyro_noise_density = declare_parameter("gyro_noise_density", cfg_.gyro_noise_density);
+    cfg_.gyro_random_walk = declare_parameter("gyro_random_walk", cfg_.gyro_random_walk);
+    cfg_.accel_noise_density = declare_parameter("accel_noise_density", cfg_.accel_noise_density);
+    cfg_.accel_random_walk = declare_parameter("accel_random_walk", cfg_.accel_random_walk);
+    cfg_.imu_frequency = declare_parameter("imu_frequency", cfg_.imu_frequency);
+    imu_scale_ = declare_parameter("imu_scale", 1.0);
+    imu_topic_ = declare_parameter("imu_topic", std::string("/camera/camera/imu"));
+
     const bool best_effort = declare_parameter("image_best_effort", true);
     auto qos = rclcpp::QoS(rclcpp::KeepLast(30)).durability_volatile();
     if (best_effort) qos.best_effort();
@@ -61,6 +74,19 @@ class CuvslamProviderNode : public rclcpp::Node {
         left_info_topic_, qos, [this](CameraInfo::SharedPtr m) { left_info_ = m; tryInit(); });
     sub_right_info_ = create_subscription<CameraInfo>(
         right_info_topic_, qos, [this](CameraInfo::SharedPtr m) { right_info_ = m; tryInit(); });
+
+    if (cfg_.use_imu) {
+      // Buffer, don't feed directly: cuVSLAM requires a MONOTONIC interleave
+      // (imu... < frame_t) but the sync queue delays image pairs while 200 Hz IMU
+      // races ahead -> "Timestamps are non-monotonic" throw. onStereo drains the
+      // buffer up to each frame's stamp before Track.
+      auto imu_qos = rclcpp::QoS(rclcpp::KeepLast(400)).durability_volatile().best_effort();
+      sub_imu_ = create_subscription<sensor_msgs::msg::Imu>(
+          imu_topic_, imu_qos, [this](sensor_msgs::msg::Imu::SharedPtr m) {
+            imu_buf_.push_back(std::move(m));
+            while (imu_buf_.size() > 2000) imu_buf_.pop_front();
+          });
+    }
 
     sub_l_.subscribe(this, left_topic_, qos.get_rmw_qos_profile());
     sub_r_.subscribe(this, right_topic_, qos.get_rmw_qos_profile());
@@ -102,6 +128,17 @@ class CuvslamProviderNode : public rclcpp::Node {
       return;
     }
     const double t = rclcpp::Time(l->header.stamp).seconds();
+    while (!imu_buf_.empty()) {
+      const auto& m = imu_buf_.front();
+      const double ti = rclcpp::Time(m->header.stamp).seconds();
+      if (ti > t) break;
+      provider_->registerImu(ti, m->linear_acceleration.x * imu_scale_,
+                             m->linear_acceleration.y * imu_scale_,
+                             m->linear_acceleration.z * imu_scale_,
+                             m->angular_velocity.x, m->angular_velocity.y,
+                             m->angular_velocity.z);
+      imu_buf_.pop_front();
+    }
     auto sample = provider_->track(t, l->data.data(), r->data.data(),
                                    static_cast<int>(l->step));
     publishHealth(t);
@@ -138,7 +175,10 @@ class CuvslamProviderNode : public rclcpp::Node {
   }
 
   std::string left_topic_, right_topic_, left_info_topic_, right_info_topic_;
-  std::string odom_frame_, base_frame_;
+  std::string odom_frame_, base_frame_, imu_topic_;
+  double imu_scale_ = 1.0;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
+  std::deque<sensor_msgs::msg::Imu::SharedPtr> imu_buf_;
   slamko::CuvslamProviderConfig cfg_;
   std::unique_ptr<slamko::CuvslamProvider> provider_;
   CameraInfo::SharedPtr left_info_, right_info_;

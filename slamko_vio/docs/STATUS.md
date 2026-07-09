@@ -9,6 +9,18 @@ Living, dated progress + numbers log. Append on every validated change
 > **slated for deletion** (klt_vo HEAD is strictly better) — frozen pending removal.
 > **EXCEPTION — under active development: the thin provider adapters (the package's charter).**
 
+## 2026-07-09b — Inertial (VIO) mode SHIPPED: A/B GREEN, cuVSLAM-Inertial = default mode
+
+`use_imu` in adapter+node+launch (launch default TRUE): `OdometryMode::Inertial`, D455-tuned
+noise (OKVIS rsD455 values), `rig_from_imu` from d455.urdf, IMU **buffered and drained
+≤ frame_t before each Track** — direct feeding threw "Timestamps are non-monotonic" (200 Hz
+IMU races the sync queue) → 100% loss; the buffer fix is load-bearing. A/B vs OKVIS:
+Suave 12.8 cm/0.8% (no flat regression), Escaleras **49 cm/1.7%** (stereo-only was
+79.6 cm/6.6% — the IMU fixes the stairs under-scale; climb 7.06 m vs OKVIS 6.86 m).
+0 teleports all runs. Policy: cuVSLAM-Inertial = recommended provider for new runs; OKVIS
+= offline baseline + fallback; battery re-baseline = follow-up. Details:
+[`../../docs/RESEARCH_CUVSLAM_OPENSOURCE_01.md`](../../docs/RESEARCH_CUVSLAM_OPENSOURCE_01.md).
+
 ## 2026-07-09 — cuVSLAM provider adapter SHIPPED + E2E validated (brutal bag, live)
 
 New (all behind `SLAMKO_WITH_CUVSLAM`, auto-ON when `~/coding/cuVSLAM_src/build/bin/libcuvslam.so`

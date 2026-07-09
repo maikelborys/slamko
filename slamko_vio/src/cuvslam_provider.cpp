@@ -9,6 +9,7 @@
 #include "slamko_vio/cuvslam_provider.hpp"
 
 #include <cmath>
+#include <cstdio>
 
 #include <cuvslam2.h>
 
@@ -43,9 +44,22 @@ bool CuvslamProvider::init(const CuvslamProviderConfig& cfg) {
   };
   cuvslam::Rig rig;
   rig.cameras = {cam(0.f), cam(static_cast<float>(cfg.baseline_m))};
+  if (cfg.use_imu) {
+    cuvslam::ImuCalibration imu;
+    imu.rig_from_imu.translation = {static_cast<float>(cfg.imu_tx),
+                                    static_cast<float>(cfg.imu_ty),
+                                    static_cast<float>(cfg.imu_tz)};
+    imu.gyroscope_noise_density = static_cast<float>(cfg.gyro_noise_density);
+    imu.gyroscope_random_walk = static_cast<float>(cfg.gyro_random_walk);
+    imu.accelerometer_noise_density = static_cast<float>(cfg.accel_noise_density);
+    imu.accelerometer_random_walk = static_cast<float>(cfg.accel_random_walk);
+    imu.frequency = static_cast<float>(cfg.imu_frequency);
+    rig.imus = {imu};
+  }
 
   cuvslam::Odometry::Config ocfg;
-  ocfg.odometry_mode = cuvslam::Odometry::OdometryMode::Multicamera;
+  ocfg.odometry_mode = cfg.use_imu ? cuvslam::Odometry::OdometryMode::Inertial
+                                   : cuvslam::Odometry::OdometryMode::Multicamera;
   ocfg.async_sba = cfg.async_sba;
   ocfg.rectified_stereo_camera = true;
   ocfg.enable_observations_export = cfg.health;  // pnp_health rides the stat export
@@ -59,6 +73,21 @@ bool CuvslamProvider::init(const CuvslamProviderConfig& cfg) {
 }
 
 const CuvslamHealth& CuvslamProvider::lastHealth() const { return impl_->health; }
+
+void CuvslamProvider::registerImu(double t_s, double ax, double ay, double az,
+                                  double gx, double gy, double gz) {
+  if (!impl_->odom || !impl_->cfg.use_imu) return;
+  cuvslam::ImuMeasurement m;
+  m.timestamp_ns = static_cast<int64_t>(t_s * 1e9);
+  m.linear_accelerations = {static_cast<float>(ax), static_cast<float>(ay),
+                            static_cast<float>(az)};
+  m.angular_velocities = {static_cast<float>(gx), static_cast<float>(gy),
+                          static_cast<float>(gz)};
+  try {
+    impl_->odom->RegisterImuMeasurement(0, m);
+  } catch (const std::exception&) {
+  }
+}
 
 std::optional<ProviderSample> CuvslamProvider::track(double t_s, const std::uint8_t* left,
                                                      const std::uint8_t* right, int pitch) {
@@ -83,7 +112,9 @@ std::optional<ProviderSample> CuvslamProvider::track(double t_s, const std::uint
   cuvslam::PoseEstimate est;
   try {
     est = impl_->odom->Track(images);
-  } catch (const std::exception&) {
+  } catch (const std::exception& e) {
+    static int nlog = 0;
+    if (nlog++ < 5) std::fprintf(stderr, "[cuvslam_provider] Track threw: %s\n", e.what());
     impl_->health = {};
     return std::nullopt;
   }

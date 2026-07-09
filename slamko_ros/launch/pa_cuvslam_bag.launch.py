@@ -40,6 +40,8 @@ def setup(context):
             'max_info_condition': float(LaunchConfiguration('max_info_condition').perform(context)),
             'cov_scale': float(LaunchConfiguration('cov_scale').perform(context)),
             'suspect_cov_mult': float(LaunchConfiguration('suspect_cov_mult').perform(context)),
+            'use_imu': LaunchConfiguration('use_imu').perform(context).lower() == 'true',
+            'imu_scale': float(LaunchConfiguration('imu_scale').perform(context)),
         }])
 
     fusion = Node(
@@ -59,6 +61,9 @@ def setup(context):
             'atlas_break_on_loss': True,
             'atlas_break_on_quality': True,
             'quality_soft_bridge': True,
+            'mag_topic': '/bno055/mag',
+            'compass_yaw_prior':
+                LaunchConfiguration('compass_yaw_prior').perform(context).lower() == 'true',
         }])
 
     bag = TimerAction(period=delay, actions=[ExecuteProcess(
@@ -79,6 +84,13 @@ def generate_launch_description():
         DeclareLaunchArgument('bag_delay', default_value='6.0'),
         DeclareLaunchArgument('vpr', default_value='false'),
         DeclareLaunchArgument('prior_map_dir', default_value=''),
+        DeclareLaunchArgument('use_imu', default_value='true',
+            description='cuVSLAM Inertial (VIO) mode — DEFAULT since the 2026-07-09 A/B: '
+                        'fixes the stereo-only stairs under-scale (6.6%->1.7%), no flat regression.'),
+        DeclareLaunchArgument('imu_scale', default_value='1.0',
+            description='Accel scale fix (0.5 for the doubled-accel casa1-original bags).'),
+        DeclareLaunchArgument('compass_yaw_prior', default_value='false',
+            description='BNO055 absolute-yaw graph prior in the fusion node (gated).'),
         DeclareLaunchArgument('min_inliers', default_value='10'),
         DeclareLaunchArgument('max_info_condition', default_value='1e6'),
         DeclareLaunchArgument('cov_scale', default_value='80.0'),

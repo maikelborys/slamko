@@ -193,13 +193,33 @@ per the bench rule). Both pass their own P-A gate at 0.000000 m. Mutual fused-vs
 | Suave (10 m flat) | **13.9 cm** | 0.6% | 0 tele, 1.16 m/s max | 0 tele, 1.49 m/s max |
 | Escaleras (2 floors, 64 m) | **79.6 cm** | 5.2–6.6% | 0 tele, path 61.0 m, climb 5.73 m | 0 tele, path 64.4 m, climb 6.86 m |
 
-**Reading:** flat indoor = parity (13.9 cm is the COMBINED drift of two independent
-odometries, in-band with the known 7.5 cm slamko-vs-OKVIS-full-SLAM median). Stairs =
-cuVSLAM stereo-only under-scales the climb by ~16% of z (5.2% path length) — the exact
-regime where OKVIS's tight IMU pays. Per the §4.2 / regress-≥5% rule: **no default flip.**
-cuVSLAM = validated interchangeable second provider (realtime + trusted-health); OKVIS
-remains default. **Next lever:** cuVSLAM `Inertial` mode A/B (needs real D455 noise via
-`ImuCalibration` + the bno_ab DOUBLED-accel fix — Multicamera mode is unaffected today).
+**Reading (stereo-only):** flat indoor = parity (13.9 cm is the COMBINED drift of two
+independent odometries). Stairs = cuVSLAM stereo-only under-scales the climb ~16% of z
+(5.2% path) — the regime where OKVIS's tight IMU pays. Stereo-only: no default flip.
+
+### Inertial (VIO) A/B — SAME DAY: GREEN on both bags → cuVSLAM-Inertial qualifies
+
+Wired `OdometryMode::Inertial` into the adapter: D455-tuned noise (the OKVIS rsD455
+values — cuVSLAM package defaults over-trust this IMU 11-13×, the cuvslam_casa lesson),
+`rig_from_imu` = identity rotation + (0.03022, −0.0074, −0.01602) m in the cam0-optical
+frame (from scripts/d455.urdf; infra1 == camera_link), accel scale verified 1.0 on these
+bags (|a| = 8.9). **BUG FOUND+FIXED: "Timestamps are non-monotonic" throw → 100% loss** —
+the sync queue delays image pairs while 200 Hz IMU races ahead; the node now BUFFERS IMU
+and drains ≤ frame_t before each Track (the standard VIO interleave).
+
+| bag | stereo-only | **Inertial** | OKVIS ref |
+|---|---|---|---|
+| Suave: mutual RMSE / scale | 13.9 cm / 0.6% | **12.8 cm / 0.8%** | — |
+| Escaleras: mutual / scale | 79.6 cm / 5.2–6.6% ✗ | **49.0 cm / 1.7% ✓** | — |
+| Escaleras: path / climb | 61.0 m / 5.73 m | **63.3 m / 7.06 m** | 64.4 m / 6.86 m |
+
+0 teleports / 0 duplicates on all Inertial runs. **VERDICT: cuVSLAM-Inertial passes the
+≤5% rule on both bags — qualified as the DEFAULT cuVSLAM mode** (`use_imu:=true` is now
+the launch default). Provider-default policy: cuVSLAM-Inertial is the recommended
+provider for new runs (realtime margin + trusted-health + scale parity); OKVIS stays the
+offline A/B baseline + config-selectable fallback, and existing OKVIS launches/battery
+are untouched (they pass `odom_topic` explicitly). Full flip of the battery/regression
+suite to cuVSLAM = a follow-up task (re-baseline all T1 numbers first).
 
 **GOTCHA reproduced the hard way (zombie rule):** a `timeout`-killed launch left the
 cuvslam_provider_node alive; the re-run then had TWO publishers on `/cuvslam/odometry`
