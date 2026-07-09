@@ -182,6 +182,29 @@ RPATH-pinned to the fork lib (`--disable-new-dtags`) — immune to the APT-lib s
 inflated during teleports; chain offline PASS at 4e-13 m.** Full entry:
 `slamko_vio/docs/STATUS.md` 2026-07-09.
 
-**Next:** A/B vs OKVIS through the FULL fusion graph on casa bags
-(`provider_fusion_node odom_topic:=/cuvslam/odometry`), then Gazebo closed-loop; default
-flip only on §4.2 green (ATE within 5%, un-aligned divergence ≈ 0, map density preserved).
+### A/B vs OKVIS — RUN 2026-07-09 (same session): VERDICT = OKVIS stays default
+
+Same bags through both providers' full-graph P-A launches (never concurrently — serial,
+per the bench rule). Both pass their own P-A gate at 0.000000 m. Mutual fused-vs-fused
+(Sim3; casa has no GT, so this is provider-vs-provider agreement, not error attribution):
+
+| bag | mutual RMSE | scale disagree | cuVSLAM | OKVIS |
+|---|---|---|---|---|
+| Suave (10 m flat) | **13.9 cm** | 0.6% | 0 tele, 1.16 m/s max | 0 tele, 1.49 m/s max |
+| Escaleras (2 floors, 64 m) | **79.6 cm** | 5.2–6.6% | 0 tele, path 61.0 m, climb 5.73 m | 0 tele, path 64.4 m, climb 6.86 m |
+
+**Reading:** flat indoor = parity (13.9 cm is the COMBINED drift of two independent
+odometries, in-band with the known 7.5 cm slamko-vs-OKVIS-full-SLAM median). Stairs =
+cuVSLAM stereo-only under-scales the climb by ~16% of z (5.2% path length) — the exact
+regime where OKVIS's tight IMU pays. Per the §4.2 / regress-≥5% rule: **no default flip.**
+cuVSLAM = validated interchangeable second provider (realtime + trusted-health); OKVIS
+remains default. **Next lever:** cuVSLAM `Inertial` mode A/B (needs real D455 noise via
+`ImuCalibration` + the bno_ab DOUBLED-accel fix — Multicamera mode is unaffected today).
+
+**GOTCHA reproduced the hard way (zombie rule):** a `timeout`-killed launch left the
+cuvslam_provider_node alive; the re-run then had TWO publishers on `/cuvslam/odometry`
+(different odom origins) → 3035 duplicated timestamps, 5337 fake "teleports", max
+6.5e6 m/s. **Detection signature: duplicated header stamps in provider.tum.** Preflight
+`pgrep -f '[c]uvslam_provider_node'` + reap-by-name on teardown, exactly like
+bench_ate.sh. (Also: `pgrep -f`/`pkill -f` self-match their own bash -c line — bracket
+the first char.)
