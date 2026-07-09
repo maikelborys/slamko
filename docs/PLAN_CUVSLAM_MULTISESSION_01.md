@@ -114,7 +114,19 @@ T(MH01): MH01 4.0 · MH02 104 · MH03 67 · MH04 204 · MH05 333 cm → joint 10
    LocalizeInMap + pase en AsyncSlam con funnel). MEDIDO: `sel=0` — las RELACIONES de
    los landmarks cargados NO están en el LSI en memoria (viven en pose graph/DB), el
    predicado por relaciones rechaza todo.
-3. **SIGUIENTE PASO EXACTO:** cambiar la fuente del predicado a `map_.pose_graph_`
+3. **HECHO (fork 586401a): el pase restringido FUNCIONA de punta a punta** — set de
+   landmarks cargados desde el pose graph + índice inverso `loaded_relations_` para que
+   `FindKeyframeWithMostLandmarks` pueda anclar el edge a keyframes CARGADOS (el Apply
+   fallaba en silencio con InvalidKeyFrameId). Funnel: sel=486-801, PnP-good=44-134,
+   **10 binds aplicados** en MH01→MH02. Coherencia AÚN 103 cm: los binds son escasos y
+   agrupados donde los viewpoints coinciden — la física de viewpoint en su última capa.
+4. **SIGUIENTE PASO EXACTO (sesión fresca):**
+   a. loguear kf/tiempo de cada bind → confirmar clustering; b. subir peso/probar
+   covarianza de los x-edges en el PGO; c. si el clustering es el muro → **Plan B:
+   fusión de duplicados a la creación** (asociar landmark nuevo → cargado en el LSI,
+   estilo SearchAndFuse) — cambia el grafo de observaciones y hace que TODO LC propio
+   sea también cross-session. d. El gate ≥40 de two_steps_easy si el pool se queda corto.
+5. **VIEJO SIGUIENTE PASO (ya ejecutado):** cambiar la fuente del predicado a `map_.pose_graph_`
    (que sí carga las relaciones landmark→keyframe), o materializar las relaciones al
    cargar (el patrón del fix de descriptores c8ebed4). Después: re-medir MH01→MH02
    (objetivo: cross-binds > 0 distribuidos y coherencia 104 cm → ~10-20 cm), luego la
