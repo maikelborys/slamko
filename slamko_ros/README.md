@@ -15,7 +15,7 @@ viz lives in `../scripts/`.
 `provider_fusion_node` (loose fuser over an external odometry provider:
 relative KF edges + covariance → `slamko_loop::PoseGraph`, `map→odom` slewed
 TF) + `provider_chain_offline` (the no-ROS reproducible gate) +
-`launch/pa_okvis_bag.launch.py` (OKVIS2-X pure-VIO on a D455 bag). Bench:
+`launch/pa_okvis_bag.launch.py` (OKVIS2-X pure-VIO on a D455 bag) · `launch/pa_cuvslam_bag.launch.py` (cuVSLAM-Inertial provider, P-A PASS 2026-07-09). Bench:
 `../scripts/bench_pa.sh`. Numbers: `docs/STATUS.md`.
 
 **Starting cold here?** Read the 3 hub docs + this, then plan mode →

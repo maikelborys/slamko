@@ -5,8 +5,10 @@
 > odometry provider, with the map-correctness / pose-jump guards the user demanded. Research provenance:
 > workflow `wf_e8046a4d-b37` (transcripts under `subagents/workflows/`). Three agents errored mid-run
 > (prior-findings, cuvslam-covariance-web, untrusted-vio-fusion) but their partial findings fed synthesis;
-> the load-bearing facts here were re-verified directly against `cuvslam2.h`. **No code written yet** —
-> §7 de-risking experiments gate the adapter (slamko method: measure offline before building).
+> the load-bearing facts here were re-verified directly against `cuvslam2.h`. **UPDATE 2026-07-09:
+> the adapter is SHIPPED and the §7 experiments were RESOLVED** (cuVSLAM went open source — several
+> answered by reading source, the rest by measurement): see `RESEARCH_CUVSLAM_OPENSOURCE_01.md`.
+> This doc remains the design record the implementation followed (§6 steps, §2.3 traps — both held).
 
 # DESIGN DOSSIER — Replacing the OKVIS front-end with cuVSLAM under a map-correctness guarantee
 

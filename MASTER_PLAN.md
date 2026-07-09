@@ -37,8 +37,10 @@ odometry underneath. (OKVIS magistrale: 5.91 cm vs slamko-own-VIO 10.06 m.)
    that is not the bottleneck — at the cost of marrying provider internals.
 2. **Default provider = OKVIS2-X** (BSD-3; VI+depth+LiDAR+GNSS; in-workspace;
    tight internally so its output is high quality even consumed loose).
-   Alternatives: Basalt (BSD-3), cuVSLAM (runtime-only, proprietary), klt_vo
-   (future, same contract). VINS-Fusion / OpenVINS = GPL, blocked.
+   Alternatives: **cuVSLAM (OPEN SOURCE since v15 2026-03; adapter SHIPPED 2026-07-09 —
+   cuVSLAM-Inertial is the recommended provider for NEW runs; OKVIS stays the battery
+   default + flash-bag provider; see docs/RESEARCH_CUVSLAM_OPENSOURCE_01.md)**, Basalt
+   (BSD-3), klt_vo (future, same contract). VINS-Fusion / OpenVINS = GPL, blocked.
 3. **The Atlas / multi-map lives IN slamko** (ideas from ORB-SLAM3/maplab/
    experience-maps; no GPL code).
 4. **Anchor, don't weld** (2026-06-12 swarm, multiply confirmed): map merges are
@@ -155,7 +157,7 @@ the day/night and multi-floor pains.**
 | Package | Is / becomes | Notes |
 |---|---|---|
 | **slamko_core** | Provider contract (relative+global+covariance), tiled/anchored/multi-appearance `SubMap` schema, datum/tile types, map-versioning contract, health ifaces | Keep + extend |
-| **slamko_vio** | **Thin adapters** wrapping external providers (OKVIS2-X first) | **DELETE** the own VIO (klt_vo HEAD is strictly better — the fork has zero unique value; klt_vo itself lives on in its repo as a future provider) |
+| **slamko_vio** | **Thin adapters** wrapping external providers (OKVIS2-X first; **cuVSLAM adapter SHIPPED 2026-07-09**) | **DELETE** the own VIO (klt_vo HEAD is strictly better — the fork has zero unique value; klt_vo itself lives on in its repo as a future provider) |
 | **slamko_fusion** | The loose chain-pose-graph fixed-lag fuser (relative edges + global constraints) | Repurpose; drop local-VIO machinery |
 | **slamko_loop** | Atlas multi-map + lifelong map mgmt + EigenPlaces reloc + never-lost supervisor + GNSS anchoring | Reuse EigenPlaces, supervisor, submap IO, LighterGlue |
 | **slamko_mapping** (split early) | Lifelong tiled map-server: out-of-core store, summarization, versioning, georeferencing, semantic hooks | Promoted from deferred — now core |
@@ -170,7 +172,7 @@ the day/night and multi-floor pains.**
 | **P-C** | Never-lost end-to-end: stale-gap → seal → branch → reloc → **reversible gated anchor** | `CASA1_Suave_blackout` + `blackout4`: clean recovery, zero crashes, un-aligned divergence bounded |
 | **P-C′ ✅** | Ceres ↔ GTSAM/iSAM2 pose-graph backends (`PoseGraphBackend`), **iSAM2 the live default** (auto-detected); native GTSAM yaw factor | ✅ 2026-06-26: EuRoC MH_03 ATE Ceres 19.10 ≈ iSAM2 19.19 mm; **6× faster live** (O(touched) vs O(graph)); brutal-bag default validated (9 Atlas breaks, 0 fallbacks). `slamko_loop/docs/STATUS.md` |
 | **P-D** | Georeferencing: GNSS anchors submaps to a global datum (init-then-re-anchor) | — |
-| **P-E** | Extra providers (klt_vo!, Basalt/cuVSLAM) + optional depth-submap factor | — |
+| **P-E** | Extra providers (klt_vo!, Basalt) + optional depth-submap factor | **cuVSLAM ✅ 2026-07-09** (odometry-only adapter, trusted-health fork, Inertial A/B green) |
 | **P-F** | Semantic layers: sidewalks/roads/lanes atop the metric map | — |
 
 **Validation data inventory:** EuRoC (full GT; median-of-3 on V1 — single runs

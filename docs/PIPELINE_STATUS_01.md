@@ -1,6 +1,6 @@
-# slamko — Pipeline status & cold-start (2026-06-13, major update 2026-06-19)
+# slamko — Pipeline status & cold-start (2026-06-13, major update 2026-07-09)
 
-<!-- validated: 2026-06-19 · the consolidated "where we are NOW" snapshot of the
+<!-- validated: 2026-07-09 · the consolidated "where we are NOW" snapshot of the
 loose-fusion pipeline. Chronological detail: slamko_ros/docs/STATUS.md.
 Plan: MASTER_PLAN.md §8. Research provenance: docs/REBUILD_PROPOSAL_01.md. -->
 
@@ -10,7 +10,51 @@ Everything below was validated on the real D455 casa bags.
 
 ---
 
-## 0. 2026-07-02 — MASTER PLAN v3 + THE FULL-BAG REGRESSION BATTERY (T1) (read this FIRST)
+## 0. 2026-07-09 — cuVSLAM OPEN-SOURCE: 2nd PROVIDER SHIPPED + A/B + DEPLOY PLAN (read FIRST)
+
+**cuVSLAM went full open source** (v16, github.com/nvidia-isaac/cuVSLAM, clone at
+`~/coding/cuVSLAM_src`) — every blind-measured pathology now explained with file:line
+(vo_state gate, flat covariance, IMU zero-bias init, tail jumps) and the untrusted-provider
+ideology validated 1:1. One-day execution, 11 commits; the full story with all numbers:
+[`RESEARCH_CUVSLAM_OPENSOURCE_01.md`](RESEARCH_CUVSLAM_OPENSOURCE_01.md) + memory
+`slamko-cuvslam-opensource`.
+
+- **Fork `slamko/trusted-health`** (branch in cuVSLAM_src, our own `.so`, CUDA 12.6 sm_89):
+  exposes per-frame `pnp_health` (inliers/residual/H-condition). Wall-bag validation:
+  teleports have inliers=1 + H singular (1e12) vs clean floor p5=14 / max 4.7e4 →
+  **adapter gates `inliers<10 || cond>1e6`**. License: link OK from Apache-2.0, NEVER vendor.
+- **Provider adapter SHIPPED** (`slamko_vio`: `CuvslamProvider` PIMPL + `cuvslam_provider_node`
+  → `/cuvslam/odometry` + `/cuvslam/health`; launch `pa_cuvslam_bag.launch.py`). Odometry-only
+  (never instantiates `Slam` → no tail-jump machinery in-process). P-A gate PASS (0.0000 m).
+  E2E brutal: 52/56 teleports SUSPECT, covariance ×1777. **IMU interleave gotcha (load-bearing):**
+  feed IMU BUFFERED and drained ≤ frame_t before each Track, else "Timestamps are non-monotonic"
+  → 100% loss.
+- **A/B vs OKVIS + Inertial mode:** stereo-only under-scaled Escaleras 6.6% → `Inertial`
+  (D455-tuned noise, rig_from_imu from d455.urdf) fixes it: Suave 12.8 cm/0.8%, Escaleras
+  49 cm/1.7%, 0 teleports. **Policy: cuVSLAM-Inertial = recommended provider for NEW runs;
+  OKVIS = existing launches/battery default + offline baseline + fallback.**
+- **Flash-bag verdict (honest, map shown):** cuVSLAM-Inertial degrades on the 45 fps flash
+  stream (147 teleports) → 35 sealed islands along drift, NO false weld (honest-dangling
+  working as designed). **OKVIS remains the flash-bag provider.** To diagnose: dotted-IR
+  leakage through the splitter vs fast-motion@45fps. Chain script:
+  `scripts/run_slamko_casa_flashbag_cuvslam.sh`; visuals in `results/cuvslam_v16/viz/`
+  (`plot_cuvslam_ab.py`: escaleras 3D A/B, wall health timeline, flash TSDF floorplan+3D).
+- **Provider bench harness:** `scripts/bench_cuvslam_provider.{py,sh}` — 4-channel scorecard
+  (ATE/teleports/NEES+cov-census/fps) on EuRoC + D455 bags. Measured: cuVSLAM covariance
+  30–350× overconfident (NEES) → `cov_scale=80`; 0.5 ms/frame (OKVIS 31-fps ceiling gone).
+- **Robot deploy gap analysis:** [`PLAN_ROBOT_DEPLOY_01.md`](PLAN_ROBOT_DEPLOY_01.md) — wheel
+  referee cinemático + health velocity governor ("intensidad") + depth cliff safety; order:
+  Gazebo closed-loop (§1+2+3 together) → cliff → real robot. **Sim = GAZEBO (user decision;
+  Isaac starves the 8 GB GPU — PLAN_ISAACSIM_01 shelved).**
+- GOTCHAS today: ROS shell shadows the wheel's libcuvslam.so (use the .sh wrapper / RPATH);
+  cmake picks CUDA 13.1 (force 12.6); timeout-killed launches leave the provider node alive →
+  duplicate publisher = fake teleports (SIGNATURE: duplicated stamps in provider.tum);
+  `pgrep/pkill -f` self-match (bracket the first char); Float32MultiArray timestamps lose
+  256 s resolution at epoch scale.
+
+---
+
+## 0a. 2026-07-02 — MASTER PLAN v3 + THE FULL-BAG REGRESSION BATTERY (T1)
 
 **The user restated his immortal-framework vision + asked for a total root refactor if needed.
 Verdict (code audit): the vision IS the built architecture; consolidate, don't rewrite.** Plan:
@@ -42,7 +86,7 @@ row @rate 0.5 is a COMPLETE run, not truncated).
 
 ---
 
-## 0a. 2026-06-30 — IMMORTAL GATES + DEPTH GEOMETRIC LOOP + DYNAMIC LOCAL COSTMAP + D455 CLEAN-MAP
+## 0b. 2026-06-30 — IMMORTAL GATES + DEPTH GEOMETRIC LOOP + DYNAMIC LOCAL COSTMAP + D455 CLEAN-MAP
 
 **Commit `220c130` on `klt-fork-loopclosure`. All opt-in or validated; 4 packages build green.** This
 session pushed never-lost enforcement + the Nav2 costmap foundation + D455 map quality. Full detail:
@@ -74,7 +118,7 @@ session pushed never-lost enforcement + the Nav2 costmap foundation + D455 map q
 Global costmap topic OK (`225×328 @5cm, latched, slamko_map`). Full immortal run: break-into-islands at the
 corridor → weld onto submap 0 at the return (9 components → 4 fused).
 
-**⇒ NEXT STEP (user-chosen): ISAAC SIM.** Bags CANNOT close the Nav2 loop (passive replay) and we have
+**⇒ NEXT STEP (user-chosen): ISAAC SIM** *(superseded 2026-07-09 → GAZEBO, Isaac starves the 8 GB GPU; see §0 + PLAN_ROBOT_DEPLOY_01)*. Bags CANNOT close the Nav2 loop (passive replay) and we have
 only 1 D455-HW-depth bag (stereo→depth bags too low quality). So Nav2 driving + brutal stress + map
 iteration must go to **simulation or the real robot**. The user chose **Isaac Sim** (natural fit:
 pairs with nvblox / Isaac ROS, GPU). See **`docs/PLAN_ISAACSIM_01.md`** (the next-session entry point).
@@ -95,7 +139,7 @@ viewer = `/tmp/rrviewer`.
 
 ---
 
-## 0b. 2026-06-26 — UNIVERSAL EVALUATOR + NEVER-JUMP GATE + cuVSLAM provider
+## 0c. 2026-06-26 — UNIVERSAL EVALUATOR + NEVER-JUMP GATE + cuVSLAM provider
 
 The session that built the **measurement system** and used it to find + fix a real defect. Full
 detail: [`EVAL_SYSTEM_01.md`](EVAL_SYSTEM_01.md), `slamko_ros/docs/STATUS.md` (2026-06-26),
@@ -186,7 +230,7 @@ planner on a jumping TF would corrupt). See §"Next step" at the end of this doc
 
 ---
 
-## 0b. 2026-06-19 — THE IMMORTALITY PUSH (prior milestone)
+## 0d. 2026-06-19 — THE IMMORTALITY PUSH (prior milestone)
 
 A long session took the map from "grows without bound" to **ORB-SLAM3-style bounded +
 never-lost + gated**, all measured on casa1 bags. The immortal core is now in place; what

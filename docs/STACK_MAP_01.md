@@ -130,7 +130,12 @@ At the ROS level the swap is a one-line remap (`odom_topic:=/visual_slam/trackin
 - **Throughput is the motivation.** cuVSLAM sustains **≥120 fps vs OKVIS ~31 fps (4×)** on the RTX 4070 Laptop. OKVIS's ~31 fps is a **BY-DESIGN serial ceiling** (30 ms Ceres budget), **not GPU contention** (GPU idle ~5%) — so cuVSLAM removes the rate≤0.5 live-vs-offline trap, but **total GPU load must be re-measured** (cuVSLAM becomes a 2nd/3rd GPU job alongside XFeat reloc + nvblox TSDF).
 - **Two-stage integration plan.** Stage 1 (fast first integration): **topic remap** — `provider_fusion_node` eats `/visual_slam/tracking/odometry` directly, no code change. Stage 2 (covariance fidelity): the **C++ `libcuvslam` PIMPL adapter** in `slamko_vio` that reads native covariance/quality and shapes it into the provider contract.
 - **The casa-bag blocker.** cuVSLAM needs the **D455 static TF** (extrinsics, which OKVIS already encodes in rsD455_odom848): infra1 @ `(-0.03022, 0.0074, 0.01602)`, infra2 @ `(0.0648, …)`, **baseline 0.095 m**, `T_BS = I`. Until that static transform tree is published for cuVSLAM, it can't run on the replayed casa bags (which also already need `cam_info_inject_848.py` since they lack CameraInfo).
-- **Honest status:** **NOT started.** Memory `slamko-cuvslam-next-pending` is PENDING/not-analyzed; the explicit pre-wire gate is (a) map cov/quality into the contract, (b) design how to VERIFY map coherence (Sim3 ATE/RPE + un-aligned divergence, Hard Rule #5) before trusting it, (c) write the `slamko_vio` adapter.
+- **Honest status (updated 2026-07-09): SHIPPED.** The Stage-2 PIMPL adapter exists
+  (`slamko_vio` `CuvslamProvider` + `cuvslam_provider_node` → `/cuvslam/odometry` +
+  `/cuvslam/health`), runs on the casa bags (rig built from bag camera_info — the TF
+  blocker below is obsolete), P-A gate PASS 0.0000 m, Inertial A/B green. cuVSLAM is now
+  OPEN SOURCE and the fork `slamko/trusted-health` exposes per-frame pnp_health. Full
+  story: `docs/RESEARCH_CUVSLAM_OPENSOURCE_01.md` + `slamko_vio/docs/STATUS.md`.
 
 ---
 

@@ -2,6 +2,13 @@
 
 Living, dated progress + numbers log. Plan: [`PLAN_P2_loop.md`](PLAN_P2_loop.md).
 
+## 2026-07-09 — catch-up entry for commit 220c130 (2026-06-30 session) ✅
+
+Loop-side pieces of the immortal-gates session (documented centrally in
+`docs/PIPELINE_STATUS_01.md` §0b + `slamko_ros/docs/STATUS.md`; closes the
+check_doc_freshness gap): depth geometric loop weld integration (`depth_loop_refine`,
+point-to-SDF ICP via sdf_registration, 7.2 cm validated) + supervisor gate wiring.
+
 ## 2026-06-26 — GTSAM pose-graph backend (LevenbergMarquardt) — A/B-validated vs Ceres ✅
 
 The step toward the MASTER_PLAN P-C′ iSAM2 smoother (GTSAM is purpose-built for robotics factor

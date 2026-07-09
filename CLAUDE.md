@@ -18,10 +18,28 @@ research provenance — anchor-don't-weld, iSAM2-poses-only, raw-mag-not-BNO-fus
 GNSS init-then-re-anchor). Old own-VIO plan: `docs/archive/MASTER_PLAN_OWNVIO_01.md`.
 Also: [`docs/DECOUPLING.md`](docs/DECOUPLING.md), [`docs/DOC_PROCESS.md`](docs/DOC_PROCESS.md).
 
-> **Current focus (2026-06-30): IMMORTAL GATES + DEPTH GEOMETRIC LOOP + DYNAMIC LOCAL COSTMAP +
-> D455 CLEAN-MAP shipped (commit 220c130); NEXT = ISAAC SIM (Nav2 closed-loop — bags can't drive +
-> only 1 D455-HW-depth bag).** Cold-start → [`docs/PIPELINE_STATUS_01.md`](docs/PIPELINE_STATUS_01.md)
-> **§0 (2026-06-30)** + [`docs/PLAN_ISAACSIM_01.md`](docs/PLAN_ISAACSIM_01.md) + memories
+> **Current focus (2026-07-09): cuVSLAM OPEN-SOURCE → 2nd PROVIDER SHIPPED + A/B + DEPLOY PLAN;
+> NEXT = GAZEBO closed-loop (wheel-EKF + referee cinemático + Nav2 + velocity governor).**
+> Cold-start → [`docs/PIPELINE_STATUS_01.md`](docs/PIPELINE_STATUS_01.md) **§0 (2026-07-09)** +
+> [`docs/RESEARCH_CUVSLAM_OPENSOURCE_01.md`](docs/RESEARCH_CUVSLAM_OPENSOURCE_01.md) +
+> [`docs/PLAN_ROBOT_DEPLOY_01.md`](docs/PLAN_ROBOT_DEPLOY_01.md) + memory `slamko-cuvslam-opensource`.
+> cuVSLAM v16 is FULL open source (`~/coding/cuVSLAM_src`, fork `slamko/trusted-health` exposes
+> per-frame pnp_health — inliers/residual/H-condition; gates `inliers<10||cond>1e6` validated on the
+> wall bag: teleports = 1 inlier + H singular). Adapter shipped (`slamko_vio` `cuvslam_provider_node`
+> → `/cuvslam/odometry`+`/cuvslam/health`, odometry-only, P-A PASS 0.0000 m). **Provider policy:
+> cuVSLAM-Inertial = recommended for NEW runs (A/B: Suave 12.8cm/0.8%, Escaleras 49cm/1.7% — the IMU
+> fixed the stereo-only 6.6% stairs under-scale); OKVIS = existing launches/battery default, offline
+> baseline, fallback, AND the flash-bag provider (cuVSLAM degraded there: 147 teleports → 35 honest
+> islands, no false weld).** Bench: `scripts/bench_cuvslam_provider.{py,sh}` (4-channel; cuVSLAM cov
+> 30–350× overconfident → cov_scale 80). SIM = GAZEBO (Isaac starves the 8 GB GPU; PLAN_ISAACSIM_01
+> shelved). GOTCHAS: IMU must be BUFFERED ≤ frame_t ("Timestamps are non-monotonic" else); ROS shell
+> shadows the wheel's libcuvslam (RPATH/wrapper); duplicate-publisher zombies = duplicated stamps in
+> provider.tum. (Prior focus below kept for provenance.)
+>
+> **Prior focus (2026-06-30): IMMORTAL GATES + DEPTH GEOMETRIC LOOP + DYNAMIC LOCAL COSTMAP +
+> D455 CLEAN-MAP shipped (commit 220c130); then-NEXT = Isaac Sim (superseded → Gazebo).**
+> Cold-start → [`docs/PIPELINE_STATUS_01.md`](docs/PIPELINE_STATUS_01.md)
+> **§0b (2026-06-30)** + [`docs/PLAN_ISAACSIM_01.md`](docs/PLAN_ISAACSIM_01.md) + memories
 > `slamko-isaacsim-next`, `slamko-immortal-seal-on-doubt`, `slamko-d455-clean-map`. Shipped: A live
 > IMU referee (`imu_referee`, recall 0→0.67) + B HOLD (`hold_on_loss`) seal-on-doubt; depth geometric
 > loop weld (`depth_loop_refine`, 7.2cm, point-to-SDF ICP on nvblox ESDF); DYNAMIC LOCAL costmap (2nd
@@ -30,7 +48,7 @@ Also: [`docs/DECOUPLING.md`](docs/DECOUPLING.md), [`docs/DOC_PROCESS.md`](docs/D
 > Open levers: nvblox 1/z² weight, depth pre-filter, push. (Prior focus below kept for provenance.)
 >
 > **Prior focus (2026-06-26): UNIVERSAL EVALUATOR + NEVER-JUMP GATE shipped.**
-> Cold-start → [`docs/PIPELINE_STATUS_01.md`](docs/PIPELINE_STATUS_01.md) **§0b (2026-06-26)** +
+> Cold-start → [`docs/PIPELINE_STATUS_01.md`](docs/PIPELINE_STATUS_01.md) **§0c (2026-06-26)** +
 > [`docs/EVAL_SYSTEM_01.md`](docs/EVAL_SYSTEM_01.md) + memory `slamko-universal-evaluator`. Built
 > `scripts/slamko_eval.py` = the **provider-agnostic 7-channel ideology scorecard** (3 independent
 > witnesses: IMU inertial · depth→SDF geometric · XFeat recognition) — judges the slamko LAYER, not

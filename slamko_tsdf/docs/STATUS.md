@@ -3,6 +3,13 @@
 Validated milestones (dated, with numbers). Newest first. See
 [`../README.md`](../README.md) + [`../../docs/PLAN_SLAMKO_TSDF_01.md`](../../docs/PLAN_SLAMKO_TSDF_01.md).
 
+## 2026-07-09 — catch-up entry for commit 220c130 (2026-06-30 session) ✅
+
+TSDF-side pieces of the immortal-gates session (documented centrally in
+`docs/PIPELINE_STATUS_01.md` §0b + `slamko_ros/docs/STATUS.md`; closes the
+check_doc_freshness gap): DYNAMIC LOCAL decaying mapper @45 Hz (`local_dynamic` ON),
+D455 clean-map fixes (range 5→3.5 m, speckle filter), ESDF slice plumbing.
+
 ## 2026-06-26 — `NvbloxBackend::queryDistanceField` (ESDF) + GPU self-test ✅ (commit 7005ac7)
 
 Implemented the `VolumetricBackend::queryDistanceField(pts_map)->{dist,weight}` contract (added in
@@ -119,7 +126,7 @@ quality substitute.
 **NEXT (user-chosen, PENDING — not started): wire cuVSLAM as a provider** (GPU-native, beats the OKVIS
 fps ceiling). GATE FIRST = quality management: map cuVSLAM covariance/quality into the provider contract +
 design a map-COHERENCE / no-distortion verification BEFORE trusting it (ATE/RPE + un-aligned divergence,
-hard-rule #5) + write/adapt the slamko_vio adapter. Memory `slamko-cuvslam-next-pending`; notes in
+hard-rule #5) + write/adapt the slamko_vio adapter *(→ DONE 2026-07-09, see slamko_vio/docs/STATUS.md)*. Memory `slamko-cuvslam-next-pending`; notes in
 ~/coding/cuvslam/docs/. Plus (deferred): seal-policy refinement; geometric loop channel; live RViz costmap.
 
 ## 2026-06-23 — LIVE path foundation: incremental fuse + touched-window bend + store bound ✅

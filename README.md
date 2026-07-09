@@ -5,7 +5,14 @@ Strong like ORB-SLAM3 / OKVIS2-X / VILENS, but built from a small core where **e
 sensor and capability is a plugin behind a contract — not a rewrite.** Fast, robust,
 super-recoverable, and deliberately **simple and stable**.
 
-> **Status (2026-05-27) — the never-lost loop is closed end-to-end, including across
+> **CURRENT (2026-07-09) — slamko is the lifelong-map + relocalization + LOOSE-fusion
+> layer over an EXTERNAL, interchangeable odometry provider** (OKVIS2-X = battery/flash-bag
+> default; **cuVSLAM-Inertial = recommended for new runs** since the open-source A/B —
+> `docs/RESEARCH_CUVSLAM_OPENSOURCE_01.md`). The own-VIO described below is **deprecated**
+> (2026-06-12 pivot). Cold-start = [`docs/PIPELINE_STATUS_01.md`](docs/PIPELINE_STATUS_01.md)
+> **§0**; the sections below are the pre-pivot historical README.
+
+> **Status (2026-05-27, HISTORICAL own-VIO era) — the never-lost loop is closed end-to-end, including across
 > sessions.** `slamko_core` shipped (header-only spine + map serialization, 26 tests).
 > `slamko_vio` runs a CUDA stereo-inertial tracker with a **swappable feature front-end**
 > — Shi-Tomasi (0.078 m ATE @ ~214 fps) or **XFeat-TensorRT** (**0.049 m @ ~93 fps**,

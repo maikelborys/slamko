@@ -3,7 +3,13 @@
 Part of **slamko** — read [`../CLAUDE.md`](../CLAUDE.md) + [`../MASTER_PLAN.md`](../MASTER_PLAN.md)
 + [`../docs/DECOUPLING.md`](../docs/DECOUPLING.md) first.
 
-**Role:** the fast local tracker. Feature front-end (**Shi-Tomasi / XFeat /
+> **CHARTER UPDATE (2026-07-09):** the own-VIO below is **deprecated, slated for deletion**
+> (see `docs/STATUS.md` header). The package's LIVE role is the **thin provider adapters**:
+> the **cuVSLAM adapter is SHIPPED** (`CuvslamProvider` PIMPL + `cuvslam_provider_node` →
+> `/cuvslam/odometry` + `/cuvslam/health`, Inertial mode default, behind `SLAMKO_WITH_CUVSLAM`).
+> Details: `docs/STATUS.md` 2026-07-09 + `../docs/RESEARCH_CUVSLAM_OPENSOURCE_01.md`.
+
+**Role (HISTORICAL, own-VIO era):** the fast local tracker. Feature front-end (**Shi-Tomasi / XFeat /
 LiftFeat-m1**, swappable) + **KLT** flow + stereo + PnP + IMU preintegration +
 **dead-reckoning on tracking loss** (const-vel+gyro) + **re-entrant VI
 initialization** (gravity/bias — NOT a one-shot latch; re-triggerable by the

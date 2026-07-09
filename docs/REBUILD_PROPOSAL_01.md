@@ -53,7 +53,7 @@ map/reloc layer, which is **agnostic to the odometry underneath**.
 | Provider | License | Verdict |
 |---|---|---|
 | **OKVIS2-X** | **BSD-3** ✅ | Default provider. |
-| cuVSLAM | NVIDIA proprietary | Optional *runtime-only* loose provider (binary; GPU-locked; cannot ship/extend). |
+| cuVSLAM | NVIDIA proprietary *(2026-07-09: now OPEN SOURCE v16 — fork extendable; adapter shipped)* | Optional *runtime-only* loose provider (binary; GPU-locked; cannot ship/extend). *(claim superseded — see RESEARCH_CUVSLAM_OPENSOURCE_01.md)* |
 | VINS-Fusion | **GPLv3** ❌ | Blocked by Hard Rule #1 — cannot link into slamko. |
 | OpenVINS | GPLv3 ❌ | Blocked. |
 | Basalt | BSD-3 ✅ | Clean alternative loose provider. |

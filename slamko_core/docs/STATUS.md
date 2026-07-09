@@ -3,6 +3,13 @@
 Living, dated progress log + current test results. Append on every validated
 change (see [`../../docs/DOC_PROCESS.md`](../../docs/DOC_PROCESS.md)).
 
+## 2026-07-09 — catch-up entry for commit 220c130 (2026-06-30 session) ✅
+
+Core-side pieces of the immortal-gates session (documented centrally in
+`docs/PIPELINE_STATUS_01.md` §0b + `slamko_ros/docs/STATUS.md`; this entry closes the
+check_doc_freshness gap): contract touches supporting the IMU referee / HOLD state /
+depth-loop-weld gates. No standalone core validation beyond the 4-package green build.
+
 ## 2026-06-26 — `VolumetricBackend::queryDistanceField` added to the contract ✅ (commit 7005ac7)
 
 `volumetric_map.hpp`: `virtual bool queryDistanceField(const std::vector<Vec3>& pts_map,

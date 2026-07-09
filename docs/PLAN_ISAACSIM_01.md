@@ -1,4 +1,10 @@
-# PLAN_ISAACSIM_01 — Nav2 closed-loop in Isaac Sim (the next step)
+# PLAN_ISAACSIM_01 — Nav2 closed-loop in Isaac Sim (SUPERSEDED → GAZEBO)
+
+> **SUPERSEDED (2026-07-09, user decision):** Isaac Sim starves the 8 GB GPU (memory
+> `slamko-gazebo-sim`: 344 OKVIS losses vs 0 in Gazebo). The sim surface is **GAZEBO**
+> (`docs/PLAN_GAZEBO_SIM_01.md` if present / cerebro_robot_sim) + D455/EuRoC bags. The
+> closed-loop deploy plan is now [`PLAN_ROBOT_DEPLOY_01.md`](PLAN_ROBOT_DEPLOY_01.md).
+> Kept for provenance — the Nav2 wiring notes below remain useful for the Gazebo run.
 
 <!-- authored 2026-06-30 · next-session entry point. Cold-start: read docs/PIPELINE_STATUS_01.md §0
 (2026-06-30) first, then this. Commit 220c130 on klt-fork-loopclosure. -->
