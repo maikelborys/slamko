@@ -184,3 +184,19 @@ re-alinea iterativamente — el mismo descriptor rinde cuando la geometría lo e
 3. slamko: rol intacto (supervisor / guess / gates / islas).
 4. **orbslam3_xfeat = SOLO referencia de validación** (pasa el test hoy) — es GPL:
    Hard Rule #1 prohíbe shiparlo; nunca provider.
+
+## 6. CIERRE del diagnóstico LC (2026-07-10d, fork 110e506) — el veredicto definitivo
+
+Saga del binario rancio resuelta (un error de compilación viajó invisible 2 runs — LECCIÓN:
+verificar `make rc` + `strings` en la lib INSTALADA, jamás el grep del pipe). Con la
+restricción de destino REAL por primera vez: **15 edges cross-session, correctamente
+anclados (loaded kfs 54-72), 47-138 landmarks cada uno... y TODOS en una ventana de ~10
+keyframes consecutivos (heads 200-209)** = una sola región de revisita con viewpoint
+compatible. Coherencia sigue ~1 m: dos anclas (stitch + esta) no doblan el medio.
+
+**VEREDICTO FINAL: el binding a nivel LC está acotado por viewpoint haga lo que haga el
+anclaje. ORB-SLAM3 escapa porque asocia contra el mapa fusionado EN CADA FRAME de tracking
+post-merge (radios pequeños post-alineamiento) + welding-BA. El binding debe vivir en la
+capa de TRACKING/creación → la fusión de duplicados (§5.1) no es opcional: ES el
+mecanismo.** Todo lo demás (stitch, pase-x, restricción) queda como infraestructura útil
+ya construida y medida.
