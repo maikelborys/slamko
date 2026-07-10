@@ -154,3 +154,33 @@ T(MH01): MH01 4.0 · MH02 104 · MH03 67 · MH04 204 · MH05 333 cm → joint 10
 - Los STDescriptors (parches 9×9/nivel, ~1.4 KB/landmark) NO sustituyen a XFeat para
   retrieval global (shift-only NCC); descartada la opción "features de cuVSLAM en vez de
   XFeat" para el guess — sí para el weld métrico (que es donde ya los usa).
+
+## 5. LA VERDAD DE ARQUITECTURA (2026-07-10c — cierra la pregunta del descriptor)
+
+**¿Cambiar XFeat por otro descriptor? NO — XFeat queda absuelto con datos del propio
+workspace.** Cuatro sistemas, mismos datos:
+
+| Sistema | Maquinaria de unión | Multi-sesión MH |
+|---|---|---|
+| slamko sparse | XFeat NN global + welds PnP → posegraph | 90–103 cm |
+| cuVSLAM nativo | NCC + stitch único + PGO (binding shadowed) | par 8.6 cm / cadena ~1 m |
+| **ORB-SLAM3 + EL MISMO XFeat** (orbslam3_xfeat, validado 2026-05-21) | DBoW2-XFeat + Sim3 + **SearchAndFuse (fusión de duplicados)** + welding-BA + asociación por proyección continua | **0.102 m MH01→MH03** (V-chains sub-10 cm, docs/STRESS_TEST_V_ROOM.md) |
+| AirSLAM_XFEAT | XFeat+LighterGlue, backend g2o intacto | 0.0386 m single-session |
+
+Mismo descriptor: 100 cm sin fusión de duplicados, 10 cm con ella. **La variable es la
+FUSIÓN + BA de ventana, no el descriptor.** Un swap (SuperPoint/DISK/ALIKED) ataca la
+capa equivocada. (Nuestro "cos<0.7 en pares verdaderos" era del matching NN GLOBAL y del
+NCC shift-only; ORB asocia por PROYECCIÓN con radios de píxeles tras alinear + el BA
+re-alinea iterativamente — el mismo descriptor rinde cuando la geometría lo escolta.)
+
+**El plan verdadero (confirma y prioriza el Plan B):**
+1. **Fusión de duplicados a la creación en el fork cuVSLAM** — al crear/activar un
+   landmark, asociarlo contra los CARGADOS del LSI (radio + descriptor/NCC); si asocia,
+   REUSAR el id cargado (añadir relación) en vez de crear duplicado. Cada LC propio pasa
+   a ser cross-session automáticamente; el PGO denso de cuVSLAM (4 cm intra-sesión) hace
+   el resto. El punto de inserción: `lsi_grid.cpp` staged→activate (:425-445).
+2. Si el PGO no basta tras la fusión: mini welding-BA de ventana (25 KF, prior fijo) —
+   cuVSLAM ya trae `libs/sba` para reutilizar.
+3. slamko: rol intacto (supervisor / guess / gates / islas).
+4. **orbslam3_xfeat = SOLO referencia de validación** (pasa el test hoy) — es GPL:
+   Hard Rule #1 prohíbe shiparlo; nunca provider.
