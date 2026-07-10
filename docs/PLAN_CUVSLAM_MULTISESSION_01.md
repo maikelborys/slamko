@@ -120,6 +120,14 @@ T(MH01): MH01 4.0 · MH02 104 · MH03 67 · MH04 204 · MH05 333 cm → joint 10
    fallaba en silencio con InvalidKeyFrameId). Funnel: sel=486-801, PnP-good=44-134,
    **10 binds aplicados** en MH01→MH02. Coherencia AÚN 103 cm: los binds son escasos y
    agrupados donde los viewpoints coinciden — la física de viewpoint en su última capa.
+3c. **(fork 4be5458)** Destino del edge también restringido a ≤ boundary
+   (`FindKeyframeWithMostLandmarks(only_upto_boundary)` en ambas fuentes de relaciones):
+   sin esto, tras los primeros x-binds los landmarks cargados ganan relaciones nuevas y
+   el kf PROPIO gana el max_element → 9/10 edges "cross" eran own→own. Con la
+   restricción: 1 edge cross verificado (head 212 → loaded 8); coherencia sigue 103 cm.
+   **DISCREPANCIA a reconciliar primero en la continuación: 10 prints de bind vs 1 edge
+   cross en el diag de Apply** — añadir lc_kf al print del bind; sospecha: Apply devuelve
+   false con el set restringido vacío en 9 casos y el conteo de binds está mal guardado.
 4. **SIGUIENTE PASO EXACTO (sesión fresca):**
    a. loguear kf/tiempo de cada bind → confirmar clustering; b. subir peso/probar
    covarianza de los x-edges en el PGO; c. si el clustering es el muro → **Plan B:
