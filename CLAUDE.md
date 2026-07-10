@@ -18,8 +18,17 @@ research provenance — anchor-don't-weld, iSAM2-poses-only, raw-mag-not-BNO-fus
 GNSS init-then-re-anchor). Old own-VIO plan: `docs/archive/MASTER_PLAN_OWNVIO_01.md`.
 Also: [`docs/DECOUPLING.md`](docs/DECOUPLING.md), [`docs/DOC_PROCESS.md`](docs/DOC_PROCESS.md).
 
-> **Current focus (2026-07-09): cuVSLAM OPEN-SOURCE → 2nd PROVIDER SHIPPED + A/B + DEPLOY PLAN;
-> NEXT = GAZEBO closed-loop (wheel-EKF + referee cinemático + Nav2 + velocity governor).**
+> **Current focus (2026-07-10): DIRECCIÓN POR DECIDIR — leer [`docs/OBJETIVO_NORTE_01.md`](docs/OBJETIVO_NORTE_01.md)**
+> (objetivo central "bastante robusto no ideal" + bifurcación terrestre/dron + estado de activos).
+> El diagnóstico multi-sesión EuRoC quedó CERRADO con veredicto
+> ([`docs/PLAN_CUVSLAM_MULTISESSION_01.md`](docs/PLAN_CUVSLAM_MULTISESSION_01.md) §5-6: descriptor
+> absuelto — el mismo XFeat da 0.102 m en orbslam3_xfeat; el binding LC está acotado por viewpoint;
+> la fusión-a-la-creación es EL mecanismo si se necesita coherencia aérea). Terrestre: los pasos
+> siguen en PLAN_ROBOT_DEPLOY_01 (Gazebo closed-loop primero). Memorias:
+> `slamko-cuvslam-native-multisession`, `slamko-cuvslam-opensource`.
+>
+> **Prior focus (2026-07-09): cuVSLAM OPEN-SOURCE → 2nd PROVIDER SHIPPED + A/B + DEPLOY PLAN;
+> then-NEXT = GAZEBO closed-loop (wheel-EKF + referee cinemático + Nav2 + velocity governor).**
 > Cold-start → [`docs/PIPELINE_STATUS_01.md`](docs/PIPELINE_STATUS_01.md) **§0 (2026-07-09)** +
 > [`docs/RESEARCH_CUVSLAM_OPENSOURCE_01.md`](docs/RESEARCH_CUVSLAM_OPENSOURCE_01.md) +
 > [`docs/PLAN_ROBOT_DEPLOY_01.md`](docs/PLAN_ROBOT_DEPLOY_01.md) + memory `slamko-cuvslam-opensource`.
