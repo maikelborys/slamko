@@ -2,6 +2,18 @@
 
 Living, dated progress + numbers log. Plan: [`PLAN_P2_loop.md`](PLAN_P2_loop.md).
 
+## 2026-07-09/10 — associateByProjection (welds por proyección) + veredicto del techo ✅ (commit 46d331a)
+
+`XFeatRelocalizer::associateByProjection` (opt-in `projection_assoc` en el nodo): proyecta
+landmarks del prior en la imagen del query vía la pose estimada, matchea por descriptor en
+gate de píxeles, PnP → weld por el 3-tier. Correcto y validado negativamente: en EuRoC MH
+cross-trayectoria el coseno XFeat de pares verdaderos < 0.7 entre viewpoints de vuelo
+distintos (gate 150px/cos 0.70 → matches basura que PnP rechaza honestamente) — la
+medición más pura del techo de viewpoint; en régimen terrestre same-viewpoint debería
+rendir (A/B casa pendiente). Contexto completo: docs/RESEARCH_ATLAS_MULTISESSION_01.md +
+docs/PLAN_CUVSLAM_MULTISESSION_01.md §5-6 (el mismo XFeat da 0.102 m en orbslam3_xfeat →
+la variable es la maquinaria de fusión, no el descriptor).
+
 ## 2026-07-09 — catch-up entry for commit 220c130 (2026-06-30 session) ✅
 
 Loop-side pieces of the immortal-gates session (documented centrally in

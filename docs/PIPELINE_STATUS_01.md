@@ -10,6 +10,19 @@ Everything below was validated on the real D455 casa bags.
 
 ---
 
+## 0'. 2026-07-10 — MULTI-SESIÓN DIAGNOSTICADO A FONDO + OBJETIVO NORTE (dirección POR DECIDIR)
+
+Un día entero de multi-sesión EuRoC con el motor nativo cuVSLAM: par MH01→03 = **8.6 cm
+(banda ORB-SLAM3)**; cadena de 5 corre entera; el gap a ~1 m quedó diagnosticado capa a
+capa hasta el veredicto (binding LC acotado por viewpoint; **la fusión-a-la-creación es
+EL mecanismo** si se necesita coherencia aérea; el descriptor XFeat ABSUELTO: 0.102 m en
+orbslam3_xfeat con la misma red). 6 commits en el fork (pnp_health, fix descriptores
+re-save, pase LC cross-session completo). **Cómo seguimos: NO DECIDIDO** — entrada:
+[`OBJETIVO_NORTE_01.md`](OBJETIVO_NORTE_01.md) (bifurcación terrestre/dron) +
+[`PLAN_CUVSLAM_MULTISESSION_01.md`](PLAN_CUVSLAM_MULTISESSION_01.md) (cronología completa).
+
+---
+
 ## 0. 2026-07-09 — cuVSLAM OPEN-SOURCE: 2nd PROVIDER SHIPPED + A/B + DEPLOY PLAN (read FIRST)
 
 **cuVSLAM went full open source** (v16, github.com/nvidia-isaac/cuVSLAM, clone at
